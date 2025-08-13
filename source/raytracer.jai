@@ -98,13 +98,13 @@ Scene :: struct
     mapped     : [..]Primitive;
 
     rgbn       : [..]Vector4;
-};
+}
 
 HitType :: enum u32
 {
     MISSED;
     INTERSECT;
-};
+}
 
 HitInfo :: struct
 {
