@@ -414,7 +414,7 @@ add_disk :: (scene: *Scene, p: Vector3, radius: float, material_id: MaterialID)
     primitive.id = (scene.disks.count - 1).(PrimitiveID);
 
     bbox := bounding_box_from_points(p - Vector3.{radius, radius, 0}, p + Vector3.{radius, radius, 0});
-    primitive.bbox = pad_to_minimus(bbox, 0.0001);
+    //primitive.bbox = pad_to_minimus(bbox, 0.0001);
 
     primitive.material_id = material_id;
 }
