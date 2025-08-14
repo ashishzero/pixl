@@ -45,7 +45,10 @@ raddbg_jai_default_views :: ()
     raddbg_type_view("Vector3", "rows($, x, y, z)");
     raddbg_type_view("Vector4", "rows($, x, y, z, w)");
     raddbg_type_view("Quaternion", "rows($, x, y, z, w)");
-    raddbg_type_view("Matrix?", "$.coef");
+    raddbg_type_view(Matrix2, "columns($.coef, $[0], $[1]");
+    raddbg_type_view(Matrix3, "columns($.coef, $[0], $[1], $[2]");
+    raddbg_type_view(Matrix4, "columns($.coef, $[0], $[1], $[2], $[3])");
+    raddbg_type_view(Matrix4x3, "columns($.coef, $[0], $[1], $[2], $[3]");
 
     // Simp.Bitmap
     raddbg_type_view("Bitmap", "bitmap(data, width, height, (format==1)?r:(format==2)?rg:(format==3)?rgba:(format==4)?rgba:(format==0x10)?r16:(format==0x11)?rg16:(format==0x12)?rgba16:(format==0x13)?r32:(format==0x14)?rg32:(format==0x15)?rgba32:r)");
