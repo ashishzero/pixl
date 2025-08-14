@@ -5,8 +5,8 @@ PrimitiveID :: #type,distinct u64;
 
 Box3 :: struct
 {
-    min: Vector3;
-    max: Vector3;
+    vmin: Vector3;
+    vmax: Vector3;
 }
 
 Transform :: struct
@@ -62,8 +62,8 @@ Camera :: struct
 
 RenderConfig :: struct
 {
-    width        : u32 = 1280;
-    height       : u32 = 720;
+    width        : int = 1280;
+    height       : int = 720;
     multisamples : u32 = 16;
     max_depth    : s32 = 5;
 }

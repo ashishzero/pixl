@@ -1,8 +1,8 @@
 
 EPSILON :: 1.192092896e-07;
 
-Box3_Empty :: Box3.{ min = .{FLOAT32_INFINITY, FLOAT32_INFINITY, FLOAT32_INFINITY},
-                     max = .{-FLOAT32_INFINITY, -FLOAT32_INFINITY, -FLOAT32_INFINITY}
+Box3_Empty :: Box3.{ vmin = .{FLOAT32_INFINITY, FLOAT32_INFINITY, FLOAT32_INFINITY},
+                     vmax = .{-FLOAT32_INFINITY, -FLOAT32_INFINITY, -FLOAT32_INFINITY}
                     };
 
 Ray :: struct
@@ -323,8 +323,8 @@ hits :: (ray: Ray, box: Box3) -> bool
     for 0..2
     {
         inv_dir := 1 / ray.direction.component[it];
-        tmin := (box.min.component[it] - ray.origin.component[it]) * inv_dir;
-        tmax := (box.max.component[it] - ray.origin.component[it]) * inv_dir;
+        tmin := (box.vmin.component[it] - ray.origin.component[it]) * inv_dir;
+        tmax := (box.vmax.component[it] - ray.origin.component[it]) * inv_dir;
 
         if tmin > tmax
             Swap(*tmin, *tmax);
@@ -346,43 +346,10 @@ hits :: (ray: Ray, box: Box3) -> bool
     return true;
 }
 
-transform_point :: (m : Matrix4, p: Vector3) -> Vector3
-{
-    using p;
-
-    xp := x * m.floats[0 + 0] + y * m.floats[0 + 1] + z * m.floats[0 + 2] + m.floats[0 + 3];
-    yp := x * m.floats[4 + 0] + y * m.floats[4 + 1] + z * m.floats[4 + 2] + m.floats[4 + 3];
-    zp := x * m.floats[8 + 0] + y * m.floats[8 + 1] + z * m.floats[8 + 2] + m.floats[8 + 3];
-    wp := x * m.floats[12 + 0] + y * m.floats[12 + 1] + z * m.floats[12 + 2] + m.floats[12 + 3];
-
-    assert(wp != 0.0);
-
-    if (wp == 1)
-    {
-        return Vector3.{xp, yp, zp};
-    }
-    else
-    {
-        inv := 1.0 / wp;
-        return Vector3.{xp * inv, yp * inv, zp * inv};
-    }
-}
-
-transform_vector :: (m : Matrix4, v: Vector3) -> Vector3
-{
-    using v;
-
-    xp := x * m.floats[0 + 0] + y * m.floats[0 + 1] + z * m.floats[0 + 2];
-    yp := x * m.floats[4 + 0] + y * m.floats[4 + 1] + z * m.floats[4 + 2];
-    zp := x * m.floats[8 + 0] + y * m.floats[8 + 1] + z * m.floats[8 + 2];
-
-    return Vector3.{xp, yp, zp};
-}
-
 transform_box :: (t: Matrix4, box: Box3) -> Box3
 {
-    center := 0.5 * (box.min + box.max);
-    extent := 0.5 * (box.max - box.min);
+    center := 0.5 * (box.vmin + box.vmax);
+    extent := 0.5 * (box.vmax - box.vmin);
 
     rcenter := transform_point(t, center);
     half    := Vector3.{0, 0, 0};
@@ -397,16 +364,16 @@ transform_box :: (t: Matrix4, box: Box3) -> Box3
 concat :: (b: Box3, p: Vector3) -> Box3
 {
     ret: Box3;
-    ret.min = min(b.min, p);
-    ret.max = max(b.max, p);
+    ret.vmin = min(b.vmin, p);
+    ret.vmax = max(b.vmax, p);
     return ret;
 }
 
 concat :: (b1: Box3, b2: Box3) -> Box3
 {
     ret: Box3;
-    ret.min = min(b1.min, b2.min);
-    ret.max = max(b1.max, b2.max);
+    ret.vmin = min(b1.vmin, b2.vmin);
+    ret.vmax = max(b1.vmax, b2.vmax);
     return ret;
 }
 
@@ -415,7 +382,7 @@ concat :: (b1: Box3, b2: Box3) -> Box3
 encode_spherical_uv :: inline (n: Vector3) -> Vector2
 {
     phi   := atan2(-n.z, n.x) / (2 * PI) + 0.5;
-    theta := acos(clamp(-1.0, 1.0, n.y));
+    theta := acos(clamp(n.y, -1.0, 1.0));
     u     := phi;
     v     := theta * PI;
     return Vector2.{u, 1.0 - v};

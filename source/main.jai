@@ -216,16 +216,14 @@ recusively_trace :: (scene: Scene, ray: Ray, depth: s32) -> Vector3
     return scene.environment;
 }
 
-recursively_trace_pixel :: (scene: Scene, x: u32, y: u32) -> Vector3
+recursively_trace_pixel :: (scene: Scene, x: u32, y: u32, num_samples: s32) -> Vector3
 {
-    sqrt_samples := sqrt(scene.config.multisamples.(float32)).(u32);
-    inv_sqrt_samples := 1.0 / sqrt_samples.(float32);
+    inv_sqrt_samples := 1.0 / num_samples.(float);
+    sampled := Vector3.{0, 0, 0};
 
-    color := Vector3.{0, 0, 0};
-
-    for n_y:0..sqrt_samples-1
+    for n_y:0..num_samples-1
     {
-        for n_x:0..sqrt_samples-1
+        for n_x:0..num_samples-1
         {
             offset := sample_stratified_square(n_x.(float), n_y.(float), inv_sqrt_samples);
 
@@ -234,11 +232,114 @@ recursively_trace_pixel :: (scene: Scene, x: u32, y: u32) -> Vector3
             query.y = y.(float) + offset.y;
 
             ray := generate_ray(scene.camera, scene.screen, query);
-            color += recusively_trace(scene, ray, scene.config.max_depth);
+            color := recusively_trace(scene, ray, scene.config.max_depth);
+
+            sampled += color;
         }
     }
 
-    return color;
+    return sampled;
+}
+
+TracePixelWork :: struct
+{
+    x           :  u32;
+    y           :  u32;
+    num_samples : s32;
+    color       :  Vector3;
+}
+
+recursive_trace_pixel_work :: (group: *Thread_Group, thread: *Thread, user_data: *void) -> Thread_Continue_Status
+{
+    scene := thread.data.(*Scene);
+    work := user_data.(*TracePixelWork);
+    work.color = recursively_trace_pixel(scene, work.x, work.y, work.num_samples);
+    return .CONTINUE;
+}
+
+New :: ($T: Type, pool: *Flat_Pool) -> *T
+{
+    memory := get(pool, size_of(T));
+    return cast(*T) memory;
+}
+
+render :: (group: *Thread_Group, scene: *Scene, pool: *Flat_Pool)
+{
+    width  := scene.config.width;
+    height := scene.config.height;
+
+    num_samples := sqrt(scene.config.multisamples.(float32)).(s32);
+
+    #if 1
+    {
+        for y:0..height-1
+        {
+            for x:0..width-1
+            {
+                work := New(TracePixelWork, pool);
+                work.x = x.(u32);
+                work.y = y.(u32);
+                work.num_samples = num_samples;
+                add_work(group, work);
+            }
+        }
+
+        work_remaining := width * height;
+
+        while work_remaining > 0
+        {
+            //sleep_milliseconds(10);
+
+            results := get_completed_work(group);
+
+            for results
+            {
+                using work := it.(*TracePixelWork);
+                index := y * width + x;
+
+                scene.rgbn[index].xyz += color;
+                scene.rgbn[index].w += num_samples * num_samples;
+
+                render := scene.rgbn[index].xyz;
+                render /= scene.rgbn[index].w;
+
+                // TODO: HDR mapping
+                Clamp(*render.x, 0, 1);
+                Clamp(*render.y, 0, 1);
+                Clamp(*render.z, 0, 1);
+
+                write_color(*scene.bitmap, x, y, render);
+            }
+
+            work_remaining -= results.count;
+
+            reset_temporary_storage();
+        }
+    }
+    else
+    {
+        for y:0..height-1
+        {
+            for x:0..width-1
+            {
+                color := recursively_trace_pixel(scene, x.(u32), y.(u32), num_samples);
+                index := y * width + x;
+
+                scene.rgbn[index].xyz += color;
+                scene.rgbn[index].w += num_samples * num_samples;
+
+                render := scene.rgbn[index].xyz;
+                render /= scene.rgbn[index].w;
+
+                // TODO: HDR mapping
+                Clamp(*render.x, 0, 1);
+                Clamp(*render.y, 0, 1);
+                Clamp(*render.z, 0, 1);
+
+                write_color(*scene.bitmap, x, y, render);
+            }
+        }
+    }
 }
 
 write_color :: (bitmap: *Bitmap, x: int, y: int, linear: Vector3)
@@ -257,34 +358,6 @@ write_color :: (bitmap: *Bitmap, x: int, y: int, linear: Vector3)
     bitmap.data[index + 3] = 0xFF;
 }
 
-render :: (scene: Scene)
-{
-    width  := scene.config.width;
-    height := scene.config.height;
-
-    for y:0..height-1
-    {
-        for x:0..width-1
-        {
-            color := recursively_trace_pixel(scene, x, y);
-            index := y * width + x;
-
-            scene.rgbn[index].xyz += color;
-            scene.rgbn[index].w += 1;
-
-            render := scene.rgbn[index].xyz;
-            render /= scene.rgbn[index].w;
-
-            // TODO: HDR mapping
-            Clamp(*render.x, 0, 1);
-            Clamp(*render.y, 0, 1);
-            Clamp(*render.z, 0, 1);
-
-            write_color(*scene.bitmap, x, y, render);
-        }
-    }
-}
-
 SceneType :: enum
 {
     RANDOM_SPHERES;
@@ -300,34 +373,63 @@ raytrace_thread :: (thread: *Thread) -> s64
     bitmap := thread.data.(*Bitmap);
 
     scene: Scene;
-    init_scene(*scene, bitmap.*);
+    init_scene(*scene, bitmap.*, multisamples = 50, max_depth=5);
     load_scene(*scene, .CORNELL_BOX);
+
+    group: Thread_Group;
+    init_thread_group(*group, *scene);
+    start(*group);
+
+    pool: Flat_Pool;
+    init(*pool);
 
     prepare_for_rendering(*scene);
 
     while (!should_quit)
     {
-        render(scene);
+        render(*group, *scene, *pool);
+        reset(*pool);
 
-  //      {
-  //          for y:0..bitmap.height - 1 {
-  //              for x:0..bitmap.width - 1 {
-  //                  it : = y * bitmap.stride + x * 4;
-  //                  bitmap.data[it + 0] = 0x00;
-  //                  bitmap.data[it + 1] = 0xFF;
-  //                  bitmap.data[it + 2] = 0x00;
-  //                  bitmap.data[it + 3] = 0xFF;
-  //              }
-  //          }
-  //      }
-
-        if want_screenshot {
+        if want_screenshot
+        {
             save_screenshot(bitmap);
             want_screenshot = false;
         }
     }
 
+    shutdown(*group);
+
     return 0;
+}
+
+init_thread_group :: (group: *Thread_Group, scene: *Scene)
+{
+    num_cpus := get_number_of_processors();
+
+    assert(num_cpus >= 1);
+    if num_cpus > 200  num_cpus = 200;
+
+    #if (OS == .WINDOWS) || (OS == .LINUX)
+    {
+        num_cpus /= 2;
+    }
+
+    num_threads := max(num_cpus - 1, 2);
+
+    init(group, num_threads, recursive_trace_pixel_work);
+
+    group.logging = false;
+    
+    for * group.worker_info
+    {
+        it.thread.data = scene;
+        seed: Some_Big_Time_Value;
+        apollo := current_time_consensus();
+        seed.high = apollo.high;
+        seed.low  = apollo.low;
+        seed.low += it.thread.index.(u64);
+        random_seed(*it.thread.starting_context.random_state, seed);
+    }
 }
 
 load_scene :: (using scene: *Scene, type: SceneType)
@@ -360,10 +462,13 @@ load_scene :: (using scene: *Scene, type: SceneType)
             add_box(scene, Matrix4_Identity, .{0, 555, 0}, .{555, 555.01, 555}, white);
             add_box(scene, Matrix4_Identity, .{0, 0, 555}, .{555, 555, 555.01}, white);
 
+            theta1 := -18.0 / 360.0 * 2 * PI;
+            theta2 := 15.0 / 360.0 * 2 * PI;
+
             rot1, rot2: Quaternion;
 
-            set_from_axis_and_angle(*rot1, 0, 1, 0, -18.0 / 360.0 * 2 * PI);
-            set_from_axis_and_angle(*rot2, 0, 1, 0, 15.0 / 360.0 * 2 * PI);
+            set_from_axis_and_angle(*rot1, 0, 1, 0, theta1);
+            set_from_axis_and_angle(*rot2, 0, 1, 0, theta2);
 
             xform1 := rotation_matrix(Matrix4, rot1);
             xform2 := rotation_matrix(Matrix4, rot2);
@@ -394,8 +499,8 @@ add_sphere :: (scene: *Scene, xform: Matrix4, radius: float, material_id: Materi
     primitive.xform.forward = xform;
     primitive.xform.inverse = inv;
     primitive.id = (scene.spheres.count - 1).(PrimitiveID);
-    primitive.bbox.min = center - Vector3.{radius, radius, radius};
-    primitive.bbox.max = center + Vector3.{radius, radius, radius};
+    primitive.bbox.vmin = center - Vector3.{radius, radius, radius};
+    primitive.bbox.vmax = center + Vector3.{radius, radius, radius};
     primitive.material_id = material_id;
 }
 
@@ -449,7 +554,7 @@ add_translated_box :: (scene: *Scene, xform: Matrix4, p: Vector3, q: Vector3, ma
     h := 0.5 * (pmin + pmax);
     d := 0.5 * (pmax - pmin);
 
-    add_box(scene, translate(xform, h), -d, d, material_id);
+    add_box(scene, make_translation_matrix4(h) * xform, -d, d, material_id);
 }
 
 add_mesh :: (scene: *Scene, desc: MeshDesc, xform: Matrix4, material_id: MaterialID)
@@ -667,13 +772,13 @@ build_bounding_volume_hierarchy :: (nodes: []BVHNode, indices: []u32, primitives
             for primitive_id: lo..hi
             {
                 bbox := primitives[id_map[primitive_id]].bbox;
-                centroid := 0.5 * (bbox.min + bbox.max);
+                centroid := 0.5 * (bbox.vmin + bbox.vmax);
                 centroid_box = concat(centroid_box, centroid);
                 node_box     = concat(node_box, bbox);
             }
 
             axis  := max_axis(centroid_box);
-            daxis := centroid_box.max.component[axis] - centroid_box.min.component[axis];
+            daxis := centroid_box.vmax.component[axis] - centroid_box.vmin.component[axis];
 
             if (daxis < EPSILON || half_area(node_box) <= EPSILON)
             {
@@ -697,8 +802,8 @@ build_bounding_volume_hierarchy :: (nodes: []BVHNode, indices: []u32, primitives
                 for primitive_id: lo..hi
                 {
                     bbox     := primitives[id_map[primitive_id]].bbox;
-                    centriod := 0.5 * (bbox.min.component[axis] + bbox.max.component[axis]);
-                    bucket   := (BUCKET_COUNT * (centriod - centroid_box.min.component[axis]) * idiv).(u32);
+                    centriod := 0.5 * (bbox.vmin.component[axis] + bbox.vmax.component[axis]);
+                    bucket   := (BUCKET_COUNT * (centriod - centroid_box.vmin.component[axis]) * idiv).(u32);
 
                     if bucket >= BUCKET_COUNT then
                         bucket = BUCKET_COUNT  - 1;
@@ -758,8 +863,8 @@ build_bounding_volume_hierarchy :: (nodes: []BVHNode, indices: []u32, primitives
                     part_compare :: (primitive_id: u32, using p: SAHPartition) -> bool
                     {
                         bbox := primitives[primitive_id].bbox;
-                        centriod := 0.5 * (bbox.min.component[axis] + bbox.max.component[axis]);
-                        bucket   := (BUCKET_COUNT * (centriod - centroid_box.min.component[axis]) * idiv).(s32);
+                        centriod := 0.5 * (bbox.vmin.component[axis] + bbox.vmax.component[axis]);
+                        bucket   := (BUCKET_COUNT * (centriod - centroid_box.vmin.component[axis]) * idiv).(s32);
                         if bucket >= BUCKET_COUNT then
                             bucket = BUCKET_COUNT - 1;
                         return bucket <= min_cost_index;
@@ -796,7 +901,7 @@ build_bounding_volume_hierarchy :: (nodes: []BVHNode, indices: []u32, primitives
 
 max_axis :: (b: Box3) -> s32
 {
-    d := b.max - b.min;
+    d := b.vmax - b.vmin;
     if (d.x > d.y && d.x > d.z)
         return 0;
     else if (d.y > d.z)
@@ -807,7 +912,7 @@ max_axis :: (b: Box3) -> s32
 
 half_area :: (b: Box3) -> float
 {
-    d := b.min - b.min;
+    d := b.vmin - b.vmin;
     return (d.x * d.y + d.x * d.z + d.y * d.z);
 }
 
@@ -895,20 +1000,20 @@ bounding_box_from_points :: (a : Vector3, b: Vector3) -> Box3
 pad_to_minimus :: (b: Box3, padding: float) -> Box3
 {
     r := b;
-    if (r.max.x - r.min.x < padding)
+    if (r.vmax.x - r.vmin.x < padding)
     {
-        r.min.x -= padding;
-        r.max.x += padding;
+        r.vmin.x -= padding;
+        r.vmax.x += padding;
     }
-    if (r.max.y - r.min.y < padding)
+    if (r.vmax.y - r.vmin.y < padding)
     {
-        r.min.y -= padding;
-        r.max.y += padding;
+        r.vmin.y -= padding;
+        r.vmax.y += padding;
     }
-    if (r.max.z - r.min.z < padding)
+    if (r.vmax.z - r.vmin.z < padding)
     {
-        r.min.z -= padding;
-        r.max.z += padding;
+        r.vmin.z -= padding;
+        r.vmax.z += padding;
     }
     return r;
 }
@@ -1043,6 +1148,8 @@ init :: () {
     visit_files("captures", false, null, find_next_screenshot_index);
 }
 
+#load "raddbg_markup.jai";
+
 #import "Basic";
 #import "File";
 #import "File_Utilities";
@@ -1052,4 +1159,6 @@ init :: () {
 #import "Math";
 #import "String";
 #import "Thread";
+#import "System";
 #import "Srgb";
+#import "Flat_Pool";
