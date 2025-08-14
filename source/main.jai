@@ -288,7 +288,7 @@ render :: (group: *Thread_Group, scene: *Scene, pool: *Flat_Pool)
 
         while work_remaining > 0
         {
-            //sleep_milliseconds(10);
+            sleep_milliseconds(10);
 
             results := get_completed_work(group);
 
@@ -398,6 +398,8 @@ raytrace_thread :: (thread: *Thread) -> s64
     }
 
     shutdown(*group);
+
+    print("raytrace thread done\n");
 
     return 0;
 }
@@ -1041,23 +1043,29 @@ main :: () {
 
     raytrace_map : Texture;
 
-    while !should_quit {
+    while !should_quit
+    {
         update_window_events();
 
-        for get_window_resizes() {
+        for get_window_resizes()
+        {
             update_window(it.window);
         }
 
-        for events_this_frame {
+        for events_this_frame
+        {
             if it.type == .QUIT then should_quit = true;
 
-            if it.type == {
+            if it.type ==
+            {
               case .KEYBOARD;
-                if it.key_pressed && it.key_code == .ESCAPE {
+                if it.key_pressed && it.key_code == .ESCAPE
+                {
                     should_quit = true;
                 }
 
-                if it.key_pressed && it.key_code == #char " " {
+                if it.key_pressed && it.key_code == #char " "
+                {
                     want_screenshot = true;
                 }
             }
@@ -1072,6 +1080,9 @@ main :: () {
         reset_temporary_storage();
     }
 
+    print("main thread done\n");
+
+    thread_is_done(*thread);
     thread_deinit(*thread);
 }
 
