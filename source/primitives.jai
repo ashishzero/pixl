@@ -74,11 +74,14 @@ point_at :: (ray: Ray, t: float) -> Vector3
 intersect_sphere :: (sphere: SphereDesc, ray: Ray) -> bool, IntersectInfo
 {
     oc := -ray.origin;
-    a := dot(ray.direction, ray.direction);
-    b := -2 * dot(ray.direction, oc);
-    c := dot(oc, oc) - sphere.radius * sphere.radius;
+    a  := dot(ray.direction, ray.direction);
+    b  := -2 * dot(ray.direction, oc);
+    c  := dot(oc, oc) - sphere.radius * sphere.radius;
 
     solved, t0, t1 := solve_quadratic(a, b, c);
+
+    if !solved then
+        return false, .{};
 
     root := t0;
 
@@ -186,7 +189,7 @@ intersect_box :: (box: BoxDesc, ray: Ray) -> bool, IntersectInfo
 intersect_disk :: (disk: DiskDesc, ray: Ray) -> bool, IntersectInfo
 {
     radius2 := disk.radius * disk.radius;
-    normal := Vector3.{0, 0, 1};
+    normal := Vector3.{0, 0, -1};
 
     denom := ray.direction.z; // DotProduct(normal, ray.direction)
 

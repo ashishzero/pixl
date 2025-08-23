@@ -325,7 +325,7 @@ render :: (group: *Thread_Group, scene: *Scene, arena: *Arena, frame_index: u64)
 
 write_color :: (bitmap: *Bitmap, x: int, y: int, linear: Vector3)
 {
-    index := y * bitmap.stride + x * 4;
+    index := (bitmap.height - y - 1) * bitmap.stride + x * 4;
 
     color := linear_to_srgb(linear);
 
@@ -417,6 +417,27 @@ load_scene :: (using scene: *Scene, type: SceneType)
         case .CAR_MESH;
 
         case .BASIC_LIGHT;
+            camera.fov           = 40.0 / 360.0;
+            camera.position      = .{0, 0, -30};
+            camera.target        = .{0, 0, 0};
+            camera.defocus_angle = 0;
+
+            theta1 := -18.0 / 360.0 * 2 * PI;
+            theta2 := 15.0 / 360.0 * 2 * PI;
+
+            rot1, rot2: Quaternion;
+
+            set_from_axis_and_angle(*rot1, 0, 1, 0, theta1);
+            set_from_axis_and_angle(*rot2, 0, 1, 0, theta2);
+
+            xform1 := rotation_matrix(Matrix4, rot1);
+            xform2 := rotation_matrix(Matrix4, rot2);
+
+            red   := add_lambertian_material(scene, .{0.65, 0.05, 0.05});
+
+            //add_translated_box(scene, xform1, .{-10, -5, -10}, .{5, 5, 25}, red);
+
+            add_sphere(scene, Vector3.{0, 0, 0}, 5, red);
 
         case .CORNELL_BOX;
             camera.fov           = 40.0 / 360.0;
@@ -682,17 +703,17 @@ calculate_screen_params :: (using scene: *Scene)
 
     world_up := Vector3.{0, 1, 0};
 
-    w := normalize(camera.position - camera.target);
+    w := normalize(camera.target - camera.position);
     u := normalize(cross(world_up, w));
     v := cross(w, u);
 
     vp_u := vp_w * u;
-    vp_v := -vp_h * v;
+    vp_v := vp_h * v;
 
     du := vp_u / width;
     dv := vp_v / height;
 
-    vp_tl := camera.position - w * camera.focus_distance - 0.5 * (vp_u + vp_v);
+    vp_tl := camera.position + w * camera.focus_distance - 0.5 * (vp_u + vp_v);
     pixel_00 := vp_tl + 0.5 * (du + dv);
 
     defocus_radius := camera.focus_distance * tan(camera.defocus_angle * PI);
@@ -1312,7 +1333,7 @@ main :: ()
         }
 
         texture_load_from_bitmap(*raytrace_map, *scene.bitmap);
-        draw_one_frame(wnd, *raytrace_map);
+        draw_one_frame(wnd, *raytrace_map, scene);
 
         sleep_milliseconds(10);
 
@@ -1385,7 +1406,7 @@ draw_bvh :: (root: int)
     }
 }
 
-draw_one_frame :: (wnd: Window_Type, map : *Texture)
+draw_one_frame :: (wnd: Window_Type, map: *Texture, scene: Scene)
 {
     window_width, window_height := get_render_dimensions(wnd);
 
@@ -1395,7 +1416,7 @@ draw_one_frame :: (wnd: Window_Type, map : *Texture)
 
     if (show_raytrace_result)
     {
-        map_ratio := 0.8;
+        map_ratio := 0.9;
 
         aspect_ratio := window_width.(float) / window_height.(float);
 
