@@ -188,35 +188,43 @@ scatter :: (scene: Scene, ray: Ray, hit: HitInfo) -> ScatterInfo
     return info;
 }
 
-recusively_trace :: (scene: Scene, ray: Ray, depth: s32) -> Vector3
+trace_ray :: (scene: Scene, first_ray: Ray, depth: s32) -> Vector3
 {
-    if (depth <= 0)
-        return Vector3.{0, 0, 0};
+    color := Vector3.{0, 0, 0};
+    throughput := Vector3.{1, 1, 1};
 
-    hit := intersect(scene, ray);
+    ray := first_ray;
 
-    if hit.type == .INTERSECT
+    for 0..depth-1
     {
-        //return Vector3.{info.u, info.v, 0.0f};
-        //return hit.n * 0.5 + Vector3.{0.5, 0.5, 0.5};
+        hit, num_visited := intersect(scene, ray);
 
-        emitted := emitted_color_at_hit(scene, hit);
-        desc    := scatter(scene, ray, hit);
-
-        if (!desc.scatter)
+        if hit.type == .INTERSECT
         {
-            return emitted;
-        }
+            emitted := emitted_color_at_hit(scene, hit);
+            desc    := scatter(scene, ray, hit);
 
-        traced := recusively_trace(scene, desc.scattered, depth - 1);
-        color  := traced * desc.attenuation + emitted;
-        return color;
+            color += throughput * emitted;
+
+            if (!desc.scatter)
+            {
+                break;
+            }
+
+            throughput *= desc.attenuation;
+            ray = desc.scattered;
+        }
+        else
+        {
+            color += throughput * scene.environment;
+            break;
+        }
     }
 
-    return scene.environment;
+    return color;
 }
 
-recursively_trace_pixel :: (scene: Scene, x: u32, y: u32, num_samples: s32) -> Vector3
+trace_pixel :: (scene: Scene, x: u32, y: u32, num_samples: s32) -> Vector3
 {
     inv_sqrt_samples := 1.0 / num_samples.(float);
     sampled := Vector3.{0, 0, 0};
@@ -232,7 +240,7 @@ recursively_trace_pixel :: (scene: Scene, x: u32, y: u32, num_samples: s32) -> V
             query.y = y.(float) + offset.y;
 
             ray := generate_ray(scene.camera, scene.screen, query);
-            color := recusively_trace(scene, ray, scene.config.max_depth);
+            color := trace_ray(scene, ray, scene.config.max_depth);
 
             sampled += color;
         }
@@ -253,92 +261,65 @@ recursive_trace_pixel_work :: (group: *Thread_Group, thread: *Thread, user_data:
 {
     scene := thread.data.(*Scene);
     work := user_data.(*TracePixelWork);
-    work.color = recursively_trace_pixel(scene, work.x, work.y, work.num_samples);
+    work.color = trace_pixel(scene, work.x, work.y, work.num_samples);
     return .CONTINUE;
 }
 
-New :: ($T: Type, pool: *Flat_Pool) -> *T
-{
-    memory := get(pool, size_of(T));
-    return cast(*T) memory;
-}
-
-render :: (group: *Thread_Group, scene: *Scene, pool: *Flat_Pool)
+render :: (group: *Thread_Group, scene: *Scene, arena: *Arena, frame_index: u64)
 {
     width  := scene.config.width;
     height := scene.config.height;
 
     num_samples := sqrt(scene.config.multisamples.(float32)).(s32);
 
-    #if 1
+    for y:0..height-1
     {
-        for y:0..height-1
+        for x:0..width-1
         {
-            for x:0..width-1
-            {
-                work := New(TracePixelWork, pool);
-                work.x = x.(u32);
-                work.y = y.(u32);
-                work.num_samples = num_samples;
-                add_work(group, work);
-            }
-        }
-
-        work_remaining := width * height;
-
-        while work_remaining > 0
-        {
-            sleep_milliseconds(10);
-
-            results := get_completed_work(group);
-
-            for results
-            {
-                using work := it.(*TracePixelWork);
-                index := y * width + x;
-
-                scene.rgbn[index].xyz += color;
-                scene.rgbn[index].w += num_samples * num_samples;
-
-                render := scene.rgbn[index].xyz;
-                render /= scene.rgbn[index].w;
-
-                // TODO: HDR mapping
-                Clamp(*render.x, 0, 1);
-                Clamp(*render.y, 0, 1);
-                Clamp(*render.z, 0, 1);
-
-                write_color(*scene.bitmap, x, y, render);
-            }
-
-            work_remaining -= results.count;
-
-            reset_temporary_storage();
+            work := push(arena, TracePixelWork);
+            work.x = x.(u32);
+            work.y = y.(u32);
+            work.num_samples = num_samples;
+            add_work(group, work); // FIXME: Calling this in loop explodes memory
         }
     }
-    else
+
+    work_remaining := width * height;
+
+    while work_remaining > 0
     {
-        for y:0..height-1
+        sleep_milliseconds(10);
+
+        results := get_completed_work(group);
+
+        for results
         {
-            for x:0..width-1
-            {
-                color := recursively_trace_pixel(scene, x.(u32), y.(u32), num_samples);
-                index := y * width + x;
+            using work := it.(*TracePixelWork);
+            index := y * width + x;
 
-                scene.rgbn[index].xyz += color;
-                scene.rgbn[index].w += num_samples * num_samples;
+            prev_color := scene.rgb[index];
+            curr_color := color / (num_samples * num_samples).(float);
 
-                render := scene.rgbn[index].xyz;
-                render /= scene.rgbn[index].w;
+            weight := 1.0 / (frame_index.(float) + 1);
 
-                // TODO: HDR mapping
-                Clamp(*render.x, 0, 1);
-                Clamp(*render.y, 0, 1);
-                Clamp(*render.z, 0, 1);
+            render := lerp(prev_color, curr_color, weight);
 
-                write_color(*scene.bitmap, x, y, render);
-            }
+            scene.rgb[index] = render;
+
+            //render := scene.rgbn[index].xyz;
+            //render /= scene.rgbn[index].w;
+
+            // TODO: HDR mapping
+            Clamp(*render.x, 0, 1);
+            Clamp(*render.y, 0, 1);
+            Clamp(*render.z, 0, 1);
+
+            write_color(*scene.bitmap, x, y, render);
         }
+
+        work_remaining -= results.count;
+
+        reset_temporary_storage();
     }
 }
 
@@ -370,37 +351,30 @@ SceneType :: enum
 
 raytrace_thread :: (thread: *Thread) -> s64
 {
-    bitmap := thread.data.(*Bitmap);
-
-    scene: Scene;
-    init_scene(*scene, bitmap.*, multisamples = 50, max_depth=5);
-    load_scene(*scene, .CORNELL_BOX);
-
+    scene := thread.data.(*Scene);
+    
     group: Thread_Group;
-    init_thread_group(*group, *scene);
+    init_thread_group(*group, scene);
     start(*group);
 
-    pool: Flat_Pool;
-    init(*pool);
-
-    prepare_for_rendering(*scene);
+    frame_index : u64 = 0;
+    screenshot_index := get_first_screenshot_index("captures");
 
     while (!should_quit)
     {
-        render(*group, *scene, *pool);
-        reset(*pool);
+        scoped_temp_alloc(scene.scratch);
+        render(*group, scene, scene.scratch, frame_index);
 
         if want_screenshot
         {
-            save_screenshot(bitmap);
+            save_screenshot(scene.bitmap, *screenshot_index);
             want_screenshot = false;
         }
+
+        frame_index += 1;
     }
 
     shutdown(*group);
-
-    print("raytrace thread done\n");
-
     return 0;
 }
 
@@ -501,8 +475,10 @@ add_sphere :: (scene: *Scene, xform: Matrix4, radius: float, material_id: Materi
     primitive.xform.forward = xform;
     primitive.xform.inverse = inv;
     primitive.id = (scene.spheres.count - 1).(PrimitiveID);
-    primitive.bbox.vmin = center - Vector3.{radius, radius, radius};
-    primitive.bbox.vmax = center + Vector3.{radius, radius, radius};
+    bbox: Box3 = ---;
+    bbox.vmin = center - Vector3.{radius, radius, radius};
+    bbox.vmax = center + Vector3.{radius, radius, radius};
+    array_add(*scene.bboxes, bbox);
     primitive.material_id = material_id;
 }
 
@@ -535,7 +511,8 @@ add_box :: (scene: *Scene, xform: Matrix4, min: Vector3, max: Vector3, material_
     primitive.xform.forward = xform;
     primitive.xform.inverse = inv;
     primitive.id = (scene.boxes.count - 1).(PrimitiveID);
-    primitive.bbox = transform_box(xform, Box3.{min, max});
+    bbox := transform_box(xform, Box3.{min, max});
+    array_add(*scene.bboxes, bbox);
     primitive.material_id = material_id;
 }
 
@@ -578,7 +555,7 @@ add_mesh :: (scene: *Scene, desc: MeshDesc, xform: Matrix4, material_id: Materia
         bbox = concat(bbox, p);
     }
 
-    primitive.bbox = bbox;
+    array_add(*scene.bboxes, bbox);
     primitive.material_id = material_id;
 }
 
@@ -646,37 +623,37 @@ add_diffuse_light :: (scene: *Scene, color: Vector3, bitmap : Bitmap = .{}) -> M
     return id;
 }
 
-init_scene :: (scene: *Scene, bitmap: Bitmap, multisamples: u32 = 16, max_depth: s32 = 5)
+init_scene :: (scene: *Scene, width: s32, height: s32, multisamples: u32 = 16, max_depth: s32 = 5)
 {
     add_lambertian_material(scene, .{0, 0, 0});
-    scene.bitmap = bitmap;
+    bitmap_alloc(*scene.bitmap, width, height, .RGBA8);
 
-    scene.config.width        = bitmap.width.(u32);
-    scene.config.height       = bitmap.height.(u32);
+    scene.config.width        = width.(u32);
+    scene.config.height       = height.(u32);
     scene.config.multisamples = multisamples;
     scene.config.max_depth    = max_depth;
-
-    array_resize(*scene.rgbn, scene.config.width * scene.config.height);
+    scene.scratch             = make_arena();
+    array_resize(*scene.rgb, scene.config.width * scene.config.height);
 }
 
 prepare_for_rendering :: (scene: *Scene)
 {
     calculate_screen_params(scene);
-    build_bounding_volume_hierarchy(scene);
+    build_bvh(scene);
 }
 
-build_bounding_volume_hierarchy :: (scene: *Scene)
+build_bvh :: (scene: *Scene)
 {
     array_resize(*scene.map, scene.primitives.count, initialize=false);
     array_resize(*scene.mapped, scene.primitives.count, initialize=false);
-    array_resize(*scene.nodes, 2 * scene.primitives.count + 1);
+    array_resize(*scene.nodes, 2 * scene.primitives.count - 1);
 
     for *scene.map
     {
         it.* = it_index.(u32);
     }
-    
-    build_bounding_volume_hierarchy(scene.nodes, scene.map, scene.primitives);
+
+    build_bvh_binned_sah(scene.nodes, scene.map, scene.bboxes, scene.scratch);
 
     for scene.map
     {
@@ -684,238 +661,11 @@ build_bounding_volume_hierarchy :: (scene: *Scene)
     }
 }
 
-partition :: (A: []$T, lo: int, hi: int, user: $U, $compare: (T, U) -> bool) -> int
-{
-    i := lo - 1;
-    j := hi + 1;
-
-    while 1
-    {
-        i += 1;
-
-        while compare(A[i], user)
-        {
-            i += 1;
-        }
-
-        j -= 1;
-
-        while !compare(A[j], user)
-        {
-            j -= 1;
-        }
-
-        if i >= j then
-            return j;
-
-        Swap(*A[j], *A[i]);
-    }
-
-    return -1; // compiler warning
-}
-
-build_bounding_volume_hierarchy :: (nodes: []BVHNode, indices: []u32, primitives: []Primitive)
-{
-    assert(nodes.count >= primitives.count * 2 + 1 && indices.count == primitives.count);
-
-    BUCKET_COUNT :: 12;
-    SPLIT_COUNT :: BUCKET_COUNT - 1;
-    
-    HierarchicalBVH :: struct
-    {
-        nodes     : []BVHNode;
-        next_node : u32;
-    }
-    
-    BVHSplitBucket :: struct
-    {
-        count: u32;
-        bbox : Box3;
-    }
-
-    next_children_nodes :: (bvh: *HierarchicalBVH) -> u32
-    {
-        index := bvh.next_node;
-        bvh.next_node += 2;
-        return index;
-    }
-
-    build_bounding_volume_hierarchy_recurse :: (bvh: *HierarchicalBVH, root: u32, lo: s64, hi: s64, id_map: []u32, primitives: []Primitive)
-    {
-        num_primitives := hi - lo + 1;
-
-        if (num_primitives <= 1)
-        {
-            node := *bvh.nodes[root];
-            node.bbox                     = Box3_Empty;
-            node.first_child_or_primitive = lo.(u32);
-            node.num_primitives           = max(0, num_primitives).(u32);
-
-            if (num_primitives >= 1)
-            {
-                node.bbox = primitives[id_map[lo]].bbox;
-            }
-        }
-        else if (num_primitives == 2)
-        {
-            next := next_children_nodes(bvh);
-            build_bounding_volume_hierarchy_recurse(bvh, next + 0, lo, lo, id_map, primitives);
-            build_bounding_volume_hierarchy_recurse(bvh, next + 1, hi, hi, id_map, primitives);
-
-            bvh.nodes[root].bbox = concat(bvh.nodes[next + 0].bbox, bvh.nodes[next + 1].bbox);
-            bvh.nodes[root].first_child_or_primitive = next;
-            bvh.nodes[root].num_primitives = 0;
-        }
-        else
-        {
-            node_box     := Box3_Empty;
-            centroid_box := Box3_Empty;
-
-            for primitive_id: lo..hi
-            {
-                bbox := primitives[id_map[primitive_id]].bbox;
-                centroid := 0.5 * (bbox.vmin + bbox.vmax);
-                centroid_box = concat(centroid_box, centroid);
-                node_box     = concat(node_box, bbox);
-            }
-
-            axis  := max_axis(centroid_box);
-            daxis := centroid_box.vmax.component[axis] - centroid_box.vmin.component[axis];
-
-            if (daxis < EPSILON || half_area(node_box) <= EPSILON)
-            {
-                node := *bvh.nodes[root];
-                node.first_child_or_primitive = lo.(u32);
-                node.num_primitives           = num_primitives.(u32);
-                node.bbox                     = node_box;
-            }
-            else
-            {
-                buckets: [BUCKET_COUNT]BVHSplitBucket;
-
-                for *buckets
-                {
-                    it.count = 0;
-                    it.bbox  = Box3_Empty;
-                }
-                
-                idiv := 1.0 / daxis;
-
-                for primitive_id: lo..hi
-                {
-                    bbox     := primitives[id_map[primitive_id]].bbox;
-                    centriod := 0.5 * (bbox.vmin.component[axis] + bbox.vmax.component[axis]);
-                    bucket   := (BUCKET_COUNT * (centriod - centroid_box.vmin.component[axis]) * idiv).(u32);
-
-                    if bucket >= BUCKET_COUNT then
-                        bucket = BUCKET_COUNT  - 1;
-
-                    buckets[bucket].count += 1;
-                    buckets[bucket].bbox = concat(buckets[bucket].bbox, bbox);
-                }
-
-                costs: [SPLIT_COUNT]float;
-
-                prev_count := 0;
-                prev_box   := Box3_Empty;
-
-                for 0..SPLIT_COUNT-1
-                {
-                    prev_box = concat(prev_box, buckets[it].bbox);
-                    prev_count += buckets[it].count;
-                    costs[it] += prev_count * half_area(prev_box);
-                }
-
-                prev_count = 0;
-                prev_box   = Box3_Empty;
-
-                for #v2 < SPLIT_COUNT..1
-                {
-                    prev_box = concat(prev_box, buckets[it].bbox);
-                    prev_count += buckets[it].count;
-                    costs[it - 1] += prev_count * half_area(prev_box);
-                }
-
-                min_cost := costs[0];
-                min_cost_index := 0;
-
-                for 1..SPLIT_COUNT-1
-                {
-                    if (costs[it] < min_cost)
-                    {
-                        min_cost = costs[it];
-                        min_cost_index = it;
-                    }
-                }
-
-                leaf_cost := num_primitives.(float);
-                min_cost   = 0.5 + min_cost / half_area(node_box);
-
-                if (min_cost < leaf_cost)
-                {
-                    SAHPartition :: struct
-                    {
-                        primitives     : []Primitive;
-                        centroid_box   : Box3;
-                        axis           : s32;
-                        idiv           : float;
-                        min_cost_index : s64;
-                    }
-
-                    part_compare :: (primitive_id: u32, using p: SAHPartition) -> bool
-                    {
-                        bbox := primitives[primitive_id].bbox;
-                        centriod := 0.5 * (bbox.vmin.component[axis] + bbox.vmax.component[axis]);
-                        bucket   := (BUCKET_COUNT * (centriod - centroid_box.vmin.component[axis]) * idiv).(s32);
-                        if bucket >= BUCKET_COUNT then
-                            bucket = BUCKET_COUNT - 1;
-                        return bucket <= min_cost_index;
-                    }
-
-                    sah := SAHPartition.{ primitives, centroid_box, axis, idiv, min_cost_index };
-                    mid := partition(id_map, lo, hi, sah, part_compare);
-
-                    assert(mid >= lo && mid < hi);
-
-                    next := next_children_nodes(bvh);
-
-                    build_bounding_volume_hierarchy_recurse(bvh, next + 0, lo, mid, id_map, primitives);
-                    build_bounding_volume_hierarchy_recurse(bvh, next + 1, mid + 1, hi, id_map, primitives);
-
-                    bvh.nodes[root].bbox = concat(bvh.nodes[next + 0].bbox, bvh.nodes[next + 1].bbox);
-                    bvh.nodes[root].first_child_or_primitive = next;
-                    bvh.nodes[root].num_primitives = 0;
-                }
-                else
-                {
-                    node := *bvh.nodes[root];
-                    node.bbox                     = node_box;
-                    node.first_child_or_primitive = lo.(u32);
-                    node.num_primitives           = num_primitives.(u32);
-                }
-            }
-        }
-    }
-
-    bvh:= HierarchicalBVH.{ nodes, 1 };
-    build_bounding_volume_hierarchy_recurse(*bvh, 0, 0, indices.count - 1, indices, primitives);
-}
-
-max_axis :: (b: Box3) -> s32
-{
-    d := b.vmax - b.vmin;
-    if (d.x > d.y && d.x > d.z)
-        return 0;
-    else if (d.y > d.z)
-        return 1;
-    else
-        return 2;
-}
-
 half_area :: (b: Box3) -> float
 {
-    d := b.vmin - b.vmin;
-    return (d.x * d.y + d.x * d.z + d.y * d.z);
+    d := b.vmax - b.vmin;
+    res := (d.x * d.y + d.x * d.z + d.y * d.z);
+    return res;
 }
 
 calculate_screen_params :: (using scene: *Scene)
@@ -1020,19 +770,502 @@ pad_to_minimus :: (b: Box3, padding: float) -> Box3
     return r;
 }
 
-main :: () {
+// TODO: Multithread
+radix_sort :: (K: []u32, K_temp: []u32, V: []$T, V_temp: []T, n: s64)
+{
+    prefix: [256]u32;
+
+    for 0..3
+    {
+        memset(prefix.data, 0, size_of(type_of(prefix)));
+
+        shift := it * 8;
+        for 0..n-1
+        {
+            bin_index := ((K[it] >> shift) & 0xFF);
+            assert(bin_index < prefix.count);
+            prefix[bin_index] += 1;
+        }
+
+        prev_sum : u32 = 0;
+
+        for 0..prefix.count-1
+        {
+            sum := prefix[it] + prev_sum;
+            prefix[it] = prev_sum;
+            prev_sum = sum;
+        }
+
+        for 0..n-1
+        {
+            bin_index := ((K[it] >> shift) & 0xFF);
+            offset := prefix[bin_index];
+            K_temp[offset] = K[it];
+            V_temp[offset] = V[it];
+            prefix[bin_index] += 1;
+        }
+
+        Swap(*K, *K_temp);
+        Swap(*V, *V_temp);
+    }
+}
+
+triangle_bbox :: (p: Vector3, q: Vector3, r: Vector3) -> Box3
+{
+    bbox := Box3_Empty;
+    bbox = concat(bbox, p);
+    bbox = concat(bbox, q);
+    bbox = concat(bbox, r);
+    return bbox;
+}
+
+// https://fgiesen.wordpress.com/2009/12/13/decoding-morton-codes/
+
+split3 :: (x: u32) -> u32
+{
+    x &= 0x000003ff;
+    x = (x ^ (x << 16)) & 0xFF0000FF;
+    x = (x ^ (x <<  8)) & 0x0300F00F;
+    x = (x ^ (x <<  4)) & 0x030C30C3;
+    x = (x ^ (x <<  2)) & 0x09249249;
+    return x;
+}
+
+encode_morton3 :: (x: u32, y: u32, z: u32) -> u32
+{
+    x_split := split3(x);
+    y_split := split3(y);
+    z_split := split3(z);
+    code    := (z_split << 2) | (y_split << 1) | x_split;
+    return code;
+}
+
+// TODO: multithread
+build_bvh :: (vertices: []Vertex3D, indices: []u32, arena: *Arena) -> []BVHNode
+{
+    scoped_temp_alloc(arena);
+
+    num_primitives := (indices.count / 3);
+
+    c_in := push_array(arena, num_primitives * 2 - 1, BVHNode, initialized=false);
+    primitives := push_array(arena, num_primitives, u32, initialized=false);
+
+    nodes := array_view(c_in, c_in.count - primitives.count, primitives.count);
+
+    bbox := Box3_Empty;
+
+    for 0..num_primitives - 1
+    {
+        index := it * 3;
+        i0 := indices[index + 0];
+        i1 := indices[index + 1];
+        i2 := indices[index + 2];
+
+        tri_bbox := triangle_bbox(vertices[i0].p, vertices[i1].p, vertices[i2].p);
+
+        nodes[it].bbox = tri_bbox;
+        nodes[it].first_child_or_primitive = it.(u32);
+        nodes[it].num_primitives = 1;
+
+        primitives[it] = it.(u32);
+
+        bbox = concat(bbox, tri_bbox);
+    }
+
+    keys := push_array(arena, num_primitives, u32, initialized=false);
+
+    dist := bbox.vmax - bbox.vmin;
+    scale := Vector3.{1024.0 / dist.x, 1024.0 / dist.y, 1024.0 / dist.z};
+
+    for 0..num_primitives-1
+    {
+        node := *nodes[it];
+        centroid := 0.5 * (node.bbox.vmin + node.bbox.vmax);
+        mapped := (centroid - bbox.vmin) * scale;
+
+        assert(mapped.x >= 0.0 && mapped.y >= 0.0 && mapped.z >= 0.0 && mapped.x < 1024.0 && mapped.y < 1024.0 && mapped.z < 1024.0);
+
+        x := mapped.x.(u32);
+        y := mapped.y.(u32);
+        z := mapped.z.(u32);
+
+        keys[it] = encode_morton3(x, y, z);
+    }
+
+    {
+        keys_temp := push_array(arena, num_primitives, u32, initialized=false);
+        primitives_temp := push_array(arena, num_primitives, u32, initialized=false);
+        radix_sort(keys, keys_temp, primitives, primitives_temp, num_primitives);
+    }
+
+  //  // rearrange indices
+  //  src_indices := push_array(arena, indices.count, u32, initialized=false);
+
+  //  memcpy(src_indices.data, indices.data, indices.count * size_of(u32));
+
+  //  for triangles
+  //  {
+  //      dst_index := it_index * 3;
+  //      src_index := it * 3;
+  //      indices[dst_index + 0] = src_indices[src_index + 0];
+  //      indices[dst_index + 1] = src_indices[src_index + 1];
+  //      indices[dst_index + 2] = src_indices[src_index + 2];
+  //  }
+
+    neighbors    := push_array(arena, num_primitives, u32, initialized=false);
+
+    SEARCH_RADIUS :: 14;
+
+    // https://meistdan.github.io/publications/ploc/paper.pdf
+
+    c_out := push_array(arena, c_in.count, BVHNode, initialized=false);
+
+    merged_index := push_array(arena, primitives.count, u32, initialized=false);
+
+    cluster_beg := c_in.count - primitives.count;
+    cluster_end := primitives.count - 1;
+
+    while cluster_end > cluster_beg
+    {
+        // Find nearest neighbors
+        for node_id: cluster_beg..cluster_end
+        {
+            best_id   := node_id;
+            best_dist := FLOAT32_MAX;
+
+            neighbor_beg := max(cluster_beg, node_id - SEARCH_RADIUS);
+            neighbor_end := min(cluster_end, node_id + SEARCH_RADIUS);
+
+            for neighbor_id: neighbor_beg..neighbor_end
+            {
+                if node_id == neighbor_id then continue;
+
+                joined   := concat(c_in[node_id].bbox, c_in[neighbor_id].bbox);
+                distance := half_area(joined);
+                if (distance < best_dist)
+                {
+                    best_dist = distance;
+                    best_id   = neighbor_id;
+                }
+            }
+
+            assert(best_id != node_id);
+
+            neighbors[node_id - cluster_beg] = best_id.(u32);
+        }
+
+        // Prefix sum
+
+        for node_id: cluster_beg..cluster_end
+        {
+            index := node_id - cluster_beg;
+            neighbor_id := neighbors[index];
+            merged_index[index] = (neighbors[neighbor_id] == node_id && node_id < neighbors[node_id]).(u32);
+        }
+
+        last_offset := cluster_end - cluster_beg;
+
+        for 1..last_offset
+        {
+            merged_index[it] += merged_index[it - 1];
+        }
+
+        num_merged   := merged_index[last_offset];
+        num_parent   := last_offset + 1 - num_merged;
+        num_children := num_merged * 2;
+        children_beg := cluster_end + 1 - num_children;
+        parent_beg   := cluster_end + 1 - (num_children + num_merged);
+
+        // Merge
+        for node_id: cluster_beg..cluster_end
+        {
+            neighbor_id := neighbors[node_id - cluster_beg];
+
+            node_off := node_id - cluster_beg;
+            neighbor_off := neighbor_id - cluster_beg;
+
+            if neighbors[neighbor_id] == node_id
+            {
+                if node_id < neighbors[node_id]
+                {
+                    parent      := parent_beg + neighbor_off - merged_index[neighbor_off];
+                    first_child := children_beg + (merged_index[node_off] - 1) * 2;
+
+                    c_out[parent].bbox = concat(c_in[node_id].bbox, c_in[neighbor_id].bbox);
+                    c_out[parent].num_primitives = 0;
+                    c_out[parent].first_child_or_primitive = first_child.(u32);
+
+                    c_out[first_child + 0] = c_in[node_id];
+                    c_out[first_child + 1] = c_in[neighbor_id];
+                }
+            }
+            else
+            {
+                parent := parent_beg + node_off - merged_index[node_off];
+                c_out[parent] = c_in[node_id];
+            }
+        }
+
+        cluster_beg  = parent_beg;
+        cluster_end  = children_beg - 1;
+
+        // TODO: Copy previous loop children nodes over to c_out
+        
+        Swap(*c_in, *c_out);
+    }
+
+    return nodes;
+}
+
+SAHBuilder :: struct
+{
+    nodes     : []BVHNode;
+    next_node : u32;
+}
+
+build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi: s64, indices: []u32, bboxes: []Box3, centriods: []Vector3)
+{
+    assert(hi >= lo);
+
+    node := *builder.nodes[root];
+
+    if (hi == lo)
+    {
+        node.bbox                     = bboxes[indices[lo]];
+        node.first_child_or_primitive = lo.(u32);
+        node.num_primitives           = 1;
+        return;
+    }
+
+    node_bbox     := Box3_Empty;
+    centriod_bbox := Box3_Empty;
+
+    for lo..hi
+    {
+        node_bbox     = concat(node_bbox, bboxes[indices[it]]);
+        centriod_bbox = concat(centriod_bbox, centriods[indices[it]]);
+    }
+
+    split_axis := 0;
+    max_delta  := centriod_bbox.vmax.component[0] - centriod_bbox.vmin.component[0];
+
+    for 1..2
+    {
+        delta := centriod_bbox.vmax.component[it] - centriod_bbox.vmin.component[it];
+        if delta > max_delta
+        {
+            max_delta = delta;
+            split_axis = it;
+        }
+    }
+
+    if max_delta <= EPSILON || half_area(node_bbox) <= EPSILON
+    {
+        node.bbox                     = node_bbox;
+        node.first_child_or_primitive = lo.(u32);
+        node.num_primitives           = (hi - lo + 1).(u32);
+        return;
+    }
+
+    BIN_COUNT   :: 16;
+    SPLIT_COUNT :: BIN_COUNT - 1;
+
+    Bin :: struct
+    {
+        count: s64;
+        bbox : Box3;
+    }
+
+    bins: [BIN_COUNT]Bin;
+
+    for *bins
+    {
+        it.count = 0;
+        it.bbox = Box3_Empty;
+    }
+
+    idelta := 1.0 / max_delta;
+    offset := centriod_bbox.vmin.component[split_axis];
+
+    find_bin_index :: (centriod: Vector3) -> int #expand
+    {
+        bin_index := (BIN_COUNT * (centriod.component[split_axis] - offset) * idelta).(s64);
+        if bin_index >= BIN_COUNT then
+            bin_index = BIN_COUNT - 1;
+        return bin_index;
+    }
+
+    for lo..hi
+    {
+        bin_index := find_bin_index(centriods[indices[it]]);
+        bins[bin_index].count += 1;
+        bins[bin_index].bbox = concat(bins[bin_index].bbox, bboxes[indices[it]]);
+    }
+
+    split_costs: [SPLIT_COUNT]float;
+
+    prev_count := 0;
+    prev_box   := Box3_Empty;
+
+    for 0..SPLIT_COUNT-1
+    {
+        prev_box = concat(prev_box, bins[it].bbox);
+        prev_count += bins[it].count;
+        split_costs[it] += prev_count * half_area(prev_box);
+    }
+
+    prev_count = 0;
+    prev_box   = Box3_Empty;
+
+    for #v2 < 1..SPLIT_COUNT
+    {
+        prev_box = concat(prev_box, bins[it].bbox);
+        prev_count += bins[it].count;
+        split_costs[it - 1] += prev_count * half_area(prev_box);
+    }
+
+    min_split_cost := split_costs[0];
+    min_split_cost_index := 0;
+
+    for 1..SPLIT_COUNT-1
+    {
+        if (split_costs[it] < min_split_cost)
+        {
+            min_split_cost = split_costs[it];
+            min_split_cost_index = it;
+        }
+    }
+
+    split_cost  := 0.5 + min_split_cost / half_area(node_bbox);
+    leaves_cost := (hi - lo + 1).(float);
+
+    if (split_cost > leaves_cost)
+    {
+        node.bbox                     = node_bbox;
+        node.first_child_or_primitive = lo.(u32);
+        node.num_primitives           = (hi - lo + 1).(u32);
+        return;
+    }
+
+    // partition
+    mid := -1;
+
+    {
+        i := lo - 1;
+        j := hi + 1;
+
+        while 1
+        {
+            i += 1;
+
+            while 1
+            {
+                bin_index := find_bin_index(centriods[indices[i]]);
+                if bin_index > min_split_cost_index
+                    break;
+                i += 1;
+            }
+
+            j -= 1;
+
+            while 1
+            {
+                bin_index := find_bin_index(centriods[indices[j]]);
+                if bin_index <= min_split_cost_index
+                    break;
+                j -= 1;
+            }
+
+            if i >= j
+            {
+                mid = j;
+                break;
+            }
+
+            Swap(*indices[j], *indices[i]);
+        }
+    }
+
+    assert(mid >= lo && mid < hi);
+
+    next := builder.next_node;
+    builder.next_node += 2;
+
+    build_bvh_sah_binned_recursive(builder, next + 0, lo, mid, indices, bboxes, centriods);
+    build_bvh_sah_binned_recursive(builder, next + 1, mid + 1, hi, indices, bboxes, centriods);
+
+    node.bbox                     = concat(builder.nodes[next + 0].bbox, builder.nodes[next + 1].bbox);
+    node.first_child_or_primitive = next;
+    node.num_primitives           = 0;
+}
+
+build_bvh_binned_sah :: (nodes: []BVHNode, indices: []u32, bboxes: []Box3, scratch: *Arena)
+{
+    assert(nodes.count == bboxes.count * 2 - 1 && indices.count == bboxes.count);
+
+    scoped_temp_alloc(scratch);
+
+    centriods := push_array(scratch, bboxes.count, Vector3, initialized=false);
+
+    for bboxes
+    {
+        centriods[it_index] = 0.5 * (it.vmin + it.vmax);
+    }
+
+    builder := SAHBuilder.{nodes, 1};
+    build_bvh_sah_binned_recursive(*builder, 0, 0, indices.count - 1, indices, bboxes, centriods);
+}
+
+g_nodes:   [..]BVHNode;
+g_boxes:   [..]Box3;
+g_indices: [..]u32;
+
+add_bbox :: (x: float, y: float, w: float, h: float)
+{
+    vmin := Vector3.{x, y, 0};
+    vmax := Vector3.{x + w, y + h, 0};
+    array_add(*g_boxes, Box3.{vmin, vmax});
+}
+
+build :: ()
+{
+    if g_boxes.count == 0 return;
+
+    array_resize(*g_nodes, g_boxes.count * 2 - 1);
+    array_resize(*g_indices, g_boxes.count);
+
+    for *g_indices
+        it.* = it_index.(u32);
+
+    arena := make_arena();
+
+    build_bvh_binned_sah(g_nodes, g_indices, g_boxes, arena);
+
+    free_arena(arena);
+}
+
+main :: ()
+{
+    add_bbox(1550, 440, 50, 50);
+    add_bbox(50, 40, 150, 50);
+    add_bbox(170, 50, 150, 250);
+    add_bbox(860, 440, 200, 200);
+
+    build();
+
     init();
 
     MSAA :: 8;
 
     wnd := create_window(1920, 1080, "PixL", wanted_msaa = MSAA);
 
-    raytrace_bitmap  :Bitmap;
-
-    bitmap_alloc(*raytrace_bitmap, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, .RGBA8);
+    scene: Scene;
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples = 50, max_depth=5);
+    load_scene(*scene, .CORNELL_BOX);
+    prepare_for_rendering(*scene);
 
     thread: Thread;
-    thread.data = *raytrace_bitmap;
+    thread.data = *scene;
 
     thread_init(*thread, raytrace_thread);
     thread_start(*thread);
@@ -1045,6 +1278,8 @@ main :: () {
 
     while !should_quit
     {
+        memory_visualizer_per_frame_update();
+
         update_window_events();
 
         for get_window_resizes()
@@ -1064,6 +1299,11 @@ main :: () {
                     should_quit = true;
                 }
 
+                if it.key_pressed && it.key_code == #char "H"
+                {
+                    show_raytrace_result = !show_raytrace_result;
+                }
+
                 if it.key_pressed && it.key_code == #char " "
                 {
                     want_screenshot = true;
@@ -1071,8 +1311,7 @@ main :: () {
             }
         }
 
-        texture_load_from_bitmap(*raytrace_map, *raytrace_bitmap);
-
+        texture_load_from_bitmap(*raytrace_map, *scene.bitmap);
         draw_one_frame(wnd, *raytrace_map);
 
         sleep_milliseconds(10);
@@ -1080,18 +1319,70 @@ main :: () {
         reset_temporary_storage();
     }
 
-    print("main thread done\n");
-
     thread_is_done(*thread);
     thread_deinit(*thread);
 }
 
-save_screenshot :: (bitmap: Bitmap)
+save_screenshot :: (bitmap: Bitmap, screenshot_index: *int)
 {
-    screenshot_index += 1;            
-    filepath := tprint("captures/screenshot_%.png", screenshot_index);
+    filepath := tprint("captures/screenshot_%.png", screenshot_index.*);
     print("Saving screenshot: %\n", filepath);
-    bitmap_save(*bitmap, filepath);
+    if (bitmap_save(*bitmap, filepath))
+        screenshot_index.* += 1;
+}
+
+draw_rect :: (center: Vector2, w: Vector2, h: Vector2, color: Vector4)
+{
+    p0 := center - w - h;
+    p1 := center + w - h;
+    p2 := center + w + h;
+    p3 := center - w + h;
+    immediate_quad(p0, p1, p2, p3, color, color, color, color);
+}
+
+draw_box :: (box: Box3, color: Vector4)
+{
+    delta  := 0.5 * (box.vmax.xy - box.vmin.xy);
+
+    {
+        w := Vector2.{1, 0};
+        h := Vector2.{0, delta.y};
+
+        y := 0.5 * (box.vmin.y + box.vmax.y);
+
+        draw_rect(.{box.vmin.x, y}, w, h, color);
+        draw_rect(.{box.vmax.x, y}, w, h, color);
+    }
+
+    {
+        w := Vector2.{delta.x, 0};
+        h := Vector2.{0, 1};
+
+        x := 0.5 * (box.vmin.x + box.vmax.x);
+
+        draw_rect(.{x, box.vmin.y}, w, h, color);
+        draw_rect(.{x, box.vmax.y}, w, h, color);
+    }
+}
+
+draw_bvh :: (root: int)
+{
+    using node := g_nodes[root];
+
+    if num_primitives
+    {
+        for 0..num_primitives-1
+        {
+            index := g_indices[it + first_child_or_primitive];
+            draw_box(g_boxes[index], Vector4.{1, 1, 1, 1});
+        }
+    }
+    else
+    {
+        draw_box(bbox, Vector4.{1, 1, 0, 1});
+        draw_bvh(first_child_or_primitive + 0);
+        draw_bvh(first_child_or_primitive + 1);
+    }
 }
 
 draw_one_frame :: (wnd: Window_Type, map : *Texture)
@@ -1102,8 +1393,7 @@ draw_one_frame :: (wnd: Window_Type, map : *Texture)
 
     set_shader_for_images(map);
 
-    time := seconds_since_init();
-
+    if (show_raytrace_result)
     {
         map_ratio := 0.8;
 
@@ -1129,39 +1419,50 @@ draw_one_frame :: (wnd: Window_Type, map : *Texture)
         immediate_quad(p0, p1, p2, p3, white, white, white, white);
     }
 
+    set_shader_for_color();
+
+    draw_bvh(0);
+
     swap_buffers(wnd);
 }
 
+show_raytrace_result := true;
 should_quit := false;
-screenshot_index : s64;
 
-find_next_screenshot_index :: (info: *File_Visit_Info, user_data: *void) {
+find_next_screenshot_index :: (info: *File_Visit_Info, user_data: *void)
+{
+    screenshot_index := user_data.(*int);
     prefix := "screenshot_";
 
-    if (starts_with(info.short_name, prefix)) {
+    if (starts_with(info.short_name, prefix))
+    {
         postfix := slice(info.short_name, prefix.count, info.short_name.count - prefix.count);
 
         postfix_number, success, _ := to_integer(postfix);
-        if success && postfix_number > screenshot_index then
-            screenshot_index = postfix_number;
+        if success && postfix_number > screenshot_index.* then
+            screenshot_index.* = postfix_number;
     }
 }
 
-init :: () {
-    #if OS == .WINDOWS {
+get_first_screenshot_index :: (path: string) -> int
+{
+    screenshot_index := 0;
+    make_directory_if_it_does_not_exist(path);
+    visit_files(path, false, (*screenshot_index).(*void), find_next_screenshot_index);
+    return screenshot_index;
+}
+
+init :: ()
+{
+    #if OS == .WINDOWS
+    {
         Windows :: #import "Windows";
         Windows.SetProcessDPIAware();
         Windows.timeBeginPeriod(1);
     }
-
-    make_directory_if_it_does_not_exist("captures");
-
-    visit_files("captures", false, null, find_next_screenshot_index);
 }
 
-#load "raddbg_markup.jai";
-
-#import "Basic";
+#import "Basic"()(MEMORY_DEBUGGER=true);
 #import "File";
 #import "File_Utilities";
 #import "Simp";
@@ -1172,4 +1473,6 @@ init :: () {
 #import "Thread";
 #import "System";
 #import "Srgb";
-#import "Flat_Pool";
+
+#import "Arena";
+#import "Raddbg";

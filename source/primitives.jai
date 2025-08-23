@@ -315,16 +315,12 @@ intersect_mesh :: (mesh: MeshDesc, ray: Ray) -> bool, IntersectInfo
     return hit, info;
 }
 
-hits :: (ray: Ray, box: Box3) -> bool
+hits :: (origin: Vector3, inv_dir: Vector3, box: Box3, t0: float, t1: float) -> bool
 {
-    t0 := ray.tmin;
-    t1 := ray.tmax;
-
     for 0..2
     {
-        inv_dir := 1 / ray.direction.component[it];
-        tmin := (box.vmin.component[it] - ray.origin.component[it]) * inv_dir;
-        tmax := (box.vmax.component[it] - ray.origin.component[it]) * inv_dir;
+        tmin := (box.vmin.component[it] - origin.component[it]) * inv_dir.component[it];
+        tmax := (box.vmax.component[it] - origin.component[it]) * inv_dir.component[it];
 
         if tmin > tmax
             Swap(*tmin, *tmax);
@@ -390,10 +386,13 @@ encode_spherical_uv :: inline (n: Vector3) -> Vector2
 
 set_face_normal :: inline (ray : Ray, outward_normal : Vector3, info: *IntersectInfo)
 {
-    if (dot(ray.direction, outward_normal) < 0) {
+    if (dot(ray.direction, outward_normal) < 0)
+    {
         info.flags |= .FRONT_FACE;
         info.n = outward_normal;
-    } else {
+    }
+    else
+    {
         info.n = outward_normal;
     }
 }

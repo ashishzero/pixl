@@ -1,5 +1,6 @@
 
-build :: () {
+build :: ()
+{
     output_path := "bin";
 
     make_directory_if_it_does_not_exist(output_path);
@@ -23,10 +24,13 @@ build :: () {
     set_build_options_dc(.{do_output=false});
 }
 
-message_loop :: () {
-    while true {
+message_loop :: ()
+{
+    while true
+    {
         message := compiler_wait_for_message();
-        if message.kind == {
+        if message.kind ==
+        {
           case .COMPLETE;
               break;
         }

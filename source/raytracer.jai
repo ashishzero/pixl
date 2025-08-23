@@ -20,7 +20,6 @@ Primitive :: struct
     type        : PrimitiveType;
     xform       : Transform;
     id          : PrimitiveID;
-    bbox        : Box3;
     material_id : MaterialID;
 }
 
@@ -87,6 +86,7 @@ Scene :: struct
     environment := Vector3.{0.7, 0.8, 1.0};
 
     primitives : [..]Primitive;
+    bboxes     : [..]Box3;
     spheres    : [..]SphereDesc;
     disks      : [..]DiskDesc;
     boxes      : [..]BoxDesc;
@@ -97,7 +97,9 @@ Scene :: struct
     map        : [..]u32;
     mapped     : [..]Primitive;
 
-    rgbn       : [..]Vector4;
+    rgb        : [..]Vector3;
+
+    scratch    : *Arena;
 }
 
 HitType :: enum u32
@@ -115,13 +117,13 @@ HitInfo :: struct
 
 #scope_file
 
-intersect_primitive :: (scene: Scene, primitive: Primitive, r: Ray) -> HitInfo
+intersect_primitive :: (scene: Scene, primitive: Primitive, origin: Vector3, direction: Vector3, tmin: float, tmax: float) -> HitInfo
 {
     ray: Ray;
-    ray.tmin      = r.tmin;
-    ray.tmax      = r.tmax;
-    ray.origin    = transform_point(primitive.xform.inverse, r.origin);
-    ray.direction = transform_vector(primitive.xform.inverse, r.direction);
+    ray.tmin      = tmin;
+    ray.tmax      = tmax;
+    ray.origin    = transform_point(primitive.xform.inverse, origin);
+    ray.direction = transform_vector(primitive.xform.inverse, direction);
 
     info: HitInfo = .{};
 
@@ -155,52 +157,63 @@ intersect_primitive :: (scene: Scene, primitive: Primitive, r: Ray) -> HitInfo
 
 #scope_export
 
-intersect_bvh :: (scene: Scene, root: s64, ray: Ray) -> HitInfo
+// TODO: Remove scene from here
+intersect_bvh :: (nodes: []BVHNode, primitives: []Primitive, ray: Ray, scene: Scene) -> HitInfo, int
 {
-    node := scene.nodes[root];
+    nodes_stack : [64]u32 = ---;
 
-    r    := ray;
+    top : u32 = 1;
+    nodes_stack[0] = 0;
+
+    visited := 0;
+
     info := HitInfo.{ type = .MISSED };
 
-    if (!hits(ray, node.bbox))
-        return info;
+    origin  := ray.origin;
+    dir     := ray.direction;
+    inv_dir := Vector3.{1.0 / dir.x, 1.0 / dir.y, 1.0 / dir.z};
+    tmin    := ray.tmin;
+    tmax    := ray.tmax;
 
-    if (node.num_primitives == 0)
+    while top > 0
     {
-        for 0..1
+        top -= 1;
+        node := nodes[nodes_stack[top]];
+
+        visited += 1;
+
+        if (hits(origin, inv_dir, node.bbox, tmin, tmax))
         {
-            current := intersect_bvh(scene, node.first_child_or_primitive + it, r);
-            if (current.type == .INTERSECT)
+            if (node.num_primitives)
             {
-                r.tmax = current.t;
-                info   = current;
-            }
-        }
-    }
-    else
-    {
-        for 0..node.num_primitives-1
-        {
-            primitive := scene.mapped[node.first_child_or_primitive + it];
-            if (hits(r, primitive.bbox))
-            {
-                current := intersect_primitive(scene, primitive, r);
-                if (current.type == .INTERSECT)
+                for 0..node.num_primitives-1
                 {
-                    r.tmax = current.t;
-                    info   = current;
+                    primitive := primitives[node.first_child_or_primitive + it];
+                    current := intersect_primitive(scene, primitive, origin, dir, tmin, tmax);
+                    if (current.type == .INTERSECT)
+                    {
+                        tmax = current.t;
+                        info = current;
+                    }
                 }
             }
+            else
+            {
+                assert(top + 2 < nodes_stack.count);
+                nodes_stack[top + 0] = node.first_child_or_primitive + 1;
+                nodes_stack[top + 1] = node.first_child_or_primitive + 0;
+                top += 2;
+            }
         }
     }
 
-    return info;
+    return info, visited;
 }
 
-intersect :: (scene: Scene, ray: Ray) -> HitInfo
+intersect :: (scene: Scene, ray: Ray) -> HitInfo, int
 {
-    hit := intersect_bvh(scene, 0, ray);
-    return hit;
+    hit, num_visited := intersect_bvh(scene.nodes, scene.mapped, ray, scene);
+    return hit, num_visited;
 }
 
 #import "Random";

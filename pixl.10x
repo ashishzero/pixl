@@ -31,8 +31,8 @@
 		<ConfigProperties>
 			<ConfigAndPlatform>
 				<Name>Debug:x64</Name>
-				<BuildCommand>jai -quiet -natvis -x64 first.jai</BuildCommand>
-				<RebuildCommand>jai -quiet -natvis -x64 first.jai</RebuildCommand>
+				<BuildCommand>jai -quiet -natvis -x64 first.jai +Codex</BuildCommand>
+				<RebuildCommand>jai -quiet -natvis -x64 first.jai +Codex</RebuildCommand>
 				<BuildFileCommand></BuildFileCommand>
 				<CleanCommand></CleanCommand>
 				<BuildWorkingDirectory></BuildWorkingDirectory>
