@@ -100,7 +100,7 @@ Scene :: struct
     map        : [..]u32;
     mapped     : [..]Primitive;
 
-    rgb        : [..]Vector3;
+    rgbx       : [..]Vector4;
 
     scratch    : *Arena;
 }

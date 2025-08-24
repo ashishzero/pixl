@@ -267,6 +267,77 @@ recursive_trace_pixel_work :: (group: *Thread_Group, thread: *Thread, user_data:
     return .CONTINUE;
 }
 
+LaneDescription :: struct
+{
+    index    :  int;
+    count    :  int;
+    wavefront: *Wavefront;
+}
+
+Wavefront :: struct
+{
+    barrier    : SyncBarrier;
+    num_threads: int;
+    threads    : [MAX_THREAD_COUNT]Thread;
+}
+
+#add_context lane: LaneDescription;
+
+RAY_TRACE_BLOCK_SIZE : s32 : 16;
+MAX_THREAD_COUNT :: 64;
+
+render :: (scene: *Scene, weight: float, num_samples: s32)
+{
+    width  := scene.config.width;
+    height := scene.config.height;
+
+    num_block_w := (width + RAY_TRACE_BLOCK_SIZE - 1) / RAY_TRACE_BLOCK_SIZE;
+    num_block_h := (height + RAY_TRACE_BLOCK_SIZE - 1) / RAY_TRACE_BLOCK_SIZE;
+
+    block0, block1 := lane_divide(num_block_w * num_block_h);
+
+    for block0..block1-1
+    {
+        block_y := it / num_block_w;
+        block_x := it % num_block_w;
+
+        y0 := block_y * RAY_TRACE_BLOCK_SIZE;
+        y1 := y0 + RAY_TRACE_BLOCK_SIZE - 1;
+
+        x0 := block_x * RAY_TRACE_BLOCK_SIZE;
+        x1 := x0 + RAY_TRACE_BLOCK_SIZE - 1;
+
+        if x1 >= width  then x1 = width - 1;
+        if y1 >= height then y1 = height - 1;
+
+        for y:y0..y1
+        {
+            for x:x0..x1
+            {
+                color := trace_pixel(scene, x.(s32), y.(s32), num_samples);
+
+                index := y * width + x;
+
+                prev_color := scene.rgbx[index].xyz;
+                curr_color := color / (num_samples * num_samples).(float);
+
+                render := lerp(prev_color, curr_color, weight);
+
+                scene.rgbx[index].xyz = render;
+
+                // TODO: HDR mapping
+                Clamp(*render.x, 0, 1);
+                Clamp(*render.y, 0, 1);
+                Clamp(*render.z, 0, 1);
+
+                write_color(*scene.bitmap, x, y, render);
+            }
+        }
+    }
+
+    lane_sync();
+}
+
 render :: (group: *Thread_Group, scene: *Scene, arena: *Arena, frame_index: u64)
 {
     width  := scene.config.width;
@@ -299,14 +370,14 @@ render :: (group: *Thread_Group, scene: *Scene, arena: *Arena, frame_index: u64)
             using work := it.(*TracePixelWork);
             index := y * width + x;
 
-            prev_color := scene.rgb[index];
+            prev_color := scene.rgbx[index].xyz;
             curr_color := color / (num_samples * num_samples).(float);
 
             weight := 1.0 / (frame_index.(float) + 1);
 
             render := lerp(prev_color, curr_color, weight);
 
-            scene.rgb[index] = render;
+            scene.rgbx[index].xyz = render;
 
             //render := scene.rgbn[index].xyz;
             //render /= scene.rgbn[index].w;
@@ -351,6 +422,43 @@ SceneType :: enum
     RANDOM_SHAPES;
 }
 
+wavefront_raytrace_entry :: (thread: *Thread) -> s64
+{
+    scene := thread.data.(*Scene);
+
+    width  := scene.config.width;
+    height := scene.config.height;
+
+    num_samples := sqrt(scene.config.multisamples.(float32)).(s32);
+
+    screenshot_index := 0;
+    frame_index := 0;
+
+    if context.lane.index == 0
+    {
+        screenshot_index = get_first_screenshot_index("captures");
+    }
+
+    while (!should_quit)
+    {
+        weight := 1.0 / (frame_index.(float) + 1);
+
+        render(scene, weight, num_samples);
+
+        if want_screenshot && context.lane.index == 0
+        {
+            save_screenshot(scene.bitmap, *screenshot_index);
+            want_screenshot = false;
+        }
+
+        lane_sync();
+
+        frame_index += 1;
+    }
+
+    return 0;
+}
+
 raytrace_thread :: (thread: *Thread) -> s64
 {
     scene := thread.data.(*Scene);
@@ -378,6 +486,56 @@ raytrace_thread :: (thread: *Thread) -> s64
 
     shutdown(*group);
     return 0;
+}
+
+init_wavefront :: (wavefront: *Wavefront, scene: *Scene, max_threads: int = 0)
+{
+    num_cpus := get_number_of_processors();
+
+    assert(num_cpus >= 1);
+    if num_cpus > 200  num_cpus = 200;
+
+    #if (OS == .WINDOWS) || (OS == .LINUX)
+    {
+        num_cpus /= 2;
+    }
+
+    wavefront.num_threads = max(num_cpus - 1, 2);
+
+    if max_threads > 0 && wavefront.num_threads > max_threads
+    {
+        wavefront.num_threads = max_threads;
+    }
+
+    print("wavefront thread count: %\n", wavefront.num_threads);
+
+    init_sync_barrier(*wavefront.barrier, wavefront.num_threads);
+
+    for 0..wavefront.num_threads-1
+    {
+        thread := *wavefront.threads[it];
+        thread_init(thread, wavefront_raytrace_entry);
+        thread.data = scene;
+
+        thread.starting_context.lane.index = it;
+        thread.starting_context.lane.count = wavefront.num_threads;
+        thread.starting_context.lane.wavefront = wavefront;
+
+        seed: Some_Big_Time_Value;
+        apollo := current_time_consensus();
+        seed.high = apollo.high;
+        seed.low  = apollo.low;
+        seed.low += it.(u64);
+        random_seed(*thread.starting_context.random_state, seed);
+    }
+}
+
+start :: (wavefront: Wavefront)
+{
+    for 0..wavefront.num_threads-1
+    {
+        thread_start(*wavefront.threads[it]);
+    }
 }
 
 init_thread_group :: (group: *Thread_Group, scene: *Scene)
@@ -443,8 +601,8 @@ load_scene :: (using scene: *Scene, type: SceneType)
             camera.fov           = 40.0 / 360.0;
             camera.position      = .{278, 278, -800};
 
-            camera.lens_focal_length = 1200;
-            camera.lens_radius = 10.0;
+            //camera.lens_focal_length = 1200;
+            //camera.lens_radius = 10.0;
 
             environment          = .{0, 0, 0};
 
@@ -655,7 +813,7 @@ init_scene :: (scene: *Scene, width: s32, height: s32, multisamples: u32 = 16, m
     scene.config.multisamples = multisamples;
     scene.config.max_depth    = max_depth;
     scene.scratch             = make_arena();
-    array_resize(*scene.rgb, scene.config.width * scene.config.height);
+    array_resize(*scene.rgbx, scene.config.width * scene.config.height);
 }
 
 prepare_for_rendering :: (scene: *Scene)
@@ -1175,15 +1333,20 @@ main :: ()
     wnd := create_window(1920, 1080, "PixL", wanted_msaa = MSAA);
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples = 50, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples = 128, max_depth=5);
     load_scene(*scene, .CORNELL_BOX);
     prepare_for_rendering(*scene);
 
-    thread: Thread;
-    thread.data = *scene;
+    wavefront: Wavefront;
 
-    thread_init(*thread, raytrace_thread);
-    thread_start(*thread);
+    init_wavefront(*wavefront, *scene);
+    start(*wavefront);
+
+  //  thread: Thread;
+  //  thread.data = *scene;
+
+  //  thread_init(*thread, raytrace_thread);
+  //  thread_start(*thread);
 
     prepare_window(wnd, wanted_msaa = MSAA);
 
@@ -1248,8 +1411,8 @@ main :: ()
         reset_temporary_storage();
     }
 
-    thread_is_done(*thread);
-    thread_deinit(*thread);
+    //thread_is_done(*thread);
+    //thread_deinit(*thread);
 }
 
 save_screenshot :: (bitmap: Bitmap, screenshot_index: *int)
@@ -1445,6 +1608,18 @@ init :: ()
     }
 }
 
+lane_divide :: (count: int) -> int, int
+{
+    beg := (context.lane.index * count) / context.lane.count;
+    end := ((context.lane.index + 1) * count) / context.lane.count;
+    return beg, end;
+}
+
+lane_sync :: ()
+{
+    wait_sync_barrier(*context.lane.wavefront.barrier);
+}
+
 #import "Basic"()(MEMORY_DEBUGGER=true);
 #import "File";
 #import "File_Utilities";
@@ -1459,3 +1634,43 @@ init :: ()
 
 #import "Arena";
 #import "Raddbg";
+
+Windows :: #import "Windows";
+
+ULONG_PTR :: u64; // x64 only
+LONG :: s32;
+
+SYNCHRONIZATION_BARRIER  :: struct
+{
+    Reserved1: Windows.DWORD;
+    Reserved2: Windows.DWORD;
+    Reserved3: [2]ULONG_PTR;
+    Reserved4: Windows.DWORD;
+    Reserved5: Windows.DWORD;
+}
+
+SyncBarrier :: struct
+{
+    platform_specific: SYNCHRONIZATION_BARRIER;
+}
+
+kernel32 :: #library,system "kernel32";
+
+InitializeSynchronizationBarrier :: (lpBarrier: *SYNCHRONIZATION_BARRIER, lTotalThreads: LONG, lSpinCount: LONG) -> Windows.BOOL #foreign kernel32;
+DeleteSynchronizationBarrier :: (lpBarrier: *SYNCHRONIZATION_BARRIER) -> Windows.BOOL #foreign kernel32;
+EnterSynchronizationBarrier :: (lpBarrier: *SYNCHRONIZATION_BARRIER, dwFlags: Windows.DWORD) -> Windows.BOOL #foreign kernel32;
+
+init_sync_barrier :: (barrier: *SyncBarrier, num_threads: int)
+{
+    InitializeSynchronizationBarrier(*barrier.platform_specific, xx num_threads, -1);
+}
+
+deinit_sync_barrier :: (barrier: *SyncBarrier)
+{
+    DeleteSynchronizationBarrier(*barrier.platform_specific);
+}
+
+wait_sync_barrier :: (barrier: *SyncBarrier)
+{
+    EnterSynchronizationBarrier(*barrier.platform_specific, 0);
+}
