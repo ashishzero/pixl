@@ -52,11 +52,23 @@ BVHNode :: struct
 
 Camera :: struct
 {
-    position       : Vector3 = .{0, 0, 0};
-    target         : Vector3 = .{0, 0, -1};
-    fov            : float   = 0.17;
-    focus_distance : float   = 10.0;
-    defocus_angle  : float   = 0.0;
+    position           : Vector3;
+    orientation        : Quaternion;
+    fov                := 0.17;
+    z_near             := 0.001;
+    z_far              := 1000.0;
+    lens_focal_length  := 10.0;
+    lens_radius        := 0.0;
+
+    xform              : CameraTransform;
+}
+
+CameraTransform :: struct
+{
+    view           : Matrix4;
+    inv_view       : Matrix4;
+    projection     : Matrix4;
+    inv_projection : Matrix4;
 }
 
 RenderConfig :: struct
@@ -67,18 +79,9 @@ RenderConfig :: struct
     max_depth    : s32 = 5;
 }
 
-ScreenParams :: struct
-{
-    center       : Vector3;
-    du           : Vector3;
-    dv           : Vector3;
-    defocus_disk : [2]Vector3;
-}
-
 Scene :: struct
 {
     camera: Camera;
-    screen: ScreenParams;
     config: RenderConfig;
     bitmap: Bitmap;
 

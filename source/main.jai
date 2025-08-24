@@ -224,24 +224,26 @@ trace_ray :: (scene: Scene, first_ray: Ray, depth: s32) -> Vector3
     return color;
 }
 
-trace_pixel :: (scene: Scene, x: u32, y: u32, num_samples: s32) -> Vector3
+trace_pixel :: (scene: Scene, x: s32, y: s32, num_samples: s32) -> Vector3
 {
     inv_sqrt_samples := 1.0 / num_samples.(float);
     sampled := Vector3.{0, 0, 0};
+
+    width  := scene.config.width;
+    height := scene.config.height;
+
+    scale  := Vector2.{ 2.0 / (width - 1).(float), 2.0 / (height - 1).(float) };
+    shift  := Vector2.{ -1.0, -1.0 };
 
     for n_y:0..num_samples-1
     {
         for n_x:0..num_samples-1
         {
             offset := sample_stratified_square(n_x.(float), n_y.(float), inv_sqrt_samples);
-
-            query: Vector2;
-            query.x = x.(float) + offset.x;
-            query.y = y.(float) + offset.y;
-
-            ray := generate_ray(scene.camera, scene.screen, query);
-            color := trace_ray(scene, ray, scene.config.max_depth);
-
+            sample := Vector2.{ x.(float), y.(float) } + offset;
+            query  := sample * scale + shift;
+            ray    := generate_ray(query, scene.camera.xform, scene.camera.lens_focal_length, scene.camera.lens_radius);
+            color  := trace_ray(scene, ray, scene.config.max_depth);
             sampled += color;
         }
     }
@@ -251,10 +253,10 @@ trace_pixel :: (scene: Scene, x: u32, y: u32, num_samples: s32) -> Vector3
 
 TracePixelWork :: struct
 {
-    x           :  u32;
-    y           :  u32;
+    x           : s32;
+    y           : s32;
     num_samples : s32;
-    color       :  Vector3;
+    color       : Vector3;
 }
 
 recursive_trace_pixel_work :: (group: *Thread_Group, thread: *Thread, user_data: *void) -> Thread_Continue_Status
@@ -277,8 +279,8 @@ render :: (group: *Thread_Group, scene: *Scene, arena: *Arena, frame_index: u64)
         for x:0..width-1
         {
             work := push(arena, TracePixelWork);
-            work.x = x.(u32);
-            work.y = y.(u32);
+            work.x = x.(s32);
+            work.y = y.(s32);
             work.num_samples = num_samples;
             add_work(group, work); // FIXME: Calling this in loop explodes memory
         }
@@ -419,8 +421,6 @@ load_scene :: (using scene: *Scene, type: SceneType)
         case .BASIC_LIGHT;
             camera.fov           = 40.0 / 360.0;
             camera.position      = .{0, 0, -30};
-            camera.target        = .{0, 0, 0};
-            camera.defocus_angle = 0;
 
             theta1 := -18.0 / 360.0 * 2 * PI;
             theta2 := 15.0 / 360.0 * 2 * PI;
@@ -437,13 +437,11 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
             //add_translated_box(scene, xform1, .{-10, -5, -10}, .{5, 5, 25}, red);
 
-            add_sphere(scene, Vector3.{0, 0, 0}, 5, red);
+            add_sphere(scene, Vector3.{15, 15, 75}, 5, red);
 
         case .CORNELL_BOX;
             camera.fov           = 40.0 / 360.0;
             camera.position      = .{278, 278, -800};
-            camera.target        = .{278, 278, 0};
-            camera.defocus_angle = 0;
 
             environment          = .{0, 0, 0};
 
@@ -452,15 +450,15 @@ load_scene :: (using scene: *Scene, type: SceneType)
             green := add_lambertian_material(scene, .{0.12, 0.45, 0.15});
             light := add_diffuse_light(scene, .{15, 15, 15});
 
-            add_box(scene, Matrix4_Identity, .{555, 0, 0}, .{555.01, 555, 555}, green);
-            add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{0.01, 555, 555}, red);
-            add_box(scene, Matrix4_Identity, .{213, 554, 227}, .{343, 554.01, 332}, light);
-            add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{555, 0.01, 555}, white);
-            add_box(scene, Matrix4_Identity, .{0, 555, 0}, .{555, 555.01, 555}, white);
-            add_box(scene, Matrix4_Identity, .{0, 0, 555}, .{555, 555, 555.01}, white);
+            add_box(scene, Matrix4_Identity, .{213, 554, 227}, .{343, 554.01, 332}, light); // top
+            add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{0.01, 555, 555}, green); // left
+            add_box(scene, Matrix4_Identity, .{555, 0, 0}, .{555.01, 555, 555}, red); // right
+            add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{555, 0.01, 555}, white); // bottom
+            add_box(scene, Matrix4_Identity, .{0, 0, 555}, .{555, 555, 555.01}, white); // back
+            add_box(scene, Matrix4_Identity, .{0, 555, 0}, .{555, 555.01, 555}, white); // top
 
-            theta1 := -18.0 / 360.0 * 2 * PI;
-            theta2 := 15.0 / 360.0 * 2 * PI;
+            theta1 := 18.0 / 360.0 * 2 * PI;
+            theta2 := -15.0 / 360.0 * 2 * PI;
 
             rot1, rot2: Quaternion;
 
@@ -470,8 +468,8 @@ load_scene :: (using scene: *Scene, type: SceneType)
             xform1 := rotation_matrix(Matrix4, rot1);
             xform2 := rotation_matrix(Matrix4, rot2);
 
-            add_translated_box(scene, xform1, .{130, 0, 65}, .{295, 165, 230}, white);
-            add_translated_box(scene, xform2, .{265, 0, 295}, .{430, 330, 460}, white);
+            add_translated_box(scene, xform1, .{260, 0,  65}, .{425, 165, 225}, white);
+            add_translated_box(scene, xform2, .{130, 0, 295}, .{290, 330, 455}, white);
 
         case .CORNELL_CAR;
 
@@ -659,7 +657,9 @@ init_scene :: (scene: *Scene, width: s32, height: s32, multisamples: u32 = 16, m
 
 prepare_for_rendering :: (scene: *Scene)
 {
-    calculate_screen_params(scene);
+    aspect_ratio := scene.config.width.(float) / scene.config.height.(float);
+    calculate_camera_transform(*scene.camera, aspect_ratio);
+    //calculate_screen_params(scene);
     build_bvh(scene);
 }
 
@@ -689,76 +689,144 @@ half_area :: (b: Box3) -> float
     return res;
 }
 
-calculate_screen_params :: (using scene: *Scene)
+perspective_projection :: (fov: float, aspect_ratio: float, z_near: float, z_far: float) -> Matrix4
 {
-    width  := scene.config.width.(float);
-    height := scene.config.height.(float);
+    result := Matrix4_Identity;
 
-    aspect_ratio := width / height;
+    tan_theta := tan(fov * PI);
+    cot_theta := 1 / tan_theta;
 
-    h := tan(camera.fov * PI);
+    range := 1 / (z_far - z_near);
 
-    vp_h := 2 * h * camera.focus_distance;
-    vp_w := vp_h * aspect_ratio;
+    result._11 = cot_theta / aspect_ratio;
+    result._22 = cot_theta;
+    result._33 = z_far * range;
+    result._43 = 1;
+    result._34 = -z_far * z_near * range;
+    result._44 = 0;
 
-    world_up := Vector3.{0, 1, 0};
-
-    w := normalize(camera.target - camera.position);
-    u := normalize(cross(world_up, w));
-    v := cross(w, u);
-
-    vp_u := vp_w * u;
-    vp_v := vp_h * v;
-
-    du := vp_u / width;
-    dv := vp_v / height;
-
-    vp_tl := camera.position + w * camera.focus_distance - 0.5 * (vp_u + vp_v);
-    pixel_00 := vp_tl + 0.5 * (du + dv);
-
-    defocus_radius := camera.focus_distance * tan(camera.defocus_angle * PI);
-
-    defocus_disk_u := defocus_radius * u;
-    defocus_disk_v := defocus_radius * v;
-
-    params := *scene.screen;
-
-    params.center = pixel_00;
-    params.du = du;
-    params.dv = dv;
-    params.defocus_disk[0] = defocus_disk_u;
-    params.defocus_disk[1] = defocus_disk_v;
+    return result;
 }
 
-generate_ray :: (camera: Camera, params: ScreenParams, query: Vector2) -> Ray
+inverse_matrix4 :: (mat: Matrix4) -> Matrix4
 {
-    pixel := params.center + (query.y * params.dv) + (query.x * params.du);
-    origin := camera.position;
+    result : Matrix4 = ---;
 
-    if (camera.defocus_angle > 0)
+    result.floats[0] = mat.floats[5] * mat.floats[10] * mat.floats[15] - mat.floats[5] * mat.floats[11] * mat.floats[14] -
+        mat.floats[9] * mat.floats[6] * mat.floats[15] + mat.floats[9] * mat.floats[7] * mat.floats[14] + mat.floats[13] * mat.floats[6] * mat.floats[11] -
+        mat.floats[13] * mat.floats[7] * mat.floats[10];
+
+    result.floats[4] = -mat.floats[4] * mat.floats[10] * mat.floats[15] + mat.floats[4] * mat.floats[11] * mat.floats[14] +
+        mat.floats[8] * mat.floats[6] * mat.floats[15] - mat.floats[8] * mat.floats[7] * mat.floats[14] - mat.floats[12] * mat.floats[6] * mat.floats[11] +
+        mat.floats[12] * mat.floats[7] * mat.floats[10];
+
+    result.floats[8] = mat.floats[4] * mat.floats[9] * mat.floats[15] - mat.floats[4] * mat.floats[11] * mat.floats[13] - mat.floats[8] * mat.floats[5] * mat.floats[15] +
+        mat.floats[8] * mat.floats[7] * mat.floats[13] + mat.floats[12] * mat.floats[5] * mat.floats[11] - mat.floats[12] * mat.floats[7] * mat.floats[9];
+
+    result.floats[12] = -mat.floats[4] * mat.floats[9] * mat.floats[14] + mat.floats[4] * mat.floats[10] * mat.floats[13] +
+        mat.floats[8] * mat.floats[5] * mat.floats[14] - mat.floats[8] * mat.floats[6] * mat.floats[13] -
+        mat.floats[12] * mat.floats[5] * mat.floats[10] + mat.floats[12] * mat.floats[6] * mat.floats[9];
+
+    result.floats[1] = -mat.floats[1] * mat.floats[10] * mat.floats[15] + mat.floats[1] * mat.floats[11] * mat.floats[14] +
+        mat.floats[9] * mat.floats[2] * mat.floats[15] - mat.floats[9] * mat.floats[3] * mat.floats[14] - mat.floats[13] * mat.floats[2] * mat.floats[11] +
+        mat.floats[13] * mat.floats[3] * mat.floats[10];
+
+    result.floats[5] = mat.floats[0] * mat.floats[10] * mat.floats[15] - mat.floats[0] * mat.floats[11] * mat.floats[14] -
+        mat.floats[8] * mat.floats[2] * mat.floats[15] + mat.floats[8] * mat.floats[3] * mat.floats[14] + mat.floats[12] * mat.floats[2] * mat.floats[11] -
+        mat.floats[12] * mat.floats[3] * mat.floats[10];
+
+    result.floats[9] = -mat.floats[0] * mat.floats[9] * mat.floats[15] + mat.floats[0] * mat.floats[11] * mat.floats[13] +
+        mat.floats[8] * mat.floats[1] * mat.floats[15] - mat.floats[8] * mat.floats[3] * mat.floats[13] - mat.floats[12] * mat.floats[1] * mat.floats[11] +
+        mat.floats[12] * mat.floats[3] * mat.floats[9];
+
+    result.floats[13] = mat.floats[0] * mat.floats[9] * mat.floats[14] - mat.floats[0] * mat.floats[10] * mat.floats[13] -
+        mat.floats[8] * mat.floats[1] * mat.floats[14] + mat.floats[8] * mat.floats[2] * mat.floats[13] +
+        mat.floats[12] * mat.floats[1] * mat.floats[10] - mat.floats[12] * mat.floats[2] * mat.floats[9];
+
+    result.floats[2] = mat.floats[1] * mat.floats[6] * mat.floats[15] - mat.floats[1] * mat.floats[7] * mat.floats[14] - mat.floats[5] * mat.floats[2] * mat.floats[15] +
+        mat.floats[5] * mat.floats[3] * mat.floats[14] + mat.floats[13] * mat.floats[2] * mat.floats[7] - mat.floats[13] * mat.floats[3] * mat.floats[6];
+
+    result.floats[6] = -mat.floats[0] * mat.floats[6] * mat.floats[15] + mat.floats[0] * mat.floats[7] * mat.floats[14] + mat.floats[4] * mat.floats[2] * mat.floats[15] -
+        mat.floats[4] * mat.floats[3] * mat.floats[14] - mat.floats[12] * mat.floats[2] * mat.floats[7] + mat.floats[12] * mat.floats[3] * mat.floats[6];
+
+    result.floats[10] = mat.floats[0] * mat.floats[5] * mat.floats[15] - mat.floats[0] * mat.floats[7] * mat.floats[13] - mat.floats[4] * mat.floats[1] * mat.floats[15] +
+        mat.floats[4] * mat.floats[3] * mat.floats[13] + mat.floats[12] * mat.floats[1] * mat.floats[7] - mat.floats[12] * mat.floats[3] * mat.floats[5];
+
+    result.floats[14] = -mat.floats[0] * mat.floats[5] * mat.floats[14] + mat.floats[0] * mat.floats[6] * mat.floats[13] +
+        mat.floats[4] * mat.floats[1] * mat.floats[14] - mat.floats[4] * mat.floats[2] * mat.floats[13] - mat.floats[12] * mat.floats[1] * mat.floats[6] +
+        mat.floats[12] * mat.floats[2] * mat.floats[5];
+
+    result.floats[3] = -mat.floats[1] * mat.floats[6] * mat.floats[11] + mat.floats[1] * mat.floats[7] * mat.floats[10] + mat.floats[5] * mat.floats[2] * mat.floats[11] -
+        mat.floats[5] * mat.floats[3] * mat.floats[10] - mat.floats[9] * mat.floats[2] * mat.floats[7] + mat.floats[9] * mat.floats[3] * mat.floats[6];
+
+    result.floats[7] = mat.floats[0] * mat.floats[6] * mat.floats[11] - mat.floats[0] * mat.floats[7] * mat.floats[10] - mat.floats[4] * mat.floats[2] * mat.floats[11] +
+        mat.floats[4] * mat.floats[3] * mat.floats[10] + mat.floats[8] * mat.floats[2] * mat.floats[7] - mat.floats[8] * mat.floats[3] * mat.floats[6];
+
+    result.floats[11] = -mat.floats[0] * mat.floats[5] * mat.floats[11] + mat.floats[0] * mat.floats[7] * mat.floats[9] + mat.floats[4] * mat.floats[1] * mat.floats[11] -
+        mat.floats[4] * mat.floats[3] * mat.floats[9] - mat.floats[8] * mat.floats[1] * mat.floats[7] + mat.floats[8] * mat.floats[3] * mat.floats[5];
+
+    result.floats[15] = mat.floats[0] * mat.floats[5] * mat.floats[10] - mat.floats[0] * mat.floats[6] * mat.floats[9] - mat.floats[4] * mat.floats[1] * mat.floats[10] +
+        mat.floats[4] * mat.floats[2] * mat.floats[9] + mat.floats[8] * mat.floats[1] * mat.floats[6] - mat.floats[8] * mat.floats[2] * mat.floats[5];
+
+    det := mat.floats[0] * result.floats[0] + mat.floats[1] * result.floats[4] + mat.floats[2] * result.floats[8] + mat.floats[3] * result.floats[12];
+    det     = 1.0 / det;
+    for 0..15
+    {
+        result.floats[it] = result.floats[it] * det;
+    }
+    return result;
+}
+
+calculate_camera_transform :: (using camera: *Camera, aspect_ratio: float)
+{
+    rotation := Matrix4_Identity;
+    set_rotation(*rotation, orientation);
+
+    xform.inv_view       = make_translation_matrix4(camera.position) * rotation;
+    xform.view           = inverse_matrix4(camera.xform.inv_view);
+    xform.projection     = perspective_projection(camera.fov, aspect_ratio, 0.01, 1000.0);
+    xform.inv_projection = inverse_matrix4(camera.xform.projection);
+}
+
+generate_ray :: (query: Vector2, camera: CameraTransform, lens_focal_length: float, lens_radius: float) -> Ray
+{
+    origin := Vector3.{0, 0, 0};
+    target := transform_point(camera.inv_projection, Vector3.{ query.x, query.y, 1.0 });
+
+    if lens_radius > 0.0
     {
         u := random_get_zero_to_one();
         v := random_get_zero_to_one();
-        p := uniform_disk(u, v);
-        origin += p.x * params.defocus_disk[0];
-        origin += p.y * params.defocus_disk[1];
+
+        origin.xy = lens_radius * uniform_disk(u, v);
+
+        dir   := normalize(target);
+        ft    := lens_focal_length / dir.z;
+        focus := ft * dir;
+
+        target = focus - origin;
     }
 
-    dir := normalize(pixel - origin);
-    ray := Ray.{ origin = origin, direction = dir, tmin = 0.0, tmax = FLOAT32_INFINITY };
+    origin = transform_point(camera.inv_view, origin);
+    dir    := transform_vector(camera.inv_view, target);
+
+    ray: Ray = ---;
+
+    ray.origin    = origin;
+    ray.direction = normalize(dir);
+    ray.tmin      = 0.0;
+    ray.tmax      = FLOAT32_INFINITY;
+
     return ray;
 }
 
 sample_stratified_square :: (x: float, y: float, inv_size: float) -> Vector2
 {
-    px := x + random_get_zero_to_one();
-    py := y + random_get_zero_to_one();
+    px := x + random_get_zero_to_one_open();
+    py := y + random_get_zero_to_one_open();
 
     px *= inv_size;
     py *= inv_size;
-
-    px -= 0.5;
-    py -= 0.5;
 
     return .{px, py};
 }
@@ -859,183 +927,6 @@ encode_morton3 :: (x: u32, y: u32, z: u32) -> u32
     z_split := split3(z);
     code    := (z_split << 2) | (y_split << 1) | x_split;
     return code;
-}
-
-// TODO: multithread
-build_bvh :: (vertices: []Vertex3D, indices: []u32, arena: *Arena) -> []BVHNode
-{
-    scoped_temp_alloc(arena);
-
-    num_primitives := (indices.count / 3);
-
-    c_in := push_array(arena, num_primitives * 2 - 1, BVHNode, initialized=false);
-    primitives := push_array(arena, num_primitives, u32, initialized=false);
-
-    nodes := array_view(c_in, c_in.count - primitives.count, primitives.count);
-
-    bbox := Box3_Empty;
-
-    for 0..num_primitives - 1
-    {
-        index := it * 3;
-        i0 := indices[index + 0];
-        i1 := indices[index + 1];
-        i2 := indices[index + 2];
-
-        tri_bbox := triangle_bbox(vertices[i0].p, vertices[i1].p, vertices[i2].p);
-
-        nodes[it].bbox = tri_bbox;
-        nodes[it].first_child_or_primitive = it.(u32);
-        nodes[it].num_primitives = 1;
-
-        primitives[it] = it.(u32);
-
-        bbox = concat(bbox, tri_bbox);
-    }
-
-    keys := push_array(arena, num_primitives, u32, initialized=false);
-
-    dist := bbox.vmax - bbox.vmin;
-    scale := Vector3.{1024.0 / dist.x, 1024.0 / dist.y, 1024.0 / dist.z};
-
-    for 0..num_primitives-1
-    {
-        node := *nodes[it];
-        centroid := 0.5 * (node.bbox.vmin + node.bbox.vmax);
-        mapped := (centroid - bbox.vmin) * scale;
-
-        assert(mapped.x >= 0.0 && mapped.y >= 0.0 && mapped.z >= 0.0 && mapped.x < 1024.0 && mapped.y < 1024.0 && mapped.z < 1024.0);
-
-        x := mapped.x.(u32);
-        y := mapped.y.(u32);
-        z := mapped.z.(u32);
-
-        keys[it] = encode_morton3(x, y, z);
-    }
-
-    {
-        keys_temp := push_array(arena, num_primitives, u32, initialized=false);
-        primitives_temp := push_array(arena, num_primitives, u32, initialized=false);
-        radix_sort(keys, keys_temp, primitives, primitives_temp, num_primitives);
-    }
-
-  //  // rearrange indices
-  //  src_indices := push_array(arena, indices.count, u32, initialized=false);
-
-  //  memcpy(src_indices.data, indices.data, indices.count * size_of(u32));
-
-  //  for triangles
-  //  {
-  //      dst_index := it_index * 3;
-  //      src_index := it * 3;
-  //      indices[dst_index + 0] = src_indices[src_index + 0];
-  //      indices[dst_index + 1] = src_indices[src_index + 1];
-  //      indices[dst_index + 2] = src_indices[src_index + 2];
-  //  }
-
-    neighbors    := push_array(arena, num_primitives, u32, initialized=false);
-
-    SEARCH_RADIUS :: 14;
-
-    // https://meistdan.github.io/publications/ploc/paper.pdf
-
-    c_out := push_array(arena, c_in.count, BVHNode, initialized=false);
-
-    merged_index := push_array(arena, primitives.count, u32, initialized=false);
-
-    cluster_beg := c_in.count - primitives.count;
-    cluster_end := primitives.count - 1;
-
-    while cluster_end > cluster_beg
-    {
-        // Find nearest neighbors
-        for node_id: cluster_beg..cluster_end
-        {
-            best_id   := node_id;
-            best_dist := FLOAT32_MAX;
-
-            neighbor_beg := max(cluster_beg, node_id - SEARCH_RADIUS);
-            neighbor_end := min(cluster_end, node_id + SEARCH_RADIUS);
-
-            for neighbor_id: neighbor_beg..neighbor_end
-            {
-                if node_id == neighbor_id then continue;
-
-                joined   := concat(c_in[node_id].bbox, c_in[neighbor_id].bbox);
-                distance := half_area(joined);
-                if (distance < best_dist)
-                {
-                    best_dist = distance;
-                    best_id   = neighbor_id;
-                }
-            }
-
-            assert(best_id != node_id);
-
-            neighbors[node_id - cluster_beg] = best_id.(u32);
-        }
-
-        // Prefix sum
-
-        for node_id: cluster_beg..cluster_end
-        {
-            index := node_id - cluster_beg;
-            neighbor_id := neighbors[index];
-            merged_index[index] = (neighbors[neighbor_id] == node_id && node_id < neighbors[node_id]).(u32);
-        }
-
-        last_offset := cluster_end - cluster_beg;
-
-        for 1..last_offset
-        {
-            merged_index[it] += merged_index[it - 1];
-        }
-
-        num_merged   := merged_index[last_offset];
-        num_parent   := last_offset + 1 - num_merged;
-        num_children := num_merged * 2;
-        children_beg := cluster_end + 1 - num_children;
-        parent_beg   := cluster_end + 1 - (num_children + num_merged);
-
-        // Merge
-        for node_id: cluster_beg..cluster_end
-        {
-            neighbor_id := neighbors[node_id - cluster_beg];
-
-            node_off := node_id - cluster_beg;
-            neighbor_off := neighbor_id - cluster_beg;
-
-            if neighbors[neighbor_id] == node_id
-            {
-                if node_id < neighbors[node_id]
-                {
-                    parent      := parent_beg + neighbor_off - merged_index[neighbor_off];
-                    first_child := children_beg + (merged_index[node_off] - 1) * 2;
-
-                    c_out[parent].bbox = concat(c_in[node_id].bbox, c_in[neighbor_id].bbox);
-                    c_out[parent].num_primitives = 0;
-                    c_out[parent].first_child_or_primitive = first_child.(u32);
-
-                    c_out[first_child + 0] = c_in[node_id];
-                    c_out[first_child + 1] = c_in[neighbor_id];
-                }
-            }
-            else
-            {
-                parent := parent_beg + node_off - merged_index[node_off];
-                c_out[parent] = c_in[node_id];
-            }
-        }
-
-        cluster_beg  = parent_beg;
-        cluster_end  = children_beg - 1;
-
-        // TODO: Copy previous loop children nodes over to c_out
-        
-        Swap(*c_in, *c_out);
-    }
-
-    return nodes;
 }
 
 SAHBuilder :: struct
@@ -1179,7 +1070,7 @@ build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi:
         {
             i += 1;
 
-            while 1
+            while i <= hi
             {
                 bin_index := find_bin_index(centriods[indices[i]]);
                 if bin_index > min_split_cost_index
@@ -1189,7 +1080,7 @@ build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi:
 
             j -= 1;
 
-            while 1
+            while j >= lo
             {
                 bin_index := find_bin_index(centriods[indices[j]]);
                 if bin_index <= min_split_cost_index
@@ -1237,30 +1128,30 @@ build_bvh_binned_sah :: (nodes: []BVHNode, indices: []u32, bboxes: []Box3, scrat
     build_bvh_sah_binned_recursive(*builder, 0, 0, indices.count - 1, indices, bboxes, centriods);
 }
 
-g_nodes:   [..]BVHNode;
-g_boxes:   [..]Box3;
-g_indices: [..]u32;
+debug_nodes:   [..]BVHNode;
+debug_boxes:   [..]Box3;
+debug_indices: [..]u32;
 
 add_bbox :: (x: float, y: float, w: float, h: float)
 {
     vmin := Vector3.{x, y, 0};
     vmax := Vector3.{x + w, y + h, 0};
-    array_add(*g_boxes, Box3.{vmin, vmax});
+    array_add(*debug_boxes, Box3.{vmin, vmax});
 }
 
 build :: ()
 {
-    if g_boxes.count == 0 return;
+    if debug_boxes.count == 0 return;
 
-    array_resize(*g_nodes, g_boxes.count * 2 - 1);
-    array_resize(*g_indices, g_boxes.count);
+    array_resize(*debug_nodes, debug_boxes.count * 2 - 1);
+    array_resize(*debug_indices, debug_boxes.count);
 
-    for *g_indices
+    for *debug_indices
         it.* = it_index.(u32);
 
     arena := make_arena();
 
-    build_bvh_binned_sah(g_nodes, g_indices, g_boxes, arena);
+    build_bvh_binned_sah(debug_nodes, debug_indices, debug_boxes, arena);
 
     free_arena(arena);
 }
@@ -1322,12 +1213,26 @@ main :: ()
 
                 if it.key_pressed && it.key_code == #char "H"
                 {
-                    show_raytrace_result = !show_raytrace_result;
+                    show_debug_bvh = !show_debug_bvh;
                 }
 
                 if it.key_pressed && it.key_code == #char " "
                 {
                     want_screenshot = true;
+                }
+
+                if it.key_pressed && it.key_code == #char "."
+                {
+                    debug_bvh_depth += 1;
+                    if debug_bvh_depth > scene.nodes.count then debug_bvh_depth = scene.nodes.count;
+                    print("debug_bvh_depth : %\n", debug_bvh_depth);
+                }
+
+                if it.key_pressed && it.key_code == #char ","
+                {
+                    debug_bvh_depth -= 1;
+                    if debug_bvh_depth < -1 then debug_bvh_depth = -1;
+                    print("debug_bvh_depth : %\n", debug_bvh_depth);
                 }
             }
         }
@@ -1361,71 +1266,116 @@ draw_rect :: (center: Vector2, w: Vector2, h: Vector2, color: Vector4)
     immediate_quad(p0, p1, p2, p3, color, color, color, color);
 }
 
-draw_box :: (box: Box3, color: Vector4)
+emboss_line :: (p0: Vector2, p1: Vector2, stroke: float) -> [4]Vector2
 {
-    delta  := 0.5 * (box.vmax.xy - box.vmin.xy);
-
-    {
-        w := Vector2.{1, 0};
-        h := Vector2.{0, delta.y};
-
-        y := 0.5 * (box.vmin.y + box.vmax.y);
-
-        draw_rect(.{box.vmin.x, y}, w, h, color);
-        draw_rect(.{box.vmax.x, y}, w, h, color);
-    }
-
-    {
-        w := Vector2.{delta.x, 0};
-        h := Vector2.{0, 1};
-
-        x := 0.5 * (box.vmin.x + box.vmax.x);
-
-        draw_rect(.{x, box.vmin.y}, w, h, color);
-        draw_rect(.{x, box.vmax.y}, w, h, color);
-    }
+    corners: [4]Vector2 = ---;
+    dx := p1.x - p0.x;
+    dy := p1.y - p0.y;
+    normal := normalize(Vector2.{-dy, dx});
+    corners[0] = p0 - stroke * normal;
+    corners[1] = p0 + stroke * normal;
+    corners[2] = p1 + stroke * normal;
+    corners[3] = p1 - stroke * normal;
+    return corners;
 }
 
-draw_bvh :: (root: int)
+draw_line :: (a: Vector3, b: Vector3, color: Vector4, projection: Matrix4)
 {
-    using node := g_nodes[root];
+    p0 := projection * Vector4.{ a.x, a.y, a.z, 1 };
+    p1 := projection * Vector4.{ b.x, b.y, b.z, 1 };
+
+    p0 /= p0.w;
+    p1 /= p1.w;
+
+    p0.x *= MAP_RATIO;
+    p0.y *= MAP_RATIO;
+
+    p1.x *= MAP_RATIO;
+    p1.y *= MAP_RATIO;
+
+    p0 *= 0.5;
+    p1 *= 0.5;
+
+    p0 += Vector4.{ 0.5, 0.5, 0.5, 0.5 };
+    p1 += Vector4.{ 0.5, 0.5, 0.5, 0.5 };
+
+    p0.y = 1 - p0.y;
+    p1.y = 1 - p1.y;
+
+    p0.x *= (render_width - 1);
+    p0.y *= (render_height - 1);
+    p1.x *= (render_width - 1);
+    p1.y *= (render_height - 1);
+
+    corners := emboss_line(p0.xy, p1.xy, 1);
+
+    immediate_quad(corners[0], corners[1], corners[2], corners[3], color, color, color, color);
+}
+
+draw_box :: (box: Box3, color: Vector4, projection: Matrix4)
+{
+    diag := box.vmax - box.vmin;
+
+    dx := Vector3.{diag.x, 0, 0};
+    dy := Vector3.{0, diag.y, 0};
+    dz := Vector3.{0, 0, diag.z};
+
+    draw_line(box.vmin, box.vmin + dx, color, projection);
+    draw_line(box.vmin, box.vmin + dy, color, projection);
+    draw_line(box.vmin, box.vmin + dz, color, projection);
+    draw_line(box.vmin + dz, box.vmin + dz + dx, color, projection);
+    draw_line(box.vmin + dz, box.vmin + dz + dy, color, projection);
+    draw_line(box.vmin + dx, box.vmin + dx + dz, color, projection);
+    draw_line(box.vmin + dx, box.vmin + dx + dy, color, projection);
+    draw_line(box.vmin + dy, box.vmin + dy + dx, color, projection);
+    draw_line(box.vmin + dy, box.vmin + dy + dz, color, projection);
+    draw_line(box.vmin + dx + dz, box.vmin + dx + dz + dy, color, projection);
+    draw_line(box.vmin + dx + dy, box.vmin + dx + dy + dz, color, projection);
+    draw_line(box.vmin + dy + dz, box.vmin + dy + dz + dx, color, projection);
+}
+
+draw_bvh :: (root: int, nodes: []BVHNode, boxes: []Box3, indices: []u32, projection: Matrix4, depth: int)
+{
+    using node := nodes[root];
 
     if num_primitives
     {
-        for 0..num_primitives-1
+        if depth == debug_bvh_depth || debug_bvh_depth == -1
         {
-            index := g_indices[it + first_child_or_primitive];
-            draw_box(g_boxes[index], Vector4.{1, 1, 1, 1});
+            for 0..num_primitives-1
+            {
+                index := indices[it + first_child_or_primitive];
+                draw_box(boxes[index], Vector4.{1, 1, 1, 1}, projection);
+            }
         }
     }
     else
     {
-        draw_box(bbox, Vector4.{1, 1, 0, 1});
-        draw_bvh(first_child_or_primitive + 0);
-        draw_bvh(first_child_or_primitive + 1);
+        if depth == debug_bvh_depth || debug_bvh_depth == -1
+            draw_box(bbox, Vector4.{1, 1, 1, 1}, projection);
+
+        draw_bvh(first_child_or_primitive + 0, nodes, boxes, indices, projection, depth + 1);
+        draw_bvh(first_child_or_primitive + 1, nodes, boxes, indices, projection, depth + 1);
     }
 }
 
 draw_one_frame :: (wnd: Window_Type, map: *Texture, scene: Scene)
 {
-    window_width, window_height := get_render_dimensions(wnd);
+    render_width, render_height = get_render_dimensions(wnd);
 
     clear_render_target(.15, .08, .08, 1);
 
     set_shader_for_images(map);
 
-    if (show_raytrace_result)
     {
-        map_ratio := 0.9;
+        aspect_ratio := render_width.(float) / render_height.(float);
 
-        aspect_ratio := window_width.(float) / window_height.(float);
-
-        rect_height := window_height.(float) * map_ratio;
+        rect_height := render_height.(float) * MAP_RATIO;
         rect_width := aspect_ratio * rect_height;
 
         center: Vector2;
-        center.x = window_width.(float) / 2;
-        center.y = window_height.(float) / 2;
+        center.x = render_width.(float) / 2;
+        center.y = render_height.(float) / 2;
 
         w := Vector2.{rect_width / 2, 0};
         h := Vector2.{0, rect_height / 2};
@@ -1442,13 +1392,22 @@ draw_one_frame :: (wnd: Window_Type, map: *Texture, scene: Scene)
 
     set_shader_for_color();
 
-    draw_bvh(0);
+    if show_debug_bvh
+    {
+        projection_view := scene.camera.xform.projection * scene.camera.xform.view;
+        draw_bvh(0, scene.nodes, scene.bboxes, scene.map, projection_view, 0);
+    }
 
     swap_buffers(wnd);
 }
 
-show_raytrace_result := true;
+MAP_RATIO :: 0.9;
+
+debug_bvh_depth := -1;
+show_debug_bvh := true;
 should_quit := false;
+render_width := 0;
+render_height := 0;
 
 find_next_screenshot_index :: (info: *File_Visit_Info, user_data: *void)
 {
@@ -1470,7 +1429,7 @@ get_first_screenshot_index :: (path: string) -> int
     screenshot_index := 0;
     make_directory_if_it_does_not_exist(path);
     visit_files(path, false, (*screenshot_index).(*void), find_next_screenshot_index);
-    return screenshot_index;
+    return screenshot_index + 1;
 }
 
 init :: ()
