@@ -443,6 +443,9 @@ load_scene :: (using scene: *Scene, type: SceneType)
             camera.fov           = 40.0 / 360.0;
             camera.position      = .{278, 278, -800};
 
+            camera.lens_focal_length = 1200;
+            camera.lens_radius = 10.0;
+
             environment          = .{0, 0, 0};
 
             red   := add_lambertian_material(scene, .{0.65, 0.05, 0.05});
