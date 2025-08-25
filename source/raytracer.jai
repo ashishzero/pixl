@@ -100,9 +100,8 @@ Scene :: struct
     map        : [..]u32;
     mapped     : [..]Primitive;
 
-    rgbx       : [..]Vector4;
-
-    scratch    : *Arena;
+    rgbx_mem   : *void;
+    rgbx       : []Vector4;
 }
 
 HitType :: enum u32

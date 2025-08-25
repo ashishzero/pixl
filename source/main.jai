@@ -251,22 +251,6 @@ trace_pixel :: (scene: Scene, x: s32, y: s32, num_samples: s32) -> Vector3
     return sampled;
 }
 
-TracePixelWork :: struct
-{
-    x           : s32;
-    y           : s32;
-    num_samples : s32;
-    color       : Vector3;
-}
-
-recursive_trace_pixel_work :: (group: *Thread_Group, thread: *Thread, user_data: *void) -> Thread_Continue_Status
-{
-    scene := thread.data.(*Scene);
-    work := user_data.(*TracePixelWork);
-    work.color = trace_pixel(scene, work.x, work.y, work.num_samples);
-    return .CONTINUE;
-}
-
 LaneDescription :: struct
 {
     index    :  int;
@@ -276,6 +260,8 @@ LaneDescription :: struct
 
 Wavefront :: struct
 {
+    shared     : RenderShared;
+
     barrier    : SyncBarrier;
     num_threads: int;
     threads    : [MAX_THREAD_COUNT]Thread;
@@ -283,32 +269,53 @@ Wavefront :: struct
 
 #add_context lane: LaneDescription;
 
-RAY_TRACE_BLOCK_SIZE : s32 : 16;
+RAY_TRACE_TILE_SIZE : s32 : 16;
 MAX_THREAD_COUNT :: 64;
 
-render :: (scene: *Scene, weight: float, num_samples: s32)
+RenderShared :: struct
+{
+    tile_id: int;
+}
+
+render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared)
 {
     width  := scene.config.width;
     height := scene.config.height;
 
-    num_block_w := (width + RAY_TRACE_BLOCK_SIZE - 1) / RAY_TRACE_BLOCK_SIZE;
-    num_block_h := (height + RAY_TRACE_BLOCK_SIZE - 1) / RAY_TRACE_BLOCK_SIZE;
+    assert(width % RAY_TRACE_TILE_SIZE == 0);
+    assert(height % RAY_TRACE_TILE_SIZE == 0);
 
-    block0, block1 := lane_divide(num_block_w * num_block_h);
+    num_tile_w := width / RAY_TRACE_TILE_SIZE;
+    num_tile_h := height / RAY_TRACE_TILE_SIZE;
 
-    for block0..block1-1
+    num_tiles := num_tile_w * num_tile_h;
+
+    if context.lane.index == 0
     {
-        block_y := it / num_block_w;
-        block_x := it % num_block_w;
+        atomic_write(*shared.tile_id, 0);
+    }
 
-        y0 := block_y * RAY_TRACE_BLOCK_SIZE;
-        y1 := y0 + RAY_TRACE_BLOCK_SIZE - 1;
+    lane_sync();
 
-        x0 := block_x * RAY_TRACE_BLOCK_SIZE;
-        x1 := x0 + RAY_TRACE_BLOCK_SIZE - 1;
+    while !should_quit
+    {
+        captured_tile_id := atomic_add(*shared.tile_id, 1);
+
+        if captured_tile_id >= num_tiles then break;
+
+        tile_y := captured_tile_id / num_tile_w;
+        tile_x := captured_tile_id % num_tile_w;
+
+        y0 := tile_y * RAY_TRACE_TILE_SIZE;
+        y1 := y0 + RAY_TRACE_TILE_SIZE - 1;
+
+        x0 := tile_x * RAY_TRACE_TILE_SIZE;
+        x1 := x0 + RAY_TRACE_TILE_SIZE - 1;
 
         if x1 >= width  then x1 = width - 1;
         if y1 >= height then y1 = height - 1;
+
+        offset := captured_tile_id * RAY_TRACE_TILE_SIZE * RAY_TRACE_TILE_SIZE;
 
         for y:y0..y1
         {
@@ -316,7 +323,9 @@ render :: (scene: *Scene, weight: float, num_samples: s32)
             {
                 color := trace_pixel(scene, x.(s32), y.(s32), num_samples);
 
-                index := y * width + x;
+                //index := y * width + x;
+                index := offset;
+                offset += 1;
 
                 prev_color := scene.rgbx[index].xyz;
                 curr_color := color / (num_samples * num_samples).(float);
@@ -336,64 +345,6 @@ render :: (scene: *Scene, weight: float, num_samples: s32)
     }
 
     lane_sync();
-}
-
-render :: (group: *Thread_Group, scene: *Scene, arena: *Arena, frame_index: u64)
-{
-    width  := scene.config.width;
-    height := scene.config.height;
-
-    num_samples := sqrt(scene.config.multisamples.(float32)).(s32);
-
-    for y:0..height-1
-    {
-        for x:0..width-1
-        {
-            work := push(arena, TracePixelWork);
-            work.x = x.(s32);
-            work.y = y.(s32);
-            work.num_samples = num_samples;
-            add_work(group, work); // FIXME: Calling this in loop explodes memory
-        }
-    }
-
-    work_remaining := width * height;
-
-    while work_remaining > 0
-    {
-        sleep_milliseconds(10);
-
-        results := get_completed_work(group);
-
-        for results
-        {
-            using work := it.(*TracePixelWork);
-            index := y * width + x;
-
-            prev_color := scene.rgbx[index].xyz;
-            curr_color := color / (num_samples * num_samples).(float);
-
-            weight := 1.0 / (frame_index.(float) + 1);
-
-            render := lerp(prev_color, curr_color, weight);
-
-            scene.rgbx[index].xyz = render;
-
-            //render := scene.rgbn[index].xyz;
-            //render /= scene.rgbn[index].w;
-
-            // TODO: HDR mapping
-            Clamp(*render.x, 0, 1);
-            Clamp(*render.y, 0, 1);
-            Clamp(*render.z, 0, 1);
-
-            write_color(*scene.bitmap, x, y, render);
-        }
-
-        work_remaining -= results.count;
-
-        reset_temporary_storage();
-    }
 }
 
 write_color :: (bitmap: *Bitmap, x: int, y: int, linear: Vector3)
@@ -432,7 +383,6 @@ wavefront_raytrace_entry :: (thread: *Thread) -> s64
     num_samples := sqrt(scene.config.multisamples.(float32)).(s32);
 
     screenshot_index := 0;
-    frame_index := 0;
 
     if context.lane.index == 0
     {
@@ -443,48 +393,27 @@ wavefront_raytrace_entry :: (thread: *Thread) -> s64
     {
         weight := 1.0 / (frame_index.(float) + 1);
 
-        render(scene, weight, num_samples);
+        t0 := current_time_monotonic();
 
-        if want_screenshot && context.lane.index == 0
+        render(scene, weight, num_samples, *context.lane.wavefront.shared);
+
+        t1 := current_time_monotonic();
+
+        if context.lane.index == 0
         {
-            save_screenshot(scene.bitmap, *screenshot_index);
-            want_screenshot = false;
+            last_frame_render_time_ms = to_milliseconds(t1 - t0);
+            frame_index += 1;
+
+            if want_screenshot
+            {
+                save_screenshot(scene.bitmap, *screenshot_index);
+                want_screenshot = false;
+            }
         }
 
         lane_sync();
-
-        frame_index += 1;
     }
 
-    return 0;
-}
-
-raytrace_thread :: (thread: *Thread) -> s64
-{
-    scene := thread.data.(*Scene);
-    
-    group: Thread_Group;
-    init_thread_group(*group, scene);
-    start(*group);
-
-    frame_index : u64 = 0;
-    screenshot_index := get_first_screenshot_index("captures");
-
-    while (!should_quit)
-    {
-        scoped_temp_alloc(scene.scratch);
-        render(*group, scene, scene.scratch, frame_index);
-
-        if want_screenshot
-        {
-            save_screenshot(scene.bitmap, *screenshot_index);
-            want_screenshot = false;
-        }
-
-        frame_index += 1;
-    }
-
-    shutdown(*group);
     return 0;
 }
 
@@ -495,12 +424,7 @@ init_wavefront :: (wavefront: *Wavefront, scene: *Scene, max_threads: int = 0)
     assert(num_cpus >= 1);
     if num_cpus > 200  num_cpus = 200;
 
-    #if (OS == .WINDOWS) || (OS == .LINUX)
-    {
-        num_cpus /= 2;
-    }
-
-    wavefront.num_threads = max(num_cpus - 1, 2);
+    wavefront.num_threads = max(num_cpus - 4, 2);
 
     if max_threads > 0 && wavefront.num_threads > max_threads
     {
@@ -538,34 +462,15 @@ start :: (wavefront: Wavefront)
     }
 }
 
-init_thread_group :: (group: *Thread_Group, scene: *Scene)
+join :: (wavefront: *Wavefront)
 {
-    num_cpus := get_number_of_processors();
-
-    assert(num_cpus >= 1);
-    if num_cpus > 200  num_cpus = 200;
-
-    #if (OS == .WINDOWS) || (OS == .LINUX)
+    for 0..wavefront.num_threads-1
     {
-        num_cpus /= 2;
+        thread_is_done(*wavefront.threads[it], -1);
+        thread_deinit(*wavefront.threads[it]);
     }
-
-    num_threads := max(num_cpus - 1, 2);
-
-    init(group, num_threads, recursive_trace_pixel_work);
-
-    group.logging = false;
-    
-    for * group.worker_info
-    {
-        it.thread.data = scene;
-        seed: Some_Big_Time_Value;
-        apollo := current_time_consensus();
-        seed.high = apollo.high;
-        seed.low  = apollo.low;
-        seed.low += it.thread.index.(u64);
-        random_seed(*it.thread.starting_context.random_state, seed);
-    }
+    deinit_sync_barrier(*wavefront.barrier);
+    wavefront.num_threads = 0;
 }
 
 load_scene :: (using scene: *Scene, type: SceneType)
@@ -812,15 +717,16 @@ init_scene :: (scene: *Scene, width: s32, height: s32, multisamples: u32 = 16, m
     scene.config.height       = height.(u32);
     scene.config.multisamples = multisamples;
     scene.config.max_depth    = max_depth;
-    scene.scratch             = make_arena();
-    array_resize(*scene.rgbx, scene.config.width * scene.config.height);
+
+    CACHE_LINE_SIZE :: 64; // mac?
+
+    scene.rgbx, scene.rgbx_mem = NewArray(scene.config.width * scene.config.height, Vector4, alignment=CACHE_LINE_SIZE);
 }
 
 prepare_for_rendering :: (scene: *Scene)
 {
     aspect_ratio := scene.config.width.(float) / scene.config.height.(float);
     calculate_camera_transform(*scene.camera, aspect_ratio);
-    //calculate_screen_params(scene);
     build_bvh(scene);
 }
 
@@ -835,7 +741,7 @@ build_bvh :: (scene: *Scene)
         it.* = it_index.(u32);
     }
 
-    build_bvh_binned_sah(scene.nodes, scene.map, scene.bboxes, scene.scratch);
+    build_bvh_binned_sah(scene.nodes, scene.map, scene.bboxes);
 
     for scene.map
     {
@@ -869,84 +775,18 @@ perspective_projection :: (fov: float, aspect_ratio: float, z_near: float, z_far
     return result;
 }
 
-inverse_matrix4 :: (mat: Matrix4) -> Matrix4
-{
-    result : Matrix4 = ---;
-
-    result.floats[0] = mat.floats[5] * mat.floats[10] * mat.floats[15] - mat.floats[5] * mat.floats[11] * mat.floats[14] -
-        mat.floats[9] * mat.floats[6] * mat.floats[15] + mat.floats[9] * mat.floats[7] * mat.floats[14] + mat.floats[13] * mat.floats[6] * mat.floats[11] -
-        mat.floats[13] * mat.floats[7] * mat.floats[10];
-
-    result.floats[4] = -mat.floats[4] * mat.floats[10] * mat.floats[15] + mat.floats[4] * mat.floats[11] * mat.floats[14] +
-        mat.floats[8] * mat.floats[6] * mat.floats[15] - mat.floats[8] * mat.floats[7] * mat.floats[14] - mat.floats[12] * mat.floats[6] * mat.floats[11] +
-        mat.floats[12] * mat.floats[7] * mat.floats[10];
-
-    result.floats[8] = mat.floats[4] * mat.floats[9] * mat.floats[15] - mat.floats[4] * mat.floats[11] * mat.floats[13] - mat.floats[8] * mat.floats[5] * mat.floats[15] +
-        mat.floats[8] * mat.floats[7] * mat.floats[13] + mat.floats[12] * mat.floats[5] * mat.floats[11] - mat.floats[12] * mat.floats[7] * mat.floats[9];
-
-    result.floats[12] = -mat.floats[4] * mat.floats[9] * mat.floats[14] + mat.floats[4] * mat.floats[10] * mat.floats[13] +
-        mat.floats[8] * mat.floats[5] * mat.floats[14] - mat.floats[8] * mat.floats[6] * mat.floats[13] -
-        mat.floats[12] * mat.floats[5] * mat.floats[10] + mat.floats[12] * mat.floats[6] * mat.floats[9];
-
-    result.floats[1] = -mat.floats[1] * mat.floats[10] * mat.floats[15] + mat.floats[1] * mat.floats[11] * mat.floats[14] +
-        mat.floats[9] * mat.floats[2] * mat.floats[15] - mat.floats[9] * mat.floats[3] * mat.floats[14] - mat.floats[13] * mat.floats[2] * mat.floats[11] +
-        mat.floats[13] * mat.floats[3] * mat.floats[10];
-
-    result.floats[5] = mat.floats[0] * mat.floats[10] * mat.floats[15] - mat.floats[0] * mat.floats[11] * mat.floats[14] -
-        mat.floats[8] * mat.floats[2] * mat.floats[15] + mat.floats[8] * mat.floats[3] * mat.floats[14] + mat.floats[12] * mat.floats[2] * mat.floats[11] -
-        mat.floats[12] * mat.floats[3] * mat.floats[10];
-
-    result.floats[9] = -mat.floats[0] * mat.floats[9] * mat.floats[15] + mat.floats[0] * mat.floats[11] * mat.floats[13] +
-        mat.floats[8] * mat.floats[1] * mat.floats[15] - mat.floats[8] * mat.floats[3] * mat.floats[13] - mat.floats[12] * mat.floats[1] * mat.floats[11] +
-        mat.floats[12] * mat.floats[3] * mat.floats[9];
-
-    result.floats[13] = mat.floats[0] * mat.floats[9] * mat.floats[14] - mat.floats[0] * mat.floats[10] * mat.floats[13] -
-        mat.floats[8] * mat.floats[1] * mat.floats[14] + mat.floats[8] * mat.floats[2] * mat.floats[13] +
-        mat.floats[12] * mat.floats[1] * mat.floats[10] - mat.floats[12] * mat.floats[2] * mat.floats[9];
-
-    result.floats[2] = mat.floats[1] * mat.floats[6] * mat.floats[15] - mat.floats[1] * mat.floats[7] * mat.floats[14] - mat.floats[5] * mat.floats[2] * mat.floats[15] +
-        mat.floats[5] * mat.floats[3] * mat.floats[14] + mat.floats[13] * mat.floats[2] * mat.floats[7] - mat.floats[13] * mat.floats[3] * mat.floats[6];
-
-    result.floats[6] = -mat.floats[0] * mat.floats[6] * mat.floats[15] + mat.floats[0] * mat.floats[7] * mat.floats[14] + mat.floats[4] * mat.floats[2] * mat.floats[15] -
-        mat.floats[4] * mat.floats[3] * mat.floats[14] - mat.floats[12] * mat.floats[2] * mat.floats[7] + mat.floats[12] * mat.floats[3] * mat.floats[6];
-
-    result.floats[10] = mat.floats[0] * mat.floats[5] * mat.floats[15] - mat.floats[0] * mat.floats[7] * mat.floats[13] - mat.floats[4] * mat.floats[1] * mat.floats[15] +
-        mat.floats[4] * mat.floats[3] * mat.floats[13] + mat.floats[12] * mat.floats[1] * mat.floats[7] - mat.floats[12] * mat.floats[3] * mat.floats[5];
-
-    result.floats[14] = -mat.floats[0] * mat.floats[5] * mat.floats[14] + mat.floats[0] * mat.floats[6] * mat.floats[13] +
-        mat.floats[4] * mat.floats[1] * mat.floats[14] - mat.floats[4] * mat.floats[2] * mat.floats[13] - mat.floats[12] * mat.floats[1] * mat.floats[6] +
-        mat.floats[12] * mat.floats[2] * mat.floats[5];
-
-    result.floats[3] = -mat.floats[1] * mat.floats[6] * mat.floats[11] + mat.floats[1] * mat.floats[7] * mat.floats[10] + mat.floats[5] * mat.floats[2] * mat.floats[11] -
-        mat.floats[5] * mat.floats[3] * mat.floats[10] - mat.floats[9] * mat.floats[2] * mat.floats[7] + mat.floats[9] * mat.floats[3] * mat.floats[6];
-
-    result.floats[7] = mat.floats[0] * mat.floats[6] * mat.floats[11] - mat.floats[0] * mat.floats[7] * mat.floats[10] - mat.floats[4] * mat.floats[2] * mat.floats[11] +
-        mat.floats[4] * mat.floats[3] * mat.floats[10] + mat.floats[8] * mat.floats[2] * mat.floats[7] - mat.floats[8] * mat.floats[3] * mat.floats[6];
-
-    result.floats[11] = -mat.floats[0] * mat.floats[5] * mat.floats[11] + mat.floats[0] * mat.floats[7] * mat.floats[9] + mat.floats[4] * mat.floats[1] * mat.floats[11] -
-        mat.floats[4] * mat.floats[3] * mat.floats[9] - mat.floats[8] * mat.floats[1] * mat.floats[7] + mat.floats[8] * mat.floats[3] * mat.floats[5];
-
-    result.floats[15] = mat.floats[0] * mat.floats[5] * mat.floats[10] - mat.floats[0] * mat.floats[6] * mat.floats[9] - mat.floats[4] * mat.floats[1] * mat.floats[10] +
-        mat.floats[4] * mat.floats[2] * mat.floats[9] + mat.floats[8] * mat.floats[1] * mat.floats[6] - mat.floats[8] * mat.floats[2] * mat.floats[5];
-
-    det := mat.floats[0] * result.floats[0] + mat.floats[1] * result.floats[4] + mat.floats[2] * result.floats[8] + mat.floats[3] * result.floats[12];
-    det     = 1.0 / det;
-    for 0..15
-    {
-        result.floats[it] = result.floats[it] * det;
-    }
-    return result;
-}
-
 calculate_camera_transform :: (using camera: *Camera, aspect_ratio: float)
 {
     rotation := Matrix4_Identity;
     set_rotation(*rotation, orientation);
 
     xform.inv_view       = make_translation_matrix4(camera.position) * rotation;
-    xform.view           = inverse_matrix4(camera.xform.inv_view);
     xform.projection     = perspective_projection(camera.fov, aspect_ratio, 0.01, 1000.0);
-    xform.inv_projection = inverse_matrix4(camera.xform.projection);
+
+    inversed : bool;
+
+    inversed, xform.view = inverse(camera.xform.inv_view);
+    inversed, xform.inv_projection = inverse(camera.xform.projection);
 }
 
 generate_ray :: (query: Vector2, camera: CameraTransform, lens_focal_length: float, lens_radius: float) -> Ray
@@ -1070,6 +910,24 @@ triangle_bbox :: (p: Vector3, q: Vector3, r: Vector3) -> Box3
 }
 
 // https://fgiesen.wordpress.com/2009/12/13/decoding-morton-codes/
+
+split2 :: (x: u32) -> u32
+{
+    x &= 0X0000FFFF;
+    x = (x ^ (x <<  8)) & 0X00FF00FF;
+    x = (x ^ (x <<  4)) & 0X0F0F0F0F;
+    x = (x ^ (x <<  2)) & 0X33333333;
+    x = (x ^ (x <<  1)) & 0X55555555;
+    return x;
+}
+
+encode_morton2 :: (x: u32, y: u32) -> u32
+{
+    x_split := split2(x);
+    y_split := split2(y);
+    code    := (y_split << 1) | x_split;
+    return code;
+}
 
 split3 :: (x: u32) -> u32
 {
@@ -1272,13 +1130,13 @@ build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi:
     node.num_primitives           = 0;
 }
 
-build_bvh_binned_sah :: (nodes: []BVHNode, indices: []u32, bboxes: []Box3, scratch: *Arena)
+build_bvh_binned_sah :: (nodes: []BVHNode, indices: []u32, bboxes: []Box3)
 {
     assert(nodes.count == bboxes.count * 2 - 1 && indices.count == bboxes.count);
 
-    scoped_temp_alloc(scratch);
+    auto_release_temp();
 
-    centriods := push_array(scratch, bboxes.count, Vector3, initialized=false);
+    centriods := NewArray(bboxes.count, Vector3, initialized=false,, temp);
 
     for bboxes
     {
@@ -1310,11 +1168,7 @@ build :: ()
     for *debug_indices
         it.* = it_index.(u32);
 
-    arena := make_arena();
-
-    build_bvh_binned_sah(debug_nodes, debug_indices, debug_boxes, arena);
-
-    free_arena(arena);
+    build_bvh_binned_sah(debug_nodes, debug_indices, debug_boxes);
 }
 
 main :: ()
@@ -1330,7 +1184,12 @@ main :: ()
 
     MSAA :: 8;
 
-    wnd := create_window(1920, 1080, "PixL", wanted_msaa = MSAA);
+    render_width = 1920;
+    render_height = 1080;
+
+    wnd := create_window(render_width, render_height, "PixL", wanted_msaa = MSAA);
+
+    init_fonts();
 
     scene: Scene;
     init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples = 128, max_depth=5);
@@ -1342,15 +1201,9 @@ main :: ()
     init_wavefront(*wavefront, *scene);
     start(*wavefront);
 
-  //  thread: Thread;
-  //  thread.data = *scene;
-
-  //  thread_init(*thread, raytrace_thread);
-  //  thread_start(*thread);
-
     prepare_window(wnd, wanted_msaa = MSAA);
 
-    set_render_target(wnd, .LEFT_HANDED);
+    set_render_target(wnd, .RIGHT_HANDED);
 
     raytrace_map : Texture;
 
@@ -1363,6 +1216,17 @@ main :: ()
         for get_window_resizes()
         {
             update_window(it.window);
+
+            if it.window == wnd
+            {
+                should_reinit := (it.width != render_width) || (it.height != render_height);
+
+                render_width  = it.width;
+                render_height = it.height;
+
+                if should_reinit then
+                    init_fonts();
+            }
         }
 
         for events_this_frame
@@ -1404,15 +1268,14 @@ main :: ()
         }
 
         texture_load_from_bitmap(*raytrace_map, *scene.bitmap);
-        draw_one_frame(wnd, *raytrace_map, scene);
+        draw_one_frame(wnd, *raytrace_map, scene, wavefront.num_threads);
 
         sleep_milliseconds(10);
 
         reset_temporary_storage();
     }
 
-    //thread_is_done(*thread);
-    //thread_deinit(*thread);
+    join(*wavefront);
 }
 
 save_screenshot :: (bitmap: Bitmap, screenshot_index: *int)
@@ -1464,9 +1327,6 @@ draw_line :: (a: Vector3, b: Vector3, color: Vector4, projection: Matrix4)
 
     p0 += Vector4.{ 0.5, 0.5, 0.5, 0.5 };
     p1 += Vector4.{ 0.5, 0.5, 0.5, 0.5 };
-
-    p0.y = 1 - p0.y;
-    p1.y = 1 - p1.y;
 
     p0.x *= (render_width - 1);
     p0.y *= (render_height - 1);
@@ -1525,9 +1385,9 @@ draw_bvh :: (root: int, nodes: []BVHNode, boxes: []Box3, indices: []u32, project
     }
 }
 
-draw_one_frame :: (wnd: Window_Type, map: *Texture, scene: Scene)
+draw_one_frame :: (wnd: Window_Type, map: *Texture, scene: Scene, num_threads: int)
 {
-    render_width, render_height = get_render_dimensions(wnd);
+    time := seconds_since_init();
 
     clear_render_target(.15, .08, .08, 1);
 
@@ -1564,6 +1424,22 @@ draw_one_frame :: (wnd: Window_Type, map: *Texture, scene: Scene)
         draw_bvh(0, scene.nodes, scene.bboxes, scene.map, projection_view, 0);
     }
 
+    secs  := time.(int);
+    mins  := secs / 60;
+    secs   = secs % 60;
+    hours := mins / 60;
+    mins   = mins % 60;
+
+    total_runtime := tprint("%:%:%",
+                            formatInt(hours, minimum_digits=2),
+                            formatInt(mins, minimum_digits=2),
+                            formatInt(secs, minimum_digits=2));
+
+    text := tprint("Frame: %; Last frame render time: %ms; Threads: %; Runtime: %",
+                   frame_index, last_frame_render_time_ms, num_threads, total_runtime);
+
+    draw_text(debug_font, 10, 10, text);
+
     swap_buffers(wnd);
 }
 
@@ -1574,6 +1450,21 @@ show_debug_bvh := true;
 should_quit := false;
 render_width := 0;
 render_height := 0;
+
+frame_index := 0;
+last_frame_render_time_ms := 0;
+
+debug_font: *Dynamic_Font;
+
+init_fonts :: ()
+{
+    if render_height <= 0 then return;
+
+    pixel_height := render_height / 54;
+
+    debug_font = get_font_at_size("data/fonts/KodeMono", "KodeMono-Medium.ttf", pixel_height);
+    assert(debug_font != null);
+}
 
 find_next_screenshot_index :: (info: *File_Visit_Info, user_data: *void)
 {
@@ -1631,6 +1522,7 @@ lane_sync :: ()
 #import "Thread";
 #import "System";
 #import "Srgb";
+#import "Atomics";
 
 #import "Arena";
 #import "Raddbg";
