@@ -1,5 +1,5 @@
 
-#module_parameters (DEFAULT_VIRTUAL_MEMORY_RESERVE : u64 = 256 * 1024 * 1024, MIN_VIRTUAL_MEMORY_RESERVE : u64 = 32 * 1024 * 1024, COMMIT_SIZE : u64 = 2 * 1024 * 1024, DEFAULT_ALIGNMENT : u64 = 16);
+#module_parameters (DEFAULT_VIRTUAL_MEMORY_RESERVE : u64 = 64 * 1024 * 1024, COMMIT_SIZE : u64 = 2 * 1024 * 1024, DEFAULT_ALIGNMENT : u64 = 16);
 
 #assert(COMMIT_SIZE >= size_of(Arena));
 
@@ -7,147 +7,120 @@
 
 Arena :: struct
 {
-    curr: *Arena;
-    prev: *Arena;
-
-    base:  u64;
-    pos:   u64;
-    com:   u64;
-    cap:   u64;
-    flags: ArenaFlags;
-
-    high_water_mark: u64;
+    curr            : *Memblock;
+    flags           :  ArenaFlags;
+    high_water_mark :  u64;
 }
 
 ArenaTemp :: struct
 {
     arena: *Arena;
-    pos: u64;
+    pos  :  u64;
 }
 
 ArenaFlags :: enum_flags
 {
-    NONE                :: 0x0;
-    DO_NOT_GROW         :: 0x1;
-    DOES_NOT_OWN_MEMORY :: 0x2;
+    NONE         :: 0x0;
+    FIXED_SIZE   :: 0x1;
 }
 
-get_null_arena :: () -> *Arena
+release :: (using arena: *Arena)
 {
-    return *falback_arena;
-}
-
-create_arena_from_preallocated_memory :: (mem: *void, cap: u64) -> *Arena
-{
-    if (cap < size_of(Arena))
-        return *fallback_arena;
-    arena := bootstrap_arena_from_memory(mem, cap, cap, .NONE, 0);
-    return arena;
-}
-
-make_arena :: (cap: u64 = DEFAULT_VIRTUAL_MEMORY_RESERVE, fixed: bool = false) -> *Arena
-{
-    arena := bootstrap_arena(null, cap, fixed);
-    return ifx arena then arena else *fallback_arena;
-}
-
-free_arena :: (arena: *Arena)
-{
-    prev : *Arena = null;
-    curr := arena.curr;
-
-    while curr
+    block := curr;
+    while block
     {
-        prev = curr.prev;
-        if (curr != *fallback_arena && !(curr.flags & .DOES_NOT_OWN_MEMORY))
-            free_virtual_memory(curr, curr.cap);
-        curr = prev;
+        next := block.prev;
+        virtual_free(block, block.cap);
+        block = next;
     }
+    curr = null;
+    high_water_mark = 0;
 }
 
-reset :: (arena: *Arena)
+reset :: (using arena: *Arena)
 {
     pop_to(arena, 0);
 }
 
-top :: (arena: *Arena) -> u64
+top :: (using arena: *Arena) -> u64
 {
-    curr := arena.curr;
-    pos := curr.base + curr.pos;
-    return pos;
+    if curr then
+        return curr.base + curr.pos;
+    else
+        return 0;
 }
 
-get_high_water_mark :: (arena: *Arena) -> u64
+pop_to :: (using arena: *Arena, pos: u64)
 {
-    return arena.high_water_mark;
-}
+    allocated := top(arena);
 
-pop_to :: (arena: *Arena, pos: u64)
-{
-    arena.high_water_mark = max(arena.high_water_mark, arena.curr.base + arena.curr.pos);
-    pos                   = max(pos, size_of(Arena));
+    if pos >= allocated return;
 
-    current := arena.curr;
-    prev: *Arena = null;
+    high_water_mark = max(high_water_mark, allocated);
 
-    while current.base >= pos
+    while curr && curr.base >= pos
     {
-        prev = current.prev;
-        free_virtual_memory(current, current.cap);
-        current = prev;
+        next := curr.prev;
+        free_virtual_memory(curr, curr.cap);
+        curr = next;
     }
 
-    current.pos = pos - current.base;
-    arena.curr = current;
+    if curr
+        curr.pos = pos - curr.base;
 }
 
-pop :: (arena: *Arena, size: u64)
+pop :: (using arena: *Arena, size: u64)
 {
-    pos := top(arena);
-    if (pos >= size)
+    allocated := top(arena);
+    if (allocated >= size)
     {
-        pop_to(arena, pos - size);
+        pop_to(arena, allocated - size);
     }
 }
 
-push_size :: (arena: *Arena, size: u64, $alignment : u64 = DEFAULT_ALIGNMENT, $initialized := true) -> *void
+push_size :: (using arena: *Arena, size: u64, $alignment : u64 = DEFAULT_ALIGNMENT, $initialized := true) -> *void
 {
     #assert(alignment > 0);
 
-    current := arena.curr;
-    mem     := current.(*u8) + current.pos;
+    new_cap := max(DEFAULT_VIRTUAL_MEMORY_RESERVE, size_of(Memblock) + 2 * size);
+
+    if !curr
+    {
+        curr = create_mem_block(new_cap, null);
+    }
+
+    mem     := curr.(*u8) + curr.pos;
     aligned := align_up(mem, alignment);
-    pos     := current.pos + (aligned - mem).(u64) + size;
+    pos     := curr.pos + (aligned - mem).(u64) + size;
 
-    if (pos > current.cap)
+    if (pos > curr.cap)
     {
-        if arena.flags & .DO_NOT_GROW
+        if arena.flags & .FIXED_SIZE
             return null;
 
-        current = bootstrap_arena(arena.curr, max(size + size_of(Arena), arena.cap * 2), false);
-        if !current
+        new_curr := create_mem_block(new_cap, curr);
+        if !new_curr then
             return null;
 
-        arena.curr  = current;
-
-        mem         = current.(*u8) + current.pos;
+        curr        = new_curr;
+        mem         = curr.(*u8) + curr.pos;
         aligned     = align_up(mem, alignment);
-        pos         = current.pos + (aligned - mem).(u64) + size;
+        pos         = curr.pos + (aligned - mem).(u64) + size;
     }
 
-    if (pos > current.com)
+    if (pos > curr.com)
     {
-        commit := align_up(pos, COMMIT_SIZE) - current.com;
-        if !commit_virtual_memory(current.(*u8) + current.com, commit)
+        commit := align_up(pos, COMMIT_SIZE) - curr.com;
+        if !virtual_commit(curr.(*u8) + curr.com, commit)
             return null;
-        current.com += commit;
+        curr.com += commit;
     }
 
-    current.pos = pos;
+    curr.pos = pos;
 
     #if initialized
     {
-        memset(aligned, 0, size);
+        memset(aligned, 0, xx size);
     }
 
     return aligned;
@@ -226,53 +199,6 @@ scoped_temp_alloc :: (arena: *Arena) #expand
     `defer end_temp_alloc(__mark);
 }
 
-#scope_module
-
-bootstrap_arena_from_memory :: (mem: *void, cap: u64, com: u64, flags: ArenaFlags) -> *Arena
-{
-    arena := mem.(*Arena);
-    arena.base  = 0;
-    arena.pos   = size_of(Arena);
-    arena.com   = com;
-    arena.cap   = cap;
-    arena.prev  = null;
-    arena.curr  = arena;
-    arena.flags = flags;
-    arena.high_water_mark = 0;
-    return arena;
-}
-
-bootstrap_arena :: (prev: *Arena, cap: u64, is_fixed: bool) -> *Arena
-{
-    cap = max(MIN_VIRTUAL_MEMORY_RESERVE, cap);
-
-    mem := alloc_virtual_memory(cap, false);
-    if (!mem) return null;
-
-    if (!commit_virtual_memory(mem, COMMIT_SIZE))
-    {
-        free_virtual_memory(mem, cap);
-        return null;
-    }
-
-    flags := ArenaFlags.NONE;
-
-    if (is_fixed)
-        flags |= .DO_NOT_GROW;
-
-    arena := bootstrap_arena_from_memory(mem, cap, COMMIT_SIZE, flags);
-
-    if (prev)
-    {
-        arena.prev = prev;
-        arena.base = prev.base + prev.cap;
-    }
-
-    return arena;
-}
-
-fallback_arena : Arena;
-
 arena_allocator_proc :: (mode: Allocator_Mode, requested_size: s64, old_size: s64, old_memory: *void, allocator_data: *void) -> *void
 {
     if #complete mode ==
@@ -316,12 +242,57 @@ arena_allocator_proc :: (mode: Allocator_Mode, requested_size: s64, old_size: s6
     }
 }
 
+#scope_module
+
+Memblock :: struct
+{
+    prev : *Memblock;
+    base :  u64;
+    pos  :  u64;
+    com  :  u64;
+    cap  :  u64;
+}
+
+bootstrap_arena_from_memory :: (mem: *void, cap: u64, com: u64, flags: ArenaFlags) -> *Arena
+{
+    arena := mem.(*Arena);
+    arena.base  = 0;
+    arena.pos   = size_of(Arena);
+    arena.com   = com;
+    arena.cap   = cap;
+    arena.prev  = null;
+    arena.curr  = arena;
+    arena.flags = flags;
+    arena.high_water_mark = 0;
+    return arena;
+}
+
+create_mem_block :: (cap: u64, prev: *Memblock) -> *Memblock
+{
+    mem := virtual_alloc(cap, false);
+    if !mem return null;
+
+    if !virtual_commit(mem, COMMIT_SIZE)
+    {
+        virtual_free(mem, cap);
+        return null;
+    }
+
+    memblock := mem.(*Memblock);
+    memblock.base = ifx prev then prev.base + prev.cap else 0;
+    memblock.pos  = size_of(Memblock);
+    memblock.com  = COMMIT_SIZE;
+    memblock.cap  = cap;
+    memblock.prev = prev;
+
+    return memblock;
+}
+
 #scope_module;
 
-Basic  :: #import "Basic";
 System :: #import "System";
 
-max :: inline (a: $T, b: T) -> T
+max :: inline (a: u64, b: u64) -> u64
 {
     return ifx a > b then a else b;
 }
@@ -341,26 +312,25 @@ align_up :: (xmem: *u8, alignment: u64) -> *u8
 #if OS == .WINDOWS
 {
     Windows :: #import "Windows";
-    PAGE_SIZE :: 4096;
 
-    alloc_virtual_memory :: (size: u64, commit: bool) -> *void
+    virtual_alloc :: (size: u64, commit: bool) -> *void
     {
         flags : Windows.DWORD = Windows.MEM_RESERVE;
         if (commit) flags |= Windows.MEM_COMMIT;
         return Windows.VirtualAlloc(null, size, flags, Windows.PAGE_READWRITE);
     }
 
-    commit_virtual_memory :: (ptr: *void, size: u64) -> bool
+    virtual_commit :: (ptr: *void, size: u64) -> bool
     {
         return Windows.VirtualAlloc(ptr, size, Windows.MEM_COMMIT, Windows.PAGE_READWRITE) != null;
     }
 
-    decommit_virtual_memory :: (ptr: *void, size: u64)
+    virtual_decommit :: (ptr: *void, size: u64)
     {
         Windows.VirtualFree(ptr, size, Windows.MEM_DECOMMIT);
     }
 
-    free_virtual_memory :: (ptr: *void, size: u64)
+    virtual_free :: (ptr: *void, size: u64)
     {
         Windows.VirtualFree(ptr, 0, Windows.MEM_RELEASE);
     }

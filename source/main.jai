@@ -1525,7 +1525,7 @@ lane_sync :: ()
 #import "Atomics";
 
 #import "Arena";
-#import "Raddbg";
+#import "Raddbg"()(ENABLED=ENABLE_RAD_DEBUGGER);
 
 Windows :: #import "Windows";
 

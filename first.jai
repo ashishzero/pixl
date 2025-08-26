@@ -15,6 +15,15 @@ build :: ()
     
     compiler_begin_intercept(w);
 
+    if options.backend == .X64
+    {
+        add_build_string("ENABLE_RAD_DEBUGGER :: true;", w);
+    }
+    else
+    {
+        add_build_string("ENABLE_RAD_DEBUGGER :: false;", w);
+    }
+
     add_build_file("source/main.jai", w);
 
     message_loop();
