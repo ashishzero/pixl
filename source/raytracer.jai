@@ -71,7 +71,7 @@ CameraTransform :: struct
     inv_projection : Matrix4;
 }
 
-RenderConfig :: struct
+PathTracerConfig :: struct
 {
     width        : int = 1280;
     height       : int = 720;
@@ -79,25 +79,29 @@ RenderConfig :: struct
     max_depth    : s32 = 5;
 }
 
+AccelerationStructure :: struct
+{
+    nodes      : [..]BVHNode;
+    indices    : [..]u32;
+    bboxes     : [..]Box3;
+}
+
 Scene :: struct
 {
     camera: Camera;
-    config: RenderConfig;
+    config: PathTracerConfig;
     bitmap: Bitmap;
 
     materials   : [..]Material;
     environment := Vector3.{0.7, 0.8, 1.0};
 
     primitives : [..]Primitive;
-    bboxes     : [..]Box3;
     spheres    : [..]SphereDesc;
     disks      : [..]DiskDesc;
     boxes      : [..]BoxDesc;
     meshes     : [..]MeshDesc;
 
-    // render
-    nodes      : [..]BVHNode;
-    map        : [..]u32;
+    tlas       : AccelerationStructure;
     mapped     : [..]Primitive;
 
     rgbx_mem   : *void;
@@ -190,12 +194,16 @@ intersect_bvh :: (nodes: []BVHNode, primitives: []Primitive, ray: Ray, scene: Sc
             {
                 for 0..node.num_primitives-1
                 {
-                    primitive := primitives[node.first_child_or_primitive + it];
-                    current := intersect_primitive(scene, primitive, origin, dir, tmin, tmax);
-                    if (current.type == .INTERSECT)
+                    bbox := scene.tlas.bboxes[scene.tlas.indices[node.first_child_or_primitive + it]];
+                    if hits(origin, inv_dir, bbox, tmin, tmax) // TODO: temporary, remove this after we have blas
                     {
-                        tmax = current.t;
-                        info = current;
+                        primitive := primitives[node.first_child_or_primitive + it];
+                        current := intersect_primitive(scene, primitive, origin, dir, tmin, tmax);
+                        if (current.type == .INTERSECT)
+                        {
+                            tmax = current.t;
+                            info = current;
+                        }
                     }
                 }
             }
@@ -214,7 +222,7 @@ intersect_bvh :: (nodes: []BVHNode, primitives: []Primitive, ray: Ray, scene: Sc
 
 intersect :: (scene: Scene, ray: Ray) -> HitInfo, int
 {
-    hit, num_visited := intersect_bvh(scene.nodes, scene.mapped, ray, scene);
+    hit, num_visited := intersect_bvh(scene.tlas.nodes, scene.mapped, ray, scene);
     return hit, num_visited;
 }
 

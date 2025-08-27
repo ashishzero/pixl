@@ -260,17 +260,14 @@ LaneDescription :: struct
 
 Wavefront :: struct
 {
-    shared     : RenderShared;
-
-    barrier    : SyncBarrier;
-    num_threads: int;
-    threads    : [MAX_THREAD_COUNT]Thread;
+    shared  : RenderShared;
+    barrier : SyncBarrier;
+    threads : [..]Thread;
 }
 
 #add_context lane: LaneDescription;
 
 RAY_TRACE_TILE_SIZE : s32 : 16;
-MAX_THREAD_COUNT :: 64;
 
 RenderShared :: struct
 {
@@ -369,7 +366,7 @@ SceneType :: enum
     CAR_MESH;
     BASIC_LIGHT;
     CORNELL_BOX;
-    CORNELL_CAR;
+    CORNELL_DRAGON;
     RANDOM_SHAPES;
 }
 
@@ -417,60 +414,59 @@ wavefront_raytrace_entry :: (thread: *Thread) -> s64
     return 0;
 }
 
-init_wavefront :: (wavefront: *Wavefront, scene: *Scene, max_threads: int = 0)
+init :: (using wavefront: *Wavefront, scene: *Scene, max_threads: s32 = 0)
 {
     num_cpus := get_number_of_processors();
 
     assert(num_cpus >= 1);
     if num_cpus > 200  num_cpus = 200;
 
-    wavefront.num_threads = max(num_cpus - 4, 2);
+    num_cpus = max(num_cpus - 4, 2);
 
-    if max_threads > 0 && wavefront.num_threads > max_threads
+    if max_threads > 0 && num_cpus > max_threads
     {
-        wavefront.num_threads = max_threads;
+        num_cpus = max_threads;
     }
 
-    print("wavefront thread count: %\n", wavefront.num_threads);
+    init_sync_barrier(*barrier, num_cpus);
 
-    init_sync_barrier(*wavefront.barrier, wavefront.num_threads);
+    array_resize(*threads, num_cpus);
 
-    for 0..wavefront.num_threads-1
+    for * threads
     {
-        thread := *wavefront.threads[it];
-        thread_init(thread, wavefront_raytrace_entry);
-        thread.data = scene;
+        thread_init(it, wavefront_raytrace_entry);
+        it.data = scene;
 
-        thread.starting_context.lane.index = it;
-        thread.starting_context.lane.count = wavefront.num_threads;
-        thread.starting_context.lane.wavefront = wavefront;
+        it.starting_context.lane.index = it_index;
+        it.starting_context.lane.count = num_cpus;
+        it.starting_context.lane.wavefront = wavefront;
 
         seed: Some_Big_Time_Value;
         apollo := current_time_consensus();
         seed.high = apollo.high;
         seed.low  = apollo.low;
         seed.low += it.(u64);
-        random_seed(*thread.starting_context.random_state, seed);
+        random_seed(*it.starting_context.random_state, seed);
     }
 }
 
-start :: (wavefront: Wavefront)
+start :: (using wavefront: Wavefront)
 {
-    for 0..wavefront.num_threads-1
+    for * threads
     {
-        thread_start(*wavefront.threads[it]);
+        thread_start(it);
     }
 }
 
-join :: (wavefront: *Wavefront)
+join :: (using wavefront: *Wavefront)
 {
-    for 0..wavefront.num_threads-1
+    for * threads
     {
-        thread_is_done(*wavefront.threads[it], -1);
-        thread_deinit(*wavefront.threads[it]);
+        thread_is_done(it, -1);
+        thread_deinit(it);
     }
     deinit_sync_barrier(*wavefront.barrier);
-    wavefront.num_threads = 0;
+    array_free(threads);
 }
 
 load_scene :: (using scene: *Scene, type: SceneType)
@@ -537,7 +533,38 @@ load_scene :: (using scene: *Scene, type: SceneType)
             add_translated_box(scene, xform1, .{260, 0,  65}, .{425, 165, 225}, white);
             add_translated_box(scene, xform2, .{130, 0, 295}, .{290, 330, 455}, white);
 
-        case .CORNELL_CAR;
+        case .CORNELL_DRAGON;
+            camera.fov           = 40.0 / 360.0;
+            camera.position      = .{278, 278, -800};
+
+            environment          = .{0, 0, 0};
+
+            red   := add_lambertian_material(scene, .{0.65, 0.05, 0.05});
+            white := add_lambertian_material(scene, .{0.73, 0.73, 0.73});
+            green := add_lambertian_material(scene, .{0.12, 0.45, 0.15});
+            light := add_diffuse_light(scene, .{15, 15, 15});
+
+            add_box(scene, Matrix4_Identity, .{213, 554, 227}, .{343, 554.01, 332}, light);
+            add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{0.01, 555, 555}, green); // left
+            add_box(scene, Matrix4_Identity, .{555, 0, 0}, .{555.01, 555, 555}, red); // right
+            add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{555, 0.01, 555}, white); // bottom
+            add_box(scene, Matrix4_Identity, .{0, 0, 555}, .{555, 555, 555.01}, white); // back
+            add_box(scene, Matrix4_Identity, .{0, 555, 0}, .{555, 555.01, 555}, white); // top
+
+            metal := add_metal_material(scene);
+
+            theta := 18.0 / 360.0 * 2 * PI;
+
+            rot: Quaternion;
+
+            set_from_axis_and_angle(*rot, 0, 1, 0, theta);
+
+            scale := 200.0;
+
+            dragon := load_obj_model("data/monkey.obj");
+            xform  := make_translation_matrix4(.{270, 140, 270}) * rotation_matrix(Matrix4, rot) * make_scale_matrix4(.{scale, scale, scale});
+
+            add_mesh(scene, xform, dragon, metal);
 
         case .RANDOM_SHAPES;
     }
@@ -563,7 +590,7 @@ add_sphere :: (scene: *Scene, xform: Matrix4, radius: float, material_id: Materi
     bbox: Box3 = ---;
     bbox.vmin = center - Vector3.{radius, radius, radius};
     bbox.vmax = center + Vector3.{radius, radius, radius};
-    array_add(*scene.bboxes, bbox);
+    array_add(*scene.tlas.bboxes, bbox);
     primitive.material_id = material_id;
 }
 
@@ -583,7 +610,7 @@ add_disk :: (scene: *Scene, p: Vector3, radius: float, material_id: MaterialID)
 
     bbox := bounding_box_from_points(p - Vector3.{radius, radius, 0}, p + Vector3.{radius, radius, 0});
     //primitive.bbox = pad_to_minimus(bbox, 0.0001);
-
+    array_add(*scene.tlas.bboxes, bbox);
     primitive.material_id = material_id;
 }
 
@@ -597,7 +624,7 @@ add_box :: (scene: *Scene, xform: Matrix4, min: Vector3, max: Vector3, material_
     primitive.xform.inverse = inv;
     primitive.id = (scene.boxes.count - 1).(PrimitiveID);
     bbox := transform_box(xform, Box3.{min, max});
-    array_add(*scene.bboxes, bbox);
+    array_add(*scene.tlas.bboxes, bbox);
     primitive.material_id = material_id;
 }
 
@@ -621,7 +648,7 @@ add_translated_box :: (scene: *Scene, xform: Matrix4, p: Vector3, q: Vector3, ma
     add_box(scene, make_translation_matrix4(h) * xform, -d, d, material_id);
 }
 
-add_mesh :: (scene: *Scene, desc: MeshDesc, xform: Matrix4, material_id: MaterialID)
+add_mesh :: (scene: *Scene, xform: Matrix4, desc: MeshDesc, material_id: MaterialID)
 {
     primitive := add_primitive(scene, .MESH);
     array_add(*scene.meshes, desc);
@@ -640,7 +667,7 @@ add_mesh :: (scene: *Scene, desc: MeshDesc, xform: Matrix4, material_id: Materia
         bbox = concat(bbox, p);
     }
 
-    array_add(*scene.bboxes, bbox);
+    array_add(*scene.tlas.bboxes, bbox);
     primitive.material_id = material_id;
 }
 
@@ -732,18 +759,19 @@ prepare_for_rendering :: (scene: *Scene)
 
 build_bvh :: (scene: *Scene)
 {
-    array_resize(*scene.map, scene.primitives.count, initialize=false);
-    array_resize(*scene.mapped, scene.primitives.count, initialize=false);
-    array_resize(*scene.nodes, 2 * scene.primitives.count - 1);
+    array_resize(*scene.tlas.indices, scene.primitives.count, initialize=false);
+    array_resize(*scene.tlas.nodes, 2 * scene.primitives.count - 1);
 
-    for *scene.map
+    array_resize(*scene.mapped, scene.primitives.count, initialize=false);
+
+    for *scene.tlas.indices
     {
         it.* = it_index.(u32);
     }
 
-    build_bvh_binned_sah(scene.nodes, scene.map, scene.bboxes);
+    build_bvh_binned_sah(scene.tlas.nodes, scene.tlas.indices, scene.tlas.bboxes);
 
-    for scene.map
+    for scene.tlas.indices
     {
         scene.mapped[it_index] = scene.primitives[it];
     }
@@ -1171,8 +1199,178 @@ build :: ()
     build_bvh_binned_sah(debug_nodes, debug_indices, debug_boxes);
 }
 
+load_obj_model :: (path: string) -> MeshDesc
+{
+    auto_release_temp();
+
+    content := read_entire_file(path,,temp);
+
+    vertices  : [..]Vector3;
+    normals   : [..]Vector3;
+    texcoords : [..]Vector2;
+
+    vertex_indices   : [..]u32;
+    normal_indices   : [..]u32;
+    texcoord_indices : [..]u32;
+
+    // TODO: Use Xar or something similar?
+    // TODO: Use temporary memory/arena
+    defer
+    {
+        array_free(vertices);
+        array_free(normals);
+        array_free(texcoords);
+        array_free(vertex_indices);
+        array_free(normal_indices);
+        array_free(texcoord_indices);
+    }
+
+    while content
+    {
+        found:, line:, content = split_from_left(content, #char "\n");
+        if !found break;
+
+        if starts_with(line, "v ")
+        {
+            v: Vector3;
+            scan2(line, "v % % %", *v.x, *v.y, *v.z);
+            array_add(*vertices, v);
+        }
+        else if starts_with(line, "vt ")
+        {
+            uv: Vector2;
+            scan2(line, "vt % %", *uv.x, *uv.y);
+            array_add(*texcoords, uv);
+        }
+        else if starts_with(line, "vn ")
+        {
+            n: Vector3;
+            scan2(line, "vn % % %", *n.x, *n.y, *n.z);
+            array_add(*normals, n);
+        }
+        else if starts_with(line, "f ")
+        {
+            parse_face :: (line: string) #expand
+            {
+                number, success, face := string_to_int(line, T=s32);
+                index := ifx number > 0 then (number - 1).(u32) else (vertices.count + number).(u32);
+                array_add(*vertex_indices, index);
+
+                if !face return;
+                face = slice(face, 1, face.count - 1);
+
+                number, success, face = string_to_int(face, T=s32);
+                if success
+                {
+                    index = ifx number > 0 then (number - 1).(u32) else (texcoords.count + number).(u32);
+                    array_add(*texcoord_indices, index);
+                }
+
+                if !face return;
+                face = slice(face, 1, face.count - 1);
+
+                number, success, face = string_to_int(face, T=s32);
+                if success
+                {
+                    index = ifx number > 0 then (number - 1).(u32) else (normals.count + number).(u32);
+                    array_add(*normal_indices, index);
+                }
+            }
+
+            face1, face2, face3 : string;
+            found, line, face3 = split_from_right(line, #char " ");
+            found, line, face2 = split_from_right(line, #char " ");
+            found, line, face1 = split_from_right(line, #char " ");
+
+            parse_face(face1);
+            parse_face(face2);
+            parse_face(face3);
+        }
+    }
+
+    AttrIndex :: struct
+    {
+        vertex_index   : u32;
+        normal_index   : u32;
+        texcoord_index : u32;
+    }
+
+    hash_attr_index :: (a: AttrIndex) -> u32
+    {
+        return sdbm_hash((*a).(*void), size_of(AttrIndex));
+    }
+
+    compare_attr_index :: (a: AttrIndex, b: AttrIndex) -> bool
+    {
+        return a.vertex_index == b.vertex_index && a.normal_index == b.normal_index && a.texcoord_index == b.texcoord_index;
+    }
+
+    map   : Table(AttrIndex, u32, given_hash_function=hash_attr_index, given_compare_function=compare_attr_index, REFILL_REMOVED=false);
+    attrs := NewArray(vertex_indices.count, Vertex3D ,,temp);
+
+    defer deinit(*map); // TODO: Use temporary memory
+
+    indices := NewArray(vertex_indices.count, u32);
+
+    num_attrs := 0;
+
+    for 0..vertex_indices.count-1
+    {
+        index: AttrIndex;
+        index.vertex_index   = vertex_indices[it];
+        index.texcoord_index = ifx texcoord_indices texcoord_indices[it] else 0;
+        index.normal_index   = ifx normal_indices normal_indices[it] else 0;
+
+        entry, added := find_or_add(*map, index);
+
+        if added
+        {
+            entry.* = num_attrs.(u32);
+            attrs[num_attrs].p  = vertices[index.vertex_index];
+            if texcoords
+            attrs[num_attrs].uv = texcoords[index.texcoord_index];
+            if normals
+                attrs[num_attrs].n  = normals[index.normal_index];
+            num_attrs += 1;
+        }
+
+        indices[it] = entry.*;
+    }
+
+    mesh: MeshDesc;
+
+    mesh.vertices = array_copy(array_view(attrs, 0, num_attrs));
+    mesh.indices  = indices;
+
+    if !normals
+    {
+        num_triangles := indices.count / 3;
+
+        for 0..num_triangles-1
+        {
+            v0 := *mesh.vertices[indices[it * 3 + 0]];
+            v1 := *mesh.vertices[indices[it * 3 + 1]];
+            v2 := *mesh.vertices[indices[it * 3 + 2]];
+
+            e1 := v1.p - v0.p;
+            e2 := v2.p - v0.p;
+
+            n  := cross_product(e1, e2);
+            n   = normalize(n);
+
+            v0.n = n;
+            v1.n = n;
+            v2.n = n;
+        }
+    }
+
+    return mesh;
+}
+
 main :: ()
 {
+    dragon := load_obj_model("data/dragon/dragon.obj");
+
     add_bbox(1550, 440, 50, 50);
     add_bbox(50, 40, 150, 50);
     add_bbox(170, 50, 150, 250);
@@ -1193,12 +1391,12 @@ main :: ()
 
     scene: Scene;
     init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples = 128, max_depth=5);
-    load_scene(*scene, .CORNELL_BOX);
+    load_scene(*scene, .CORNELL_DRAGON);
     prepare_for_rendering(*scene);
 
     wavefront: Wavefront;
 
-    init_wavefront(*wavefront, *scene);
+    init(*wavefront, *scene);
     start(*wavefront);
 
     prepare_window(wnd, wanted_msaa = MSAA);
@@ -1254,7 +1452,7 @@ main :: ()
                 if it.key_pressed && it.key_code == #char "."
                 {
                     debug_bvh_depth += 1;
-                    if debug_bvh_depth > scene.nodes.count then debug_bvh_depth = scene.nodes.count;
+                    if debug_bvh_depth > scene.tlas.nodes.count then debug_bvh_depth = scene.tlas.nodes.count;
                     print("debug_bvh_depth : %\n", debug_bvh_depth);
                 }
 
@@ -1268,7 +1466,7 @@ main :: ()
         }
 
         texture_load_from_bitmap(*raytrace_map, *scene.bitmap);
-        draw_one_frame(wnd, *raytrace_map, scene, wavefront.num_threads);
+        draw_one_frame(wnd, *raytrace_map, scene, wavefront.threads.count);
 
         sleep_milliseconds(10);
 
@@ -1421,7 +1619,7 @@ draw_one_frame :: (wnd: Window_Type, map: *Texture, scene: Scene, num_threads: i
     if show_debug_bvh
     {
         projection_view := scene.camera.xform.projection * scene.camera.xform.view;
-        draw_bvh(0, scene.nodes, scene.bboxes, scene.map, projection_view, 0);
+        draw_bvh(0, scene.tlas.nodes, scene.tlas.bboxes, scene.tlas.indices, projection_view, 0);
     }
 
     secs  := time.(int);
@@ -1523,6 +1721,8 @@ lane_sync :: ()
 #import "System";
 #import "Srgb";
 #import "Atomics";
+#import "Hash_Table";
+#import "Hash";
 
 #import "Arena";
 #import "Raddbg"()(ENABLED=ENABLE_RAD_DEBUGGER);
