@@ -243,7 +243,7 @@ intersect_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3
 
     det := dot(edge1, pvec);
 
-    if (det < EPSILON)
+    if (det <= 0.0)
         return false, .{};
 
     tvec := origin - v0.p;
@@ -283,7 +283,9 @@ intersect_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3
     normal := w * v0.n + u * v1.n + v * v2.n;
     normal = normalize(normal);
 
-    set_face_normal(direction, normal, *info);
+    // back faces are culled
+    info.flags |= .FRONT_FACE;
+    info.n = normal;
 
     return true, info;
 }
@@ -531,7 +533,7 @@ set_face_normal :: inline (direction: Vector3, outward_normal : Vector3, info: *
     }
     else
     {
-        info.n = outward_normal;
+        info.n = -outward_normal;
     }
 }
 

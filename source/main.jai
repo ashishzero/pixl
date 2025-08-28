@@ -1,7 +1,7 @@
 #load "raytracer.jai";
 
-RAYTRACE_BITMAP_WIDTH  :: 800;
-RAYTRACE_BITMAP_HEIGHT :: 600;
+RAYTRACE_BITMAP_WIDTH  :: 1920;
+RAYTRACE_BITMAP_HEIGHT :: 1080;
 
 want_screenshot := false;
 
@@ -213,8 +213,6 @@ trace_ray :: (scene: Scene, first_ray: Ray, depth: s32) -> Vector3
 
             throughput *= desc.attenuation;
             ray = desc.scattered;
-
-            return hit.n * 0.5 + Vector3.{0.5, 0.5, 0.5};
         }
         else
         {
@@ -403,7 +401,7 @@ wavefront_raytrace_entry :: (thread: *Thread) -> s64
             last_frame_render_time_ms = to_milliseconds(t1 - t0);
             frame_index += 1;
 
-            if want_screenshot
+            if want_screenshot || (frame_index % 12) == 0
             {
                 save_screenshot(scene.bitmap, *screenshot_index);
                 want_screenshot = false;
@@ -471,6 +469,22 @@ join :: (using wavefront: *Wavefront)
     array_free(threads);
 }
 
+load_bunny :: () -> MeshDesc, Matrix4
+{
+    theta := 20.0 / 360.0 * 2 * PI;
+
+    rot: Quaternion;
+
+    set_from_axis_and_angle(*rot, 0, 1, 0, theta);
+
+    scale := 300.0;
+
+    dragon := load_obj_model("data/bunny/bunny.obj");
+    xform  := make_translation_matrix4(.{270, 90, 270}) * rotation_matrix(Matrix4, rot) * make_scale_matrix4(.{scale, scale, scale});
+
+    return dragon, xform;
+}
+
 load_dragon :: () -> MeshDesc, Matrix4
 {
     theta := 90.0 / 360.0 * 2 * PI;
@@ -479,9 +493,9 @@ load_dragon :: () -> MeshDesc, Matrix4
 
     set_from_axis_and_angle(*rot, 0, 1, 0, theta);
 
-    scale := 700.0;
+    scale := 500.0;
 
-    dragon := load_obj_model("data/dragon.obj");
+    dragon := load_obj_model("data/dragon/dragon.obj");
     xform  := make_translation_matrix4(.{270, 140, 270}) * rotation_matrix(Matrix4, rot) * make_scale_matrix4(.{scale, scale, scale});
 
     return dragon, xform;
@@ -556,25 +570,25 @@ load_scene :: (using scene: *Scene, type: SceneType)
             camera.position      = .{278, 278, -800};
 
             environment          = .{0, 0, 0};
-            environment          = .{0.3, 0.2, 0.7};
+            //environment          = .{0.3, 0.2, 0.7};
 
             red   := add_lambertian_material(scene, .{0.65, 0.05, 0.05});
             white := add_lambertian_material(scene, .{0.73, 0.73, 0.73});
             green := add_lambertian_material(scene, .{0.12, 0.45, 0.15});
             light := add_diffuse_light(scene, .{15, 15, 15});
 
-  //          add_box(scene, Matrix4_Identity, .{213, 554, 227}, .{343, 554.01, 332}, light);
-  //          add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{0.01, 555, 555}, green); // left
-  //          add_box(scene, Matrix4_Identity, .{555, 0, 0}, .{555.01, 555, 555}, red); // right
-  //          add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{555, 0.01, 555}, white); // bottom
-  //          add_box(scene, Matrix4_Identity, .{0, 0, 555}, .{555, 555, 555.01}, white); // back
-  //          add_box(scene, Matrix4_Identity, .{0, 555, 0}, .{555, 555.01, 555}, white); // top
+            add_box(scene, Matrix4_Identity, .{213, 554, 227}, .{343, 554.01, 332}, light);
+            add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{0.01, 555, 555}, green); // left
+            add_box(scene, Matrix4_Identity, .{555, 0, 0}, .{555.01, 555, 555}, red); // right
+            add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{555, 0.01, 555}, white); // bottom
+            add_box(scene, Matrix4_Identity, .{0, 0, 555}, .{555, 555, 555.01}, white); // back
+            add_box(scene, Matrix4_Identity, .{0, 555, 0}, .{555, 555.01, 555}, white); // top
 
             metal := add_metal_material(scene);
 
             dragon, xform := load_dragon();
 
-            add_mesh(scene, xform, dragon, green);
+            add_mesh(scene, xform, dragon, metal);
 
         case .RANDOM_SHAPES;
     }
@@ -1400,7 +1414,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples = 15, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples = 1500, max_depth=15);
     load_scene(*scene, .CORNELL_DRAGON);
     prepare_for_rendering(*scene);
 
