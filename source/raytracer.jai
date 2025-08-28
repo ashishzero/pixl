@@ -1,7 +1,7 @@
 #load "primitives.jai";
 
-MaterialID  :: #type,distinct u64;
-PrimitiveID :: #type,distinct u64;
+MaterialID  :: #type,distinct u32;
+PrimitiveID :: #type,distinct u32;
 
 Box3 :: struct
 {
@@ -81,9 +81,10 @@ PathTracerConfig :: struct
 
 AccelerationStructure :: struct
 {
+    // @todo: Make these array view
     nodes      : [..]BVHNode;
     indices    : [..]u32;
-    bboxes     : [..]Box3;
+    bboxes     : [..]Box3; // @todo: Not needed remove!!
 }
 
 Scene :: struct
@@ -163,7 +164,7 @@ intersect_primitive :: (scene: Scene, primitive: Primitive, origin: Vector3, dir
 
 #scope_export
 
-// TODO: Remove scene from here
+// @todo: Remove scene from here
 intersect_bvh :: (nodes: []BVHNode, primitives: []Primitive, ray: Ray, scene: Scene) -> HitInfo, int
 {
     nodes_stack : [64]u32 = ---;
@@ -194,16 +195,12 @@ intersect_bvh :: (nodes: []BVHNode, primitives: []Primitive, ray: Ray, scene: Sc
             {
                 for 0..node.num_primitives-1
                 {
-                    bbox := scene.tlas.bboxes[scene.tlas.indices[node.first_child_or_primitive + it]];
-                    if hits(origin, inv_dir, bbox, tmin, tmax) // TODO: temporary, remove this after we have blas
+                    primitive := primitives[node.first_child_or_primitive + it];
+                    current := intersect_primitive(scene, primitive, origin, dir, tmin, tmax);
+                    if (current.type == .INTERSECT)
                     {
-                        primitive := primitives[node.first_child_or_primitive + it];
-                        current := intersect_primitive(scene, primitive, origin, dir, tmin, tmax);
-                        if (current.type == .INTERSECT)
-                        {
-                            tmax = current.t;
-                            info = current;
-                        }
+                        tmax = current.t;
+                        info = current;
                     }
                 }
             }

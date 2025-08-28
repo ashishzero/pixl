@@ -1,7 +1,7 @@
 #load "raytracer.jai";
 
-RAYTRACE_BITMAP_WIDTH  :: 1280;
-RAYTRACE_BITMAP_HEIGHT :: 720;
+RAYTRACE_BITMAP_WIDTH  :: 800;
+RAYTRACE_BITMAP_HEIGHT :: 600;
 
 want_screenshot := false;
 
@@ -34,7 +34,7 @@ sample :: inline (bitmap: Bitmap, u: float, v: float) -> Vector3
     Clamp(*u, 0, 1);
     Clamp(*v, 0, 1);
 
-    // TODO: bilinear interpolate
+    // @todo: bilinear interpolate
     x := (u * (bitmap.width - 1)).(s32);
     y := (v * (bitmap.height - 1)).(s32);
 
@@ -213,6 +213,8 @@ trace_ray :: (scene: Scene, first_ray: Ray, depth: s32) -> Vector3
 
             throughput *= desc.attenuation;
             ray = desc.scattered;
+
+            return hit.n * 0.5 + Vector3.{0.5, 0.5, 0.5};
         }
         else
         {
@@ -267,7 +269,7 @@ Wavefront :: struct
 
 #add_context lane: LaneDescription;
 
-RAY_TRACE_TILE_SIZE : s32 : 16;
+RAY_TRACE_TILE_SIZE : s32 : 4;
 
 RenderShared :: struct
 {
@@ -331,7 +333,7 @@ render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared
 
                 scene.rgbx[index].xyz = render;
 
-                // TODO: HDR mapping
+                // @todo: HDR mapping
                 Clamp(*render.x, 0, 1);
                 Clamp(*render.y, 0, 1);
                 Clamp(*render.z, 0, 1);
@@ -469,6 +471,22 @@ join :: (using wavefront: *Wavefront)
     array_free(threads);
 }
 
+load_dragon :: () -> MeshDesc, Matrix4
+{
+    theta := 90.0 / 360.0 * 2 * PI;
+
+    rot: Quaternion;
+
+    set_from_axis_and_angle(*rot, 0, 1, 0, theta);
+
+    scale := 700.0;
+
+    dragon := load_obj_model("data/dragon.obj");
+    xform  := make_translation_matrix4(.{270, 140, 270}) * rotation_matrix(Matrix4, rot) * make_scale_matrix4(.{scale, scale, scale});
+
+    return dragon, xform;
+}
+
 load_scene :: (using scene: *Scene, type: SceneType)
 {
     if #complete type ==
@@ -538,33 +556,25 @@ load_scene :: (using scene: *Scene, type: SceneType)
             camera.position      = .{278, 278, -800};
 
             environment          = .{0, 0, 0};
+            environment          = .{0.3, 0.2, 0.7};
 
             red   := add_lambertian_material(scene, .{0.65, 0.05, 0.05});
             white := add_lambertian_material(scene, .{0.73, 0.73, 0.73});
             green := add_lambertian_material(scene, .{0.12, 0.45, 0.15});
             light := add_diffuse_light(scene, .{15, 15, 15});
 
-            add_box(scene, Matrix4_Identity, .{213, 554, 227}, .{343, 554.01, 332}, light);
-            add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{0.01, 555, 555}, green); // left
-            add_box(scene, Matrix4_Identity, .{555, 0, 0}, .{555.01, 555, 555}, red); // right
-            add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{555, 0.01, 555}, white); // bottom
-            add_box(scene, Matrix4_Identity, .{0, 0, 555}, .{555, 555, 555.01}, white); // back
-            add_box(scene, Matrix4_Identity, .{0, 555, 0}, .{555, 555.01, 555}, white); // top
+  //          add_box(scene, Matrix4_Identity, .{213, 554, 227}, .{343, 554.01, 332}, light);
+  //          add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{0.01, 555, 555}, green); // left
+  //          add_box(scene, Matrix4_Identity, .{555, 0, 0}, .{555.01, 555, 555}, red); // right
+  //          add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{555, 0.01, 555}, white); // bottom
+  //          add_box(scene, Matrix4_Identity, .{0, 0, 555}, .{555, 555, 555.01}, white); // back
+  //          add_box(scene, Matrix4_Identity, .{0, 555, 0}, .{555, 555.01, 555}, white); // top
 
             metal := add_metal_material(scene);
 
-            theta := 18.0 / 360.0 * 2 * PI;
+            dragon, xform := load_dragon();
 
-            rot: Quaternion;
-
-            set_from_axis_and_angle(*rot, 0, 1, 0, theta);
-
-            scale := 200.0;
-
-            dragon := load_obj_model("data/monkey.obj");
-            xform  := make_translation_matrix4(.{270, 140, 270}) * rotation_matrix(Matrix4, rot) * make_scale_matrix4(.{scale, scale, scale});
-
-            add_mesh(scene, xform, dragon, metal);
+            add_mesh(scene, xform, dragon, green);
 
         case .RANDOM_SHAPES;
     }
@@ -888,7 +898,7 @@ pad_to_minimus :: (b: Box3, padding: float) -> Box3
     return r;
 }
 
-// TODO: Multithread
+// @todo: Multithread
 radix_sort :: (K: []u32, K_temp: []u32, V: []$T, V_temp: []T, n: s64)
 {
     prefix: [256]u32;
@@ -1175,28 +1185,30 @@ build_bvh_binned_sah :: (nodes: []BVHNode, indices: []u32, bboxes: []Box3)
     build_bvh_sah_binned_recursive(*builder, 0, 0, indices.count - 1, indices, bboxes, centriods);
 }
 
-debug_nodes:   [..]BVHNode;
-debug_boxes:   [..]Box3;
-debug_indices: [..]u32;
+build_blas :: (using mesh: *MeshDesc)
+{    
+    num_triangles := indices.count / 3;
 
-add_bbox :: (x: float, y: float, w: float, h: float)
-{
-    vmin := Vector3.{x, y, 0};
-    vmax := Vector3.{x + w, y + h, 0};
-    array_add(*debug_boxes, Box3.{vmin, vmax});
-}
+    array_resize(*blas.bboxes, num_triangles, initialize=false);
+    array_resize(*blas.indices, num_triangles, initialize=false);
+    array_resize(*blas.nodes, 2 * num_triangles - 1, initialize=false);
 
-build :: ()
-{
-    if debug_boxes.count == 0 return;
+    for 0..num_triangles-1
+    {
+        i0 := indices[it * 3 + 0];
+        i1 := indices[it * 3 + 1];
+        i2 := indices[it * 3 + 2];
 
-    array_resize(*debug_nodes, debug_boxes.count * 2 - 1);
-    array_resize(*debug_indices, debug_boxes.count);
+        v0 := vertices[i0].p;
+        v1 := vertices[i1].p;
+        v2 := vertices[i2].p;
 
-    for *debug_indices
-        it.* = it_index.(u32);
+        blas.bboxes[it]  = triangle_bbox(v0, v1, v2);
+        blas.indices[it] = it.(u32);
+    }
 
-    build_bvh_binned_sah(debug_nodes, debug_indices, debug_boxes);
+    // @todo: map indices or may be not worth it??
+    build_bvh_binned_sah(blas.nodes, blas.indices, blas.bboxes);
 }
 
 load_obj_model :: (path: string) -> MeshDesc
@@ -1213,8 +1225,8 @@ load_obj_model :: (path: string) -> MeshDesc
     normal_indices   : [..]u32;
     texcoord_indices : [..]u32;
 
-    // TODO: Use Xar or something similar?
-    // TODO: Use temporary memory/arena
+    // @todo @cleanup
+    // Use Xar or temporary memory/arena
     defer
     {
         array_free(vertices);
@@ -1308,7 +1320,7 @@ load_obj_model :: (path: string) -> MeshDesc
     map   : Table(AttrIndex, u32, given_hash_function=hash_attr_index, given_compare_function=compare_attr_index, REFILL_REMOVED=false);
     attrs := NewArray(vertex_indices.count, Vertex3D ,,temp);
 
-    defer deinit(*map); // TODO: Use temporary memory
+    defer deinit(*map); // @todo: Use temporary memory
 
     indices := NewArray(vertex_indices.count, u32);
 
@@ -1364,21 +1376,19 @@ load_obj_model :: (path: string) -> MeshDesc
         }
     }
 
+    build_blas(*mesh);
+
     return mesh;
 }
 
+debug_mesh: MeshDesc;
+debug_mesh_xform: Matrix4;
+
 main :: ()
 {
-    dragon := load_obj_model("data/dragon/dragon.obj");
-
-    add_bbox(1550, 440, 50, 50);
-    add_bbox(50, 40, 150, 50);
-    add_bbox(170, 50, 150, 250);
-    add_bbox(860, 440, 200, 200);
-
-    build();
-
     init();
+
+    debug_mesh, debug_mesh_xform = load_dragon();
 
     MSAA :: 8;
 
@@ -1390,7 +1400,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples = 128, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples = 15, max_depth=5);
     load_scene(*scene, .CORNELL_DRAGON);
     prepare_for_rendering(*scene);
 
@@ -1452,14 +1462,14 @@ main :: ()
                 if it.key_pressed && it.key_code == #char "."
                 {
                     debug_bvh_depth += 1;
-                    if debug_bvh_depth > scene.tlas.nodes.count then debug_bvh_depth = scene.tlas.nodes.count;
+                    if debug_bvh_depth > 255 debug_bvh_depth = 255;
                     print("debug_bvh_depth : %\n", debug_bvh_depth);
                 }
 
                 if it.key_pressed && it.key_code == #char ","
                 {
                     debug_bvh_depth -= 1;
-                    if debug_bvh_depth < -1 then debug_bvh_depth = -1;
+                    if debug_bvh_depth < 0 debug_bvh_depth = 0;
                     print("debug_bvh_depth : %\n", debug_bvh_depth);
                 }
             }
@@ -1534,6 +1544,77 @@ draw_line :: (a: Vector3, b: Vector3, color: Vector4, projection: Matrix4)
     corners := emboss_line(p0.xy, p1.xy, 1);
 
     immediate_quad(corners[0], corners[1], corners[2], corners[3], color, color, color, color);
+}
+
+draw_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, color: Vector4, pv: Matrix4, inv_transpose: Matrix4)
+{
+    light_dir := Vector3.{0, -1, 1};
+
+    light_dir = normalize(light_dir);
+
+    strength1 := max(dot(v0.n, -light_dir), 0.0);
+    strength2 := max(dot(v1.n, -light_dir), 0.0);
+    strength3 := max(dot(v2.n, -light_dir), 0.0);
+
+    color1 := strength1 * color;
+    color2 := strength2 * color;
+    color3 := strength3 * color;
+
+    p0 := pv * Vector4.{ v0.p.x, v0.p.y, v0.p.z, 1 };
+    p1 := pv * Vector4.{ v1.p.x, v1.p.y, v1.p.z, 1 };
+    p2 := pv * Vector4.{ v2.p.x, v2.p.y, v2.p.z, 1 };
+
+    p0 /= p0.w;
+    p1 /= p1.w;
+    p2 /= p2.w;
+
+    p0.x *= MAP_RATIO;
+    p0.y *= MAP_RATIO;
+
+    p1.x *= MAP_RATIO;
+    p1.y *= MAP_RATIO;
+
+    p2.x *= MAP_RATIO;
+    p2.y *= MAP_RATIO;
+
+    p0 *= 0.5;
+    p1 *= 0.5;
+    p2 *= 0.5;
+
+    p0 += Vector4.{ 0.5, 0.5, 0.5, 0.0 };
+    p1 += Vector4.{ 0.5, 0.5, 0.5, 0.0 };
+    p2 += Vector4.{ 0.5, 0.5, 0.5, 0.0 };
+
+    face := cross(p1.xyz - p0.xyz, p2.xyz - p0.xyz);
+
+    if face.z >= 0 then
+        return;
+
+    p0.x *= (render_width - 1);
+    p0.y *= (render_height - 1);
+    p1.x *= (render_width - 1);
+    p1.y *= (render_height - 1);
+    p2.x *= (render_width - 1);
+    p2.y *= (render_height - 1);
+
+    immediate_triangle(p0.xyz, p1.xyz, p2.xyz, color1, color2, color3);
+
+    //draw_line(v0.p, v1.p, color, projection);
+    //draw_line(v1.p, v2.p, color, projection);
+    //draw_line(v2.p, v0.p, color, projection);
+}
+
+draw_mesh :: (mesh: MeshDesc, color: Vector4, pv: Matrix4, inv_transpose: Matrix4)
+{
+    num_triangles := mesh.indices.count / 3;
+
+    for 0..num_triangles-1
+    {
+        i0 := mesh.indices[it * 3 + 0];
+        i1 := mesh.indices[it * 3 + 1];
+        i2 := mesh.indices[it * 3 + 2];
+        draw_triangle(mesh.vertices[i0], mesh.vertices[i1], mesh.vertices[i2], color, pv, inv_transpose);
+    }
 }
 
 draw_box :: (box: Box3, color: Vector4, projection: Matrix4)
@@ -1618,8 +1699,14 @@ draw_one_frame :: (wnd: Window_Type, map: *Texture, scene: Scene, num_threads: i
 
     if show_debug_bvh
     {
-        projection_view := scene.camera.xform.projection * scene.camera.xform.view;
-        draw_bvh(0, scene.tlas.nodes, scene.tlas.bboxes, scene.tlas.indices, projection_view, 0);
+        projection_view := scene.camera.xform.projection * scene.camera.xform.view * debug_mesh_xform;
+        //draw_bvh(0, scene.tlas.nodes, scene.tlas.bboxes, scene.tlas.indices, projection_view, 0);
+        //draw_bvh(0, debug_mesh.blas.nodes, debug_mesh.blas.bboxes, debug_mesh.blas.indices, projection_view, 0);
+
+        _, inv := inverse(scene.camera.xform.view * debug_mesh_xform);
+        inv_transpose := transpose(inv);
+
+        draw_mesh(debug_mesh, .{1, 1, 1, 1}, projection_view, inv_transpose);
     }
 
     secs  := time.(int);
@@ -1644,7 +1731,7 @@ draw_one_frame :: (wnd: Window_Type, map: *Texture, scene: Scene, num_threads: i
 MAP_RATIO :: 0.9;
 
 debug_bvh_depth := -1;
-show_debug_bvh := true;
+show_debug_bvh := false;
 should_quit := false;
 render_width := 0;
 render_height := 0;

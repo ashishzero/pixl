@@ -48,9 +48,10 @@ MeshDesc :: struct
 {
     indices : []u32;
     vertices: []Vertex3D;
+    blas    : AccelerationStructure; // @todo: Remove this, and add this to Primitive instead
 }
 
-IntersectFlags :: enum_flags
+IntersectFlags :: enum_flags u32
 {
     FRONT_FACE :: 0x1;
 }
@@ -65,9 +66,15 @@ IntersectInfo :: struct
     flags : IntersectFlags;
 };
 
-point_at :: (ray: Ray, t: float) -> Vector3
+point_at :: inline (ray: Ray, t: float) -> Vector3
 {
     point := ray.origin + ray.direction * t;
+    return point;
+}
+
+point_at :: inline (origin: Vector3, direction: Vector3, t: float) -> Vector3
+{
+    point := origin + direction * t;
     return point;
 }
 
@@ -104,7 +111,7 @@ intersect_sphere :: (sphere: SphereDesc, ray: Ray) -> bool, IntersectInfo
     info.u = uv.x;
     info.v = uv.y;
 
-    set_face_normal(ray, n, *info);
+    set_face_normal(ray.direction, n, *info);
 
     return true, info;
 }
@@ -181,7 +188,7 @@ intersect_box :: (box: BoxDesc, ray: Ray) -> bool, IntersectInfo
     Clamp(*info.u, 0.0, 1.0);
     Clamp(*info.v, 0.0, 1.0);
 
-    set_face_normal(ray, n, *info);
+    set_face_normal(ray.direction, n, *info);
 
     return true, info;
 }
@@ -221,12 +228,140 @@ intersect_disk :: (disk: DiskDesc, ray: Ray) -> bool, IntersectInfo
     info.u = theta;
     info.v = v;
 
-    set_face_normal(ray, normal, *info);
+    set_face_normal(ray.direction, normal, *info);
 
     return true, info;
 }
 
+intersect_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3, direction: Vector3, tmin: float, tmax: float) -> bool, IntersectInfo
+{
+    // https://www.graphics.cornell.edu/pubs/1997/MT97.pdf
+
+    edge1 := v1.p - v0.p;
+    edge2 := v2.p - v0.p;
+    pvec  := cross(direction, edge2);
+
+    det := dot(edge1, pvec);
+
+    if (det < EPSILON)
+        return false, .{};
+
+    tvec := origin - v0.p;
+    u := dot(tvec, pvec);
+    if u < 0.0 || u > det then
+        return false, .{};
+
+    qvec := cross(tvec, edge1);
+    v    := dot(direction, qvec);
+    if v < 0.0 || u + v > det then
+        return false, .{};
+
+    t := dot(edge2, qvec);
+    inv_det := 1.0 / det;
+
+    t *= inv_det;
+
+    if (t <= tmin || tmax <= t)
+        return false, .{};
+
+    u *= inv_det;
+    v *= inv_det;
+
+    info: IntersectInfo;
+
+    w := 1.0 - u - v;
+
+    hit_p := point_at(origin, direction, t);
+
+    info.t = t;
+    info.p = hit_p;
+
+    uv := w * v0.uv + u * v1.uv + v * v2.uv;
+    info.u = uv.x;
+    info.v = uv.y;
+
+    normal := w * v0.n + u * v1.n + v * v2.n;
+    normal = normalize(normal);
+
+    set_face_normal(direction, normal, *info);
+
+    return true, info;
+}
+
+// @todo: cleanup/copynpaste from intersect_bvh
+
+intersect_blas :: (mesh: MeshDesc, ray: Ray) -> bool, IntersectInfo
+{
+    using blas := mesh.blas;
+
+    nodes_stack : [64]u32 = ---;
+
+    top : u32 = 1;
+    nodes_stack[0] = 0;
+
+    hit  := false;
+    info : IntersectInfo;
+
+    origin  := ray.origin;
+    dir     := ray.direction;
+    inv_dir := Vector3.{1.0 / dir.x, 1.0 / dir.y, 1.0 / dir.z};
+    tmin    := ray.tmin;
+    tmax    := ray.tmax;
+
+    while top > 0
+    {
+        top -= 1;
+        node := nodes[nodes_stack[top]];
+
+        if (hits(origin, inv_dir, node.bbox, tmin, tmax))
+        {
+            if (node.num_primitives)
+            {
+                for 0..node.num_primitives-1
+                {
+                    // @cleanup @copynpaste Only change is here
+
+                    face_index := indices[node.first_child_or_primitive + it];
+
+                    vtx_idx0   := mesh.indices[face_index * 3 + 0];
+                    vtx_idx1   := mesh.indices[face_index * 3 + 1];
+                    vtx_idx2   := mesh.indices[face_index * 3 + 2];
+
+                    vtx0       := mesh.vertices[vtx_idx0];
+                    vtx1       := mesh.vertices[vtx_idx1];
+                    vtx2       := mesh.vertices[vtx_idx2];
+
+                    intersect, current := intersect_triangle(vtx0, vtx1, vtx2, origin, dir, tmin, tmax);
+
+                    if intersect
+                    {
+                        tmax = current.t;
+                        info = current;
+                        hit  = true;
+                    }
+                }
+            }
+            else
+            {
+                assert(top + 2 < nodes_stack.count);
+                // @todo @speed push the node that is likely to be hit at the top; refer pbrt
+                nodes_stack[top + 0] = node.first_child_or_primitive + 1;
+                nodes_stack[top + 1] = node.first_child_or_primitive + 0;
+                top += 2;
+            }
+        }
+    }
+
+    return hit, info;
+}
+
 intersect_mesh :: (mesh: MeshDesc, ray: Ray) -> bool, IntersectInfo
+{
+    hit, info := intersect_blas(mesh, ray);
+    return hit, info;
+}
+
+intersect_mesh_slow :: (mesh: MeshDesc, ray: Ray) -> bool, IntersectInfo
 {
     tmin := ray.tmin;
     tmax := ray.tmax;
@@ -312,7 +447,7 @@ intersect_mesh :: (mesh: MeshDesc, ray: Ray) -> bool, IntersectInfo
         normal := hit_w * mesh.vertices[hit_i0].n + hit_u * mesh.vertices[hit_i1].n + hit_v * mesh.vertices[hit_i2].n;
         normal = normalize(normal);
 
-        set_face_normal(ray, normal, *info);
+        set_face_normal(ray.direction, normal, *info);
     }
 
     return hit, info;
@@ -387,9 +522,9 @@ encode_spherical_uv :: inline (n: Vector3) -> Vector2
     return Vector2.{u, 1.0 - v};
 }
 
-set_face_normal :: inline (ray : Ray, outward_normal : Vector3, info: *IntersectInfo)
+set_face_normal :: inline (direction: Vector3, outward_normal : Vector3, info: *IntersectInfo)
 {
-    if (dot(ray.direction, outward_normal) < 0)
+    if (dot(direction, outward_normal) < 0)
     {
         info.flags |= .FRONT_FACE;
         info.n = outward_normal;

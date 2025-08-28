@@ -226,7 +226,7 @@
 
     // How many of the extra dynamic array fields are worth viewing? Take your pick.
     // #run raddbg_type_view("[..] ?", "array(data, count)");                // Just show the items
-    #run raddbg_type_view("resizable_array<?>", "rows($, count, array(data, count))");   // Show the count, then the items
+    #run raddbg_type_view("array_resizable<?>", "rows($, count, array(data, count))");   // Show the count, then the items
     // #run raddbg_type_view("[..] ?", "rows($, count, allocated, allocator, allocator_data, array(data, count))"); // Show the whole shebang, then the items
 
     // @TODO(Charles): When just doing the items, there was an issue where the count would be the count of the first string in the array.
