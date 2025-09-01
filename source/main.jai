@@ -51,6 +51,45 @@ sample :: inline (bitmap: Bitmap, u: float, v: float) -> Vector3
     return .{r, g, b};
 }
 
+// https://media.disneyanimation.com/uploads/production/publication_asset/48/asset/s2012_pbs_disney_brdf_notes_v3.pdf
+
+schlick_reflectance :: inline (cosine: float) -> float
+{
+    x  := 1.0 - cosine;
+    x2 := x * x;
+    y  := x2 * x2 * x; // y=pow(1 - cosine, 5);
+    return y;
+}
+
+brdf_disney :: (l: Vector3, v: Vector3, m: Material)
+{
+    INV_PI :: 1.0 / PI;
+
+    h := normalize(0.5 * (l + v));
+
+    cos_d := dot(l, h);
+    cos_l := l.z; // dot(l, n)
+    cos_v := v.z; // dot(v, n)
+
+    Fd_90 := 0.5 + 2 * m.roughness * cos_d * cos_d;
+    Fd_90_minus_1 := Fd_90 - 1;
+
+    fl := schlick_reflectance(cos_l);
+    fv := schlick_reflectance(cos_v);
+
+    fd := (1.0 + Fd_90_minus_1 * fl) * (1.0 + Fd_90_minus_1 * fv);
+
+
+}
+
+sample_surface :: (v: Vector3, n: Vector3, t: Vector3, material: Material) -> l: Vector3, f: Vector3
+{
+    l: Vector3;
+    f: Vector3;
+
+    return l, f;
+}
+
 emitted_color_at_hit :: (scene: Scene, hit: HitInfo) -> Vector3
 {
     material := scene.materials[hit.material_id];
@@ -144,6 +183,8 @@ scatter :: (scene: Scene, ray: Ray, hit: HitInfo) -> ScatterInfo
             info.attenuation = sample(material.bitmap, hit.u, hit.v) * material.albedo;
 
         case .DIELECTRIC;
+            assert(material.refractive_index != 0.0);
+
             ri := ifx hit.flags & .FRONT_FACE then
                      (1.0 / material.refractive_index)
                 else material.refractive_index;
@@ -191,7 +232,7 @@ scatter :: (scene: Scene, ray: Ray, hit: HitInfo) -> ScatterInfo
 trace_ray :: (scene: Scene, first_ray: Ray, depth: s32) -> Vector3
 {
     color := Vector3.{0, 0, 0};
-    throughput := Vector3.{1, 1, 1};
+    attenuation := Vector3.{1, 1, 1};
 
     ray := first_ray;
 
@@ -204,19 +245,21 @@ trace_ray :: (scene: Scene, first_ray: Ray, depth: s32) -> Vector3
             emitted := emitted_color_at_hit(scene, hit);
             desc    := scatter(scene, ray, hit);
 
-            color += throughput * emitted;
+            color += attenuation * emitted;
 
             if (!desc.scatter)
             {
                 break;
             }
 
-            throughput *= desc.attenuation;
+            cosine := max(0.0, dot(hit.n, -ray.direction));
+
+            attenuation *= cosine * desc.attenuation;
             ray = desc.scattered;
         }
         else
         {
-            color += throughput * scene.environment;
+            color += attenuation * scene.environment;
             break;
         }
     }
@@ -231,6 +274,8 @@ trace_pixel :: (scene: Scene, x: s32, y: s32, num_samples: s32) -> Vector3
 
     width  := scene.config.width;
     height := scene.config.height;
+
+    assert(width > 1 && height > 1);
 
     scale  := Vector2.{ 2.0 / (width - 1).(float), 2.0 / (height - 1).(float) };
     shift  := Vector2.{ -1.0, -1.0 };
@@ -292,6 +337,8 @@ render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared
         atomic_write(*shared.tile_id, 0);
     }
 
+    inv_samples := 1.0 / (num_samples * num_samples).(float);
+
     lane_sync();
 
     while !should_quit
@@ -312,7 +359,7 @@ render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared
         if x1 >= width  then x1 = width - 1;
         if y1 >= height then y1 = height - 1;
 
-        offset := captured_tile_id * RAY_TRACE_TILE_SIZE * RAY_TRACE_TILE_SIZE;
+        //offset := captured_tile_id * RAY_TRACE_TILE_SIZE * RAY_TRACE_TILE_SIZE;
 
         for y:y0..y1
         {
@@ -320,14 +367,14 @@ render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared
             {
                 color := trace_pixel(scene, x.(s32), y.(s32), num_samples);
 
-                //index := y * width + x;
-                index := offset;
-                offset += 1;
+                index := y * width + x;
+                //index := offset;
+                //offset += 1;
 
+                color *= inv_samples;
                 prev_color := scene.rgbx[index].xyz;
-                curr_color := color / (num_samples * num_samples).(float);
 
-                render := lerp(prev_color, curr_color, weight);
+                render := lerp(prev_color, color, weight);
 
                 scene.rgbx[index].xyz = render;
 
@@ -362,12 +409,10 @@ write_color :: (bitmap: *Bitmap, x: int, y: int, linear: Vector3)
 
 SceneType :: enum
 {
-    RANDOM_SPHERES;
-    CAR_MESH;
     BASIC_LIGHT;
     CORNELL_BOX;
     CORNELL_DRAGON;
-    RANDOM_SHAPES;
+    CORNELL_MONKEY;
 }
 
 wavefront_raytrace_entry :: (thread: *Thread) -> s64
@@ -414,7 +459,7 @@ wavefront_raytrace_entry :: (thread: *Thread) -> s64
     return 0;
 }
 
-init :: (using wavefront: *Wavefront, scene: *Scene, max_threads: s32 = 0)
+init :: (wavefront: *Wavefront, scene: *Scene, max_threads: s32 = 0)
 {
     num_cpus := get_number_of_processors();
 
@@ -428,11 +473,11 @@ init :: (using wavefront: *Wavefront, scene: *Scene, max_threads: s32 = 0)
         num_cpus = max_threads;
     }
 
-    init_sync_barrier(*barrier, num_cpus);
+    init_sync_barrier(*wavefront.barrier, num_cpus);
 
-    array_resize(*threads, num_cpus);
+    array_resize(*wavefront.threads, num_cpus);
 
-    for * threads
+    for * wavefront.threads
     {
         thread_init(it, wavefront_raytrace_entry);
         it.data = scene;
@@ -479,10 +524,26 @@ load_bunny :: () -> MeshDesc, Matrix4
 
     scale := 300.0;
 
-    dragon := load_obj_model("data/bunny/bunny.obj");
-    xform  := make_translation_matrix4(.{270, 90, 270}) * rotation_matrix(Matrix4, rot) * make_scale_matrix4(.{scale, scale, scale});
+    bunny := load_obj_model("data/bunny/bunny.obj");
+    xform := make_translation_matrix4(.{270, 90, 270}) * rotation_matrix(Matrix4, rot) * make_scale_matrix4(.{scale, scale, scale});
 
-    return dragon, xform;
+    return bunny, xform;
+}
+
+load_monkey :: () -> MeshDesc, Matrix4
+{
+    theta := 30.0 / 360.0 * 2 * PI;
+
+    rot: Quaternion;
+
+    set_from_axis_and_angle(*rot, 0, 1, 0, theta);
+
+    scale := 200.0;
+
+    monkey := load_obj_model("data/monkey.obj");
+    xform  := make_translation_matrix4(.{270, 140, 270}) * rotation_matrix(Matrix4, rot) * make_scale_matrix4(.{scale, scale, scale});
+
+    return monkey, xform;
 }
 
 load_dragon :: () -> MeshDesc, Matrix4
@@ -505,10 +566,6 @@ load_scene :: (using scene: *Scene, type: SceneType)
 {
     if #complete type ==
     {
-        case .RANDOM_SPHERES;
-
-        case .CAR_MESH;
-
         case .BASIC_LIGHT;
             camera.fov           = 40.0 / 360.0;
             camera.position      = .{0, 0, -30};
@@ -584,13 +641,38 @@ load_scene :: (using scene: *Scene, type: SceneType)
             add_box(scene, Matrix4_Identity, .{0, 0, 555}, .{555, 555, 555.01}, white); // back
             add_box(scene, Matrix4_Identity, .{0, 555, 0}, .{555, 555.01, 555}, white); // top
 
-            metal := add_metal_material(scene);
+            metal := add_dielectric_material(scene);
 
             dragon, xform := load_dragon();
 
             add_mesh(scene, xform, dragon, metal);
 
-        case .RANDOM_SHAPES;
+        case .CORNELL_MONKEY;
+            camera.fov           = 40.0 / 360.0;
+            camera.position      = .{278, 278, -800};
+
+            environment          = .{0, 0, 0};
+            //environment          = .{0.3, 0.2, 0.7};
+
+            red   := add_lambertian_material(scene, .{0.65, 0.05, 0.05});
+            white := add_lambertian_material(scene, .{0.73, 0.73, 0.73});
+            green := add_lambertian_material(scene, .{0.12, 0.45, 0.15});
+            light := add_diffuse_light(scene, .{15, 15, 15});
+
+            add_box(scene, Matrix4_Identity, .{213, 554, 227}, .{343, 554.01, 332}, light); // top
+            add_box(scene, Matrix4_Identity, .{0, 27, 227}, .{0.1, 127, 327}, light); // left
+
+            add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{0.01, 555, 555}, green); // left
+            add_box(scene, Matrix4_Identity, .{555, 0, 0}, .{555.01, 555, 555}, red); // right
+            add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{555, 0.01, 555}, white); // bottom
+            add_box(scene, Matrix4_Identity, .{0, 0, 555}, .{555, 555, 555.01}, white); // back
+            add_box(scene, Matrix4_Identity, .{0, 555, 0}, .{555, 555.01, 555}, white); // top
+
+            metal := add_metal_material(scene);
+
+            monkey, xform := load_monkey();
+
+            add_mesh(scene, xform, monkey, white);
     }
 }
 
@@ -603,6 +685,9 @@ add_primitive :: (scene: *Scene, type: PrimitiveType) -> *Primitive
 
 add_sphere :: (scene: *Scene, xform: Matrix4, radius: float, material_id: MaterialID)
 {
+    if radius <= 0.0 then
+        radius = 1;
+
     center := transform_point(xform, Vector3.{0, 0, 0});
     _, inv := inverse(xform);
 
@@ -626,6 +711,9 @@ add_sphere :: (scene: *Scene, center: Vector3, radius: float, material_id: Mater
 
 add_disk :: (scene: *Scene, p: Vector3, radius: float, material_id: MaterialID)
 {
+    if radius <= 0.0 then
+        radius = 1;
+
     primitive := add_primitive(scene, .DISK);
     array_add(*scene.disks, DiskDesc.{ radius });
     primitive.xform.forward = make_translation_matrix4(p);
@@ -695,7 +783,7 @@ add_mesh :: (scene: *Scene, xform: Matrix4, desc: MeshDesc, material_id: Materia
     primitive.material_id = material_id;
 }
 
-add_material :: (scene: *Scene, type: MaterialType) -> MaterialID, *Material
+add_material :: (scene: *Scene, type: MaterialType) -> MaterialID, *MaterialOld
 {
     id := scene.materials.count.(MaterialID);
     material := array_add(*scene.materials);
@@ -731,7 +819,7 @@ add_dielectric_material :: (scene: *Scene, albedo: Vector3 = .{1, 1, 1}, refract
     material.scale = 0.0;
     material.albedo = albedo;
     material.fuzz = 0.0;
-    material.refractive_index = refractive_index;
+    material.refractive_index = ifx refractive_index != 0 then refractive_index else 1.0;
     material.bitmap = bitmap;
     return id;
 }
@@ -810,6 +898,8 @@ half_area :: (b: Box3) -> float
 
 perspective_projection :: (fov: float, aspect_ratio: float, z_near: float, z_far: float) -> Matrix4
 {
+    assert(z_near != z_far && fov > 0.0);
+
     result := Matrix4_Identity;
 
     tan_theta := tan(fov * PI);
@@ -1402,7 +1492,7 @@ main :: ()
 {
     init();
 
-    debug_mesh, debug_mesh_xform = load_dragon();
+    debug_mesh, debug_mesh_xform = load_monkey();
 
     MSAA :: 8;
 
@@ -1414,8 +1504,8 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples = 1500, max_depth=15);
-    load_scene(*scene, .CORNELL_DRAGON);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=50, max_depth=5);
+    load_scene(*scene, .CORNELL_MONKEY);
     prepare_for_rendering(*scene);
 
     wavefront: Wavefront;

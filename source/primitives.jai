@@ -200,7 +200,7 @@ intersect_disk :: (disk: DiskDesc, ray: Ray) -> bool, IntersectInfo
 
     denom := ray.direction.z; // DotProduct(normal, ray.direction)
 
-    if (abs(denom) < EPSILON)
+    if (abs(denom) == 0.0)
         return false, .{};
 
     root := -ray.origin.z / denom; // -DotProduct(normal, ray.origin)
@@ -243,7 +243,9 @@ intersect_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3
 
     det := dot(edge1, pvec);
 
-    if (det <= 0.0)
+    // @todo: remove culling
+
+    if (det <= 0.0) // culling
         return false, .{};
 
     tvec := origin - v0.p;
@@ -539,6 +541,14 @@ set_face_normal :: inline (direction: Vector3, outward_normal : Vector3, info: *
 
 solve_quadratic :: (a: float, b: float, c: float) -> (bool, float, float)
 {
+    if (a == 0.0)
+    {
+        if b == 0.0 then
+            return false, 0.0, 0.0;
+        t := -c / b;
+        return true, t, t;
+    }
+
     discrim := b.(float64) * b.(float64) - 4 * a.(float64) * c.(float64);
     if (discrim < 0)
         return false, 0, 0;

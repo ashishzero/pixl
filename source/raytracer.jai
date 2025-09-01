@@ -34,6 +34,21 @@ MaterialType :: enum u32
 
 Material :: struct
 {
+    color           : Vector3;
+    subsurface      : float;
+    metallic        : float;
+    specular        : float;
+    specular_tint   : float;
+    roughness       : float;
+    anisotropic     : float;
+    sheen           : float;
+    sheen_tint      : float;
+    clearcoat       : float;
+    clearcoat_gloss : float;
+}
+
+MaterialOld :: struct
+{
     type             : MaterialType;
     scale            : float;
     albedo           : Vector3;
@@ -93,7 +108,7 @@ Scene :: struct
     config: PathTracerConfig;
     bitmap: Bitmap;
 
-    materials   : [..]Material;
+    materials   : [..]MaterialOld;
     environment := Vector3.{0.7, 0.8, 1.0};
 
     primitives : [..]Primitive;
@@ -152,6 +167,7 @@ intersect_primitive :: (scene: Scene, primitive: Primitive, origin: Vector3, dir
 
     if (hit)
     {
+        // @todo: May be transform the minimum hit only??
         info.type        = .INTERSECT;
         info.material_id = primitive.material_id;
         info.p           = transform_point(primitive.xform.forward, info.p);
