@@ -13,6 +13,7 @@ Ray :: struct
     tmax      : float;
 }
 
+// @todo: add support for plane
 PrimitiveType :: enum u32
 {
     SPHERE :: 1;
@@ -461,6 +462,11 @@ hits :: (origin: Vector3, inv_dir: Vector3, box: Box3, t0: float, t1: float) -> 
 {
     for 0..2
     {
+        if box.vmin.component[it] > box.vmax.component[it]
+        {
+            return false;
+        }
+
         tmin := (box.vmin.component[it] - origin.component[it]) * inv_dir.component[it];
         tmax := (box.vmax.component[it] - origin.component[it]) * inv_dir.component[it];
 

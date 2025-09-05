@@ -32,6 +32,32 @@ MaterialType :: enum u32
     DIFFUSE_LIGHT :: 4;
 }
 
+Bitmap :: Simp.Bitmap;
+
+SamplerType :: enum
+{
+    NONE;
+    BITMAP;
+    CHECKERBOARD;
+}
+
+Checker :: struct
+{
+    colors : [2]Vector3;
+    scale  : Vector2;
+}
+
+Sampler :: struct
+{
+    type: SamplerType;
+
+    union
+    {
+        bitmap  : Bitmap;
+        checker : Checker;
+    }
+}
+
 Material :: struct
 {
     color           : Vector3;
@@ -55,7 +81,7 @@ MaterialOld :: struct
     emission         : Vector3;
     fuzz             : float;
     refractive_index : float;
-    bitmap           : Bitmap;
+    sampler          : Sampler;
 }
 
 BVHNode :: struct
@@ -183,54 +209,61 @@ intersect_primitive :: (scene: Scene, primitive: Primitive, origin: Vector3, dir
 // @todo: Remove scene from here
 intersect_bvh :: (nodes: []BVHNode, primitives: []Primitive, ray: Ray, scene: Scene) -> HitInfo, int
 {
-    nodes_stack : [64]u32 = ---;
-
-    top : u32 = 1;
-    nodes_stack[0] = 0;
-
-    visited := 0;
-
-    info := HitInfo.{ type = .MISSED };
-
-    origin  := ray.origin;
-    dir     := ray.direction;
-    inv_dir := Vector3.{1.0 / dir.x, 1.0 / dir.y, 1.0 / dir.z};
-    tmin    := ray.tmin;
-    tmax    := ray.tmax;
-
-    while top > 0
+    if nodes.count
     {
-        top -= 1;
-        node := nodes[nodes_stack[top]];
+        nodes_stack : [64]u32 = ---;
 
-        visited += 1;
+        top : u32 = 1;
+        nodes_stack[0] = 0;
 
-        if (hits(origin, inv_dir, node.bbox, tmin, tmax))
+        visited := 0;
+
+        info := HitInfo.{ type = .MISSED };
+
+        origin  := ray.origin;
+        dir     := ray.direction;
+        inv_dir := Vector3.{1.0 / dir.x, 1.0 / dir.y, 1.0 / dir.z};
+        tmin    := ray.tmin;
+        tmax    := ray.tmax;
+
+        while top > 0
         {
-            if (node.num_primitives)
+            top -= 1;
+            node := nodes[nodes_stack[top]];
+
+            visited += 1;
+
+            if (hits(origin, inv_dir, node.bbox, tmin, tmax))
             {
-                for 0..node.num_primitives-1
+                if (node.num_primitives)
                 {
-                    primitive := primitives[node.first_child_or_primitive + it];
-                    current := intersect_primitive(scene, primitive, origin, dir, tmin, tmax);
-                    if (current.type == .INTERSECT)
+                    for 0..node.num_primitives-1
                     {
-                        tmax = current.t;
-                        info = current;
+                        primitive := primitives[node.first_child_or_primitive + it];
+                        current := intersect_primitive(scene, primitive, origin, dir, tmin, tmax);
+                        if (current.type == .INTERSECT)
+                        {
+                            tmax = current.t;
+                            info = current;
+                        }
                     }
                 }
-            }
-            else
-            {
-                assert(top + 2 < nodes_stack.count);
-                nodes_stack[top + 0] = node.first_child_or_primitive + 1;
-                nodes_stack[top + 1] = node.first_child_or_primitive + 0;
-                top += 2;
+                else
+                {
+                    assert(top + 2 < nodes_stack.count);
+                    nodes_stack[top + 0] = node.first_child_or_primitive + 1;
+                    nodes_stack[top + 1] = node.first_child_or_primitive + 0;
+                    top += 2;
+                }
             }
         }
-    }
 
-    return info, visited;
+        return info, visited;
+    }
+    else
+    {
+        return .{}, 0;
+    }
 }
 
 intersect :: (scene: Scene, ray: Ray) -> HitInfo, int

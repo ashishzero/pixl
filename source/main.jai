@@ -26,29 +26,68 @@ reflectance :: inline (cosine: float, refraction_index: float) -> float
     return r0 + (1 - r0) * pow((1 - cosine), 5);
 }
 
-sample :: inline (bitmap: Bitmap, u: float, v: float) -> Vector3
+fract :: inline (x: float) -> float { return x - floor(x); }
+
+smoothstep :: inline (a: float, b: float, v: float) -> float
 {
-    if !bitmap.width || !bitmap.height || !bitmap.data.data then
-        return .{1, 1, 1};
+    dist := b - a;
+    if (dist)
+    {
+        x := clamp((v - a) / dist, 0.0, 1.0);
+        return x * x * (3 - 2 * x);
+    }
+    return 1;
+}
 
-    Clamp(*u, 0, 1);
-    Clamp(*v, 0, 1);
+sample :: inline (sampler: Sampler, u: float, v: float) -> Vector3
+{
+    if #complete sampler.type ==
+    {
+        case .NONE;
+            return .{1, 1, 1};
 
-    // @todo: bilinear interpolate
-    x := (u * (bitmap.width - 1)).(s32);
-    y := (v * (bitmap.height - 1)).(s32);
+        case .BITMAP;
+            if !sampler.bitmap.width || !sampler.bitmap.height || !sampler.bitmap.data.data then
+                return .{1, 1, 1};
 
-    index := y * bitmap.stride + x * 4;
+            u = clamp(u, 0.0, (1.0 - 0.000001).(float));
+            v = clamp(v, 0.0, (1.0 - 0.000001).(float));
 
-    r := bitmap.data[index + 0].(float);
-    g := bitmap.data[index + 1].(float);
-    b := bitmap.data[index + 2].(float);
+            // @todo: bilinear interpolate
+            x := (u * (sampler.bitmap.width - 1)).(s32);
+            y := (v * (sampler.bitmap.height - 1)).(s32);
 
-    r /= 255;
-    g /= 255;
-    b /= 255;
+            index := y * sampler.bitmap.stride + x * 4;
 
-    return .{r, g, b};
+            r := sampler.bitmap.data[index + 0].(float);
+            g := sampler.bitmap.data[index + 1].(float);
+            b := sampler.bitmap.data[index + 2].(float);
+
+            r /= 255;
+            g /= 255;
+            b /= 255;
+
+            return .{r, g, b};
+
+        case .CHECKERBOARD;
+            EDGE_WIDTH :: 0.01;
+
+            u_scaled := u * sampler.checker.scale.x;
+            v_scaled := v * sampler.checker.scale.y;
+
+            // @todo: antialiasing
+            // this can be done after we have differentials for du and dv
+            // https://pbr-book.org/3ed-2018/Texture/Solid_and_Procedural_Texturing
+
+            if ((u_scaled.(int) + v_scaled.(int)) & 1) == 1
+            {
+                return sampler.checker.colors[0];
+            }
+            else
+            {
+                return sampler.checker.colors[1];
+            }
+    }
 }
 
 // https://media.disneyanimation.com/uploads/production/publication_asset/48/asset/s2012_pbs_disney_brdf_notes_v3.pdf
@@ -96,7 +135,7 @@ emitted_color_at_hit :: (scene: Scene, hit: HitInfo) -> Vector3
     color    := material.emission;
     if (material.type == .DIFFUSE_LIGHT)
     {
-        color *= sample(material.bitmap, hit.u, hit.v);
+        color *= sample(material.sampler, hit.u, hit.v);
     }
     return color;
 }
@@ -152,7 +191,7 @@ scatter :: (scene: Scene, ray: Ray, hit: HitInfo) -> ScatterInfo
             info.scattered.origin = hit.p;
             info.scattered.tmin = 0.001;
             info.scattered.tmax = FLOAT32_MAX;
-            info.attenuation = sample(material.bitmap, hit.u, hit.v) * material.albedo;
+            info.attenuation = sample(material.sampler, hit.u, hit.v) * material.albedo;
             info.scatter = true;
 
         case .METAL;
@@ -180,7 +219,7 @@ scatter :: (scene: Scene, ray: Ray, hit: HitInfo) -> ScatterInfo
                 info.scattered.tmax = FLOAT32_MAX;
             }
 
-            info.attenuation = sample(material.bitmap, hit.u, hit.v) * material.albedo;
+            info.attenuation = sample(material.sampler, hit.u, hit.v) * material.albedo;
 
         case .DIELECTRIC;
             assert(material.refractive_index != 0.0);
@@ -209,7 +248,7 @@ scatter :: (scene: Scene, ray: Ray, hit: HitInfo) -> ScatterInfo
             info.scattered.origin = hit.p;
             info.scattered.tmin = 0.001;
             info.scattered.tmax = FLOAT32_MAX;
-            info.attenuation = sample(material.bitmap, hit.u, hit.v) * material.albedo;
+            info.attenuation = sample(material.sampler, hit.u, hit.v) * material.albedo;
 
             info.scatter = true;
 
@@ -218,7 +257,7 @@ scatter :: (scene: Scene, ray: Ray, hit: HitInfo) -> ScatterInfo
             info.scattered.origin = hit.p;
             info.scattered.tmin = 0.001;
             info.scattered.tmax = FLOAT32_MAX;
-            info.attenuation = sample(material.bitmap, hit.u, hit.v) * material.albedo;
+            info.attenuation = sample(material.sampler, hit.u, hit.v) * material.albedo;
 
             info.scatter = true;
 
@@ -413,6 +452,7 @@ SceneType :: enum
     CORNELL_BOX;
     CORNELL_DRAGON;
     CORNELL_MONKEY;
+    SHADERBALL_DIFFUSE;
 }
 
 wavefront_raytrace_entry :: (thread: *Thread) -> s64
@@ -530,7 +570,7 @@ load_bunny :: () -> MeshDesc, Matrix4
     return bunny, xform;
 }
 
-load_monkey :: () -> MeshDesc, Matrix4
+load_spotted_cow :: () -> MeshDesc, Matrix4
 {
     theta := 30.0 / 360.0 * 2 * PI;
 
@@ -540,7 +580,7 @@ load_monkey :: () -> MeshDesc, Matrix4
 
     scale := 200.0;
 
-    monkey := load_obj_model("data/monkey.obj");
+    monkey := load_obj_model("data/spot/spot_triangulated.obj");
     xform  := make_translation_matrix4(.{270, 140, 270}) * rotation_matrix(Matrix4, rot) * make_scale_matrix4(.{scale, scale, scale});
 
     return monkey, xform;
@@ -560,6 +600,64 @@ load_dragon :: () -> MeshDesc, Matrix4
     xform  := make_translation_matrix4(.{270, 140, 270}) * rotation_matrix(Matrix4, rot) * make_scale_matrix4(.{scale, scale, scale});
 
     return dragon, xform;
+}
+
+load_backdrop :: () -> MeshDesc, Matrix4
+{
+    scale := 2.0;
+    position := Vector3.{0, 0, -10.1};
+    backdrop := load_obj_model("data/backdrop/Backdrop.obj");
+    xform    := make_translation_matrix4(position) * make_scale_matrix4(.{scale, scale, scale});
+    return backdrop, xform;
+}
+
+load_shaderball :: () -> MeshDesc, Matrix4
+{
+    scale := 2.0;
+    position := Vector3.{0, 0, 0};
+    backdrop := load_obj_model("data/shaderball/shaderball.obj");
+
+    theta := 30.0 / 360.0 * 2 * PI;
+
+    orientation: Quaternion;
+    set_from_axis_and_angle(*orientation, 0, 1, 0, theta);
+
+    xform    := make_translation_matrix4(position) * rotation_matrix(Matrix4, orientation) * make_scale_matrix4(.{scale, scale, scale});
+    return backdrop, xform;
+}
+
+quaternion_between_vectors :: (from: Vector3, to: Vector3) -> Quaternion
+{
+    q: Quaternion;
+    w := 1.0 + dot(from, to);
+    if (w)
+    {
+        v  := cross(from, to);
+        q.x = v.x;
+        q.y = v.y;
+        q.z = v.z;
+        q.w = w;
+    }
+    else
+    {
+        xyz := ifx abs(from.x) > abs(from.z)
+                Vector3.{-from.y, from.x, 0.0}
+               else
+                Vector3.{0.0, -from.z, from.y};
+        q = .{xyz.x, xyz.y, xyz.z, w};
+    }
+    return normalize(q);
+}
+
+lookat :: (from: Vector3, to: Vector3, world_forward: Vector3) -> Quaternion
+{
+    dir := to - from;
+    return quaternion_between_vectors(world_forward, dir);
+}
+
+turns_to_radians :: (turns: float) -> float
+{
+    return turns * 2.0 * PI;
 }
 
 load_scene :: (using scene: *Scene, type: SceneType)
@@ -670,9 +768,37 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
             metal := add_metal_material(scene);
 
-            monkey, xform := load_monkey();
+            monkey, xform := load_spotted_cow();
 
             add_mesh(scene, xform, monkey, white);
+
+        case .SHADERBALL_DIFFUSE;
+            camera.fov           = 40.0 / 360.0;
+            camera.position      = .{0, 10, -10};
+            set_from_axis_and_angle(*camera.orientation, Vector3.{1, 0, 0}, turns_to_radians(0.1));
+
+            // add a light
+
+            light := add_diffuse_light(scene, .{20, 20, 20});
+
+            environment          = .{0.7, 0.7, 0.7};
+
+            white := add_lambertian_material(scene, .{0.73, 0.73, 0.73});
+            red   := add_lambertian_material(scene, .{0.65, 0.05, 0.05});
+            metal := add_metal_material(scene, .{0.97, 0.8, 0.35}, 2);
+
+            checker := add_checker_pattern(scene, .{.9, .9, .9}, .{0.1, 0.1, 0.1}, .{40, 40});
+
+            backdrop, backdrop_xform     := load_backdrop();
+            shaderball, shaderball_xform := load_shaderball();
+
+            add_box(scene, Matrix4_Identity, .{ -5, 10, -15 }, .{ -1, 10.01, -11 }, light);
+            add_box(scene, Matrix4_Identity, .{  1, 10, -15 }, .{  5, 10.01, -11 }, light);
+
+            //add_sphere(scene, Vector3.{0, 2, 0}, 2, red);
+
+            add_mesh(scene, backdrop_xform, backdrop, checker);
+            add_mesh(scene, shaderball_xform, shaderball, red);
     }
 }
 
@@ -791,6 +917,20 @@ add_material :: (scene: *Scene, type: MaterialType) -> MaterialID, *MaterialOld
     return id, material;
 }
 
+add_checker_pattern :: (scene: *Scene, color1: Vector3, color2: Vector3, scale: Vector2) -> MaterialID
+{
+    id, material := add_material(scene, .LAMBERTIAN);
+    material.scale = 0.0;
+    material.albedo = .{1, 1, 1};
+    material.fuzz = 0.0;
+    material.refractive_index = 0;
+    material.sampler.type = .CHECKERBOARD;
+    material.sampler.checker.colors[0] = color1;
+    material.sampler.checker.colors[1] = color2;
+    material.sampler.checker.scale = scale;
+    return id;
+}
+
 add_lambertian_material :: (scene: *Scene, albedo: Vector3, bitmap: Bitmap = .{}) -> MaterialID
 {
     id, material := add_material(scene, .LAMBERTIAN);
@@ -798,7 +938,8 @@ add_lambertian_material :: (scene: *Scene, albedo: Vector3, bitmap: Bitmap = .{}
     material.albedo = albedo;
     material.fuzz = 0.0;
     material.refractive_index = 0;
-    material.bitmap = bitmap;
+    material.sampler.type = .BITMAP;
+    material.sampler.bitmap = bitmap;
     return id;
 }
 
@@ -809,7 +950,8 @@ add_metal_material :: (scene: *Scene, albedo: Vector3 = .{1, 1, 1}, fuzz: float 
     material.albedo = albedo;
     material.fuzz = fuzz;
     material.refractive_index = 0;
-    material.bitmap = bitmap;
+    material.sampler.type = .BITMAP;
+    material.sampler.bitmap = bitmap;
     return id;
 }
 
@@ -820,7 +962,8 @@ add_dielectric_material :: (scene: *Scene, albedo: Vector3 = .{1, 1, 1}, refract
     material.albedo = albedo;
     material.fuzz = 0.0;
     material.refractive_index = ifx refractive_index != 0 then refractive_index else 1.0;
-    material.bitmap = bitmap;
+    material.sampler.type = .BITMAP;
+    material.sampler.bitmap = bitmap;
     return id;
 }
 
@@ -831,7 +974,7 @@ add_isotropic_material :: (scene: *Scene, color: Vector3) -> MaterialID
     material.albedo = color;
     material.fuzz = 0.0;
     material.refractive_index = 0.0;
-    material.bitmap = .{};
+    material.sampler.type = .NONE;
     return id;
 }
 
@@ -843,14 +986,15 @@ add_diffuse_light :: (scene: *Scene, color: Vector3, bitmap : Bitmap = .{}) -> M
     material.fuzz = 0.0;
     material.refractive_index = 0.0;
     material.emission = color;
-    material.bitmap = bitmap;
+    material.sampler.type = .BITMAP;
+    material.sampler.bitmap = bitmap;
     return id;
 }
 
 init_scene :: (scene: *Scene, width: s32, height: s32, multisamples: u32 = 16, max_depth: s32 = 5)
 {
     add_lambertian_material(scene, .{0, 0, 0});
-    bitmap_alloc(*scene.bitmap, width, height, .RGBA8);
+    Simp.bitmap_alloc(*scene.bitmap, width, height, .RGBA8);
 
     scene.config.width        = width.(u32);
     scene.config.height       = height.(u32);
@@ -871,21 +1015,24 @@ prepare_for_rendering :: (scene: *Scene)
 
 build_bvh :: (scene: *Scene)
 {
-    array_resize(*scene.tlas.indices, scene.primitives.count, initialize=false);
-    array_resize(*scene.tlas.nodes, 2 * scene.primitives.count - 1);
-
-    array_resize(*scene.mapped, scene.primitives.count, initialize=false);
-
-    for *scene.tlas.indices
+    if scene.primitives.count
     {
-        it.* = it_index.(u32);
-    }
+        array_resize(*scene.tlas.indices, scene.primitives.count, initialize=false);
+        array_resize(*scene.tlas.nodes, 2 * scene.primitives.count - 1);
 
-    build_bvh_binned_sah(scene.tlas.nodes, scene.tlas.indices, scene.tlas.bboxes);
+        array_resize(*scene.mapped, scene.primitives.count, initialize=false);
 
-    for scene.tlas.indices
-    {
-        scene.mapped[it_index] = scene.primitives[it];
+        for *scene.tlas.indices
+        {
+            it.* = it_index.(u32);
+        }
+
+        build_bvh_binned_sah(scene.tlas.nodes, scene.tlas.indices, scene.tlas.bboxes);
+
+        for scene.tlas.indices
+        {
+            scene.mapped[it_index] = scene.primitives[it];
+        }
     }
 }
 
@@ -1485,14 +1632,9 @@ load_obj_model :: (path: string) -> MeshDesc
     return mesh;
 }
 
-debug_mesh: MeshDesc;
-debug_mesh_xform: Matrix4;
-
 main :: ()
 {
     init();
-
-    debug_mesh, debug_mesh_xform = load_monkey();
 
     MSAA :: 8;
 
@@ -1504,8 +1646,8 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=50, max_depth=5);
-    load_scene(*scene, .CORNELL_MONKEY);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=200, max_depth=5);
+    load_scene(*scene, .SHADERBALL_DIFFUSE);
     prepare_for_rendering(*scene);
 
     wavefront: Wavefront;
@@ -1513,11 +1655,11 @@ main :: ()
     init(*wavefront, *scene);
     start(*wavefront);
 
-    prepare_window(wnd, wanted_msaa = MSAA);
+    Simp.prepare_window(wnd, wanted_msaa = MSAA);
 
-    set_render_target(wnd, .RIGHT_HANDED);
+    Simp.set_render_target(wnd, .RIGHT_HANDED);
 
-    raytrace_map : Texture;
+    raytrace_map : Simp.Texture;
 
     while !should_quit
     {
@@ -1527,7 +1669,7 @@ main :: ()
 
         for get_window_resizes()
         {
-            update_window(it.window);
+            Simp.update_window(it.window);
 
             if it.window == wnd
             {
@@ -1579,7 +1721,7 @@ main :: ()
             }
         }
 
-        texture_load_from_bitmap(*raytrace_map, *scene.bitmap);
+        Simp.texture_load_from_bitmap(*raytrace_map, *scene.bitmap);
         draw_one_frame(wnd, *raytrace_map, scene, wavefront.threads.count);
 
         sleep_milliseconds(10);
@@ -1594,7 +1736,7 @@ save_screenshot :: (bitmap: Bitmap, screenshot_index: *int)
 {
     filepath := tprint("captures/screenshot_%.png", screenshot_index.*);
     print("Saving screenshot: %\n", filepath);
-    if (bitmap_save(*bitmap, filepath))
+    if (Simp.bitmap_save(*bitmap, filepath))
         screenshot_index.* += 1;
 }
 
@@ -1604,7 +1746,7 @@ draw_rect :: (center: Vector2, w: Vector2, h: Vector2, color: Vector4)
     p1 := center + w - h;
     p2 := center + w + h;
     p3 := center - w + h;
-    immediate_quad(p0, p1, p2, p3, color, color, color, color);
+    Simp.immediate_quad(p0, p1, p2, p3, color, color, color, color);
 }
 
 emboss_line :: (p0: Vector2, p1: Vector2, stroke: float) -> [4]Vector2
@@ -1647,7 +1789,7 @@ draw_line :: (a: Vector3, b: Vector3, color: Vector4, projection: Matrix4)
 
     corners := emboss_line(p0.xy, p1.xy, 1);
 
-    immediate_quad(corners[0], corners[1], corners[2], corners[3], color, color, color, color);
+    Simp.immediate_quad(corners[0], corners[1], corners[2], corners[3], color, color, color, color);
 }
 
 draw_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, color: Vector4, pv: Matrix4, inv_transpose: Matrix4)
@@ -1701,7 +1843,7 @@ draw_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, color: Vector4, pv: 
     p2.x *= (render_width - 1);
     p2.y *= (render_height - 1);
 
-    immediate_triangle(p0.xyz, p1.xyz, p2.xyz, color1, color2, color3);
+    Simp.immediate_triangle(p0.xyz, p1.xyz, p2.xyz, color1, color2, color3);
 
     //draw_line(v0.p, v1.p, color, projection);
     //draw_line(v1.p, v2.p, color, projection);
@@ -1768,13 +1910,13 @@ draw_bvh :: (root: int, nodes: []BVHNode, boxes: []Box3, indices: []u32, project
     }
 }
 
-draw_one_frame :: (wnd: Window_Type, map: *Texture, scene: Scene, num_threads: int)
+draw_one_frame :: (wnd: Window_Type, map: *Simp.Texture, scene: Scene, num_threads: int)
 {
     time := seconds_since_init();
 
-    clear_render_target(.15, .08, .08, 1);
+    Simp.clear_render_target(.15, .08, .08, 1);
 
-    set_shader_for_images(map);
+    Simp.set_shader_for_images(map);
 
     {
         aspect_ratio := render_width.(float) / render_height.(float);
@@ -1796,21 +1938,21 @@ draw_one_frame :: (wnd: Window_Type, map: *Texture, scene: Scene, num_threads: i
 
         white : = Vector4.{ 1, 1, 1, 1 };
         
-        immediate_quad(p0, p1, p2, p3, white, white, white, white);
+        Simp.immediate_quad(p0, p1, p2, p3, white, white, white, white);
     }
 
-    set_shader_for_color();
+    Simp.set_shader_for_color();
 
     if show_debug_bvh
     {
-        projection_view := scene.camera.xform.projection * scene.camera.xform.view * debug_mesh_xform;
+        //projection_view := scene.camera.xform.projection * scene.camera.xform.view * debug_mesh_xform;
         //draw_bvh(0, scene.tlas.nodes, scene.tlas.bboxes, scene.tlas.indices, projection_view, 0);
         //draw_bvh(0, debug_mesh.blas.nodes, debug_mesh.blas.bboxes, debug_mesh.blas.indices, projection_view, 0);
 
-        _, inv := inverse(scene.camera.xform.view * debug_mesh_xform);
-        inv_transpose := transpose(inv);
+        //_, inv := inverse(scene.camera.xform.view * debug_mesh_xform);
+        //inv_transpose := transpose(inv);
 
-        draw_mesh(debug_mesh, .{1, 1, 1, 1}, projection_view, inv_transpose);
+        //draw_mesh(debug_mesh, .{1, 1, 1, 1}, projection_view, inv_transpose);
     }
 
     secs  := time.(int);
@@ -1827,9 +1969,9 @@ draw_one_frame :: (wnd: Window_Type, map: *Texture, scene: Scene, num_threads: i
     text := tprint("Frame: %; Last frame render time: %ms; Threads: %; Runtime: %",
                    frame_index, last_frame_render_time_ms, num_threads, total_runtime);
 
-    draw_text(debug_font, 10, 10, text);
+    Simp.draw_text(debug_font, 10, 10, text);
 
-    swap_buffers(wnd);
+    Simp.swap_buffers(wnd);
 }
 
 MAP_RATIO :: 0.9;
@@ -1843,7 +1985,7 @@ render_height := 0;
 frame_index := 0;
 last_frame_render_time_ms := 0;
 
-debug_font: *Dynamic_Font;
+debug_font: *Simp.Dynamic_Font;
 
 init_fonts :: ()
 {
@@ -1851,7 +1993,7 @@ init_fonts :: ()
 
     pixel_height := render_height / 54;
 
-    debug_font = get_font_at_size("data/fonts/KodeMono", "KodeMono-Medium.ttf", pixel_height);
+    debug_font = Simp.get_font_at_size("data/fonts/KodeMono", "KodeMono-Medium.ttf", pixel_height);
     assert(debug_font != null);
 }
 
@@ -1903,7 +2045,6 @@ lane_sync :: ()
 #import "Basic"()(MEMORY_DEBUGGER=true);
 #import "File";
 #import "File_Utilities";
-#import "Simp";
 #import "Window_Creation";
 #import "Input";
 #import "Math";
@@ -1914,6 +2055,8 @@ lane_sync :: ()
 #import "Atomics";
 #import "Hash_Table";
 #import "Hash";
+
+Simp :: #import "Simp";
 
 #import "Arena";
 #import "Raddbg"()(ENABLED=ENABLE_RAD_DEBUGGER);
