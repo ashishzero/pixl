@@ -196,11 +196,15 @@ intersect_primitive :: (scene: Scene, primitive: Primitive, origin: Vector3, dir
     if (hit)
     {
         // @todo: May be transform the minimum hit only??
-        info.type        = .INTERSECT;
-        info.material_id = primitive.material_id;
-        info.p           = transform_point(primitive.xform.forward, info.p);
-        info.n           = transform_vector(transpose(primitive.xform.inverse), info.n);
-        info.n           = normalize(info.n);
+        info.type         = .INTERSECT;
+        info.material_id  = primitive.material_id;
+        info.p            = transform_point(primitive.xform.forward, info.p);
+        info.n            = transform_vector(transpose(primitive.xform.inverse), info.n);
+        info.n            = normalize(info.n);
+        info.shading_n    = transform_vector(transpose(primitive.xform.inverse), info.shading_n);
+        info.shading_n    = normalize(info.shading_n);
+        info.shading_dpdu = transform_vector(primitive.xform.forward, info.shading_dpdu);
+        info.shading_dpdv = transform_vector(primitive.xform.forward, info.shading_dpdv);
     }
 
     return info;

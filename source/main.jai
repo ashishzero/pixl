@@ -314,9 +314,9 @@ sample_surface :: (dir: Vector3, hit: HitInfo, material: Material, u1: float, u2
 
         check_valid_n := dot(hit.n, sample.next_dir);
 
-        if check_valid_n < -0.0001 && (hit.flags & .DEBUG__IS_SPHERE)
+        if check_valid_n < -0.0001 && (hit.flags & .DEBUG__IS_TRIANGLE)
         {
-            print("invalid next dir\n");
+            print("invalid next dir: % == %\n", hit.shading_n, hit.n);
             debug_break();
         }
         //sample.next_dir = ndir;
@@ -801,7 +801,7 @@ load_shaderball :: () -> MeshDesc, MeshDesc, Matrix4
     internals := load_obj_model("data/shaderball/shader_ball_internals.obj");
     externals := load_obj_model("data/shaderball/shader_ball_externals.obj");
 
-    theta := 60.0 / 360.0 * 2 * PI;
+    theta := 30.0 / 360.0 * 2 * PI;
 
     orientation: Quaternion;
     set_from_axis_and_angle(*orientation, 0, 1, 0, theta);
@@ -1946,7 +1946,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=150, max_depth=1);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=500, max_depth=5);
     load_scene(*scene, .SHADERBALL_DIFFUSE);
     prepare_for_rendering(*scene);
 

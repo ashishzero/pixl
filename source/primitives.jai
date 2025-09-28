@@ -58,6 +58,7 @@ IntersectFlags :: enum_flags u32
 {
     FRONT_FACE :: 0x1;
     DEBUG__IS_SPHERE :: 0x2;
+    DEBUG__IS_TRIANGLE :: 0x4;
 }
 
 IntersectInfo :: struct
@@ -323,8 +324,6 @@ intersect_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3
     info.v = uv.y;
 
     n := w * v0.n + u * v1.n + v * v2.n;
-    n  = normalize(n);
-
     dpdu := w * v0.t + u * v1.t + v * v2.t;
     dpdv := w * v0.b + u * v1.b + v * v2.b;
 
@@ -333,6 +332,8 @@ intersect_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3
     info.shading_dpdv = dpdv;
 
     set_face_normal(direction, n, *info);
+
+    info.flags |= .DEBUG__IS_TRIANGLE;
 
     return true, info;
 }
