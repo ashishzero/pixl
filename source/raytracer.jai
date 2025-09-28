@@ -152,16 +152,8 @@ Scene :: struct
     rgbx       : []Vector4;
 }
 
-HitType :: enum u32
-{
-    MISSED;
-    INTERSECT;
-}
-
 HitInfo :: struct
 {
-    type        : HitType;
-    material_id : MaterialID;
     p           : Vector3;
     t           : float;
     n           : Vector3;
@@ -169,41 +161,38 @@ HitInfo :: struct
     dpdv        : Vector3;
     u           : float;
     v           : float;
+    material_id : MaterialID;
 }
 
 #scope_file
 
-intersect_primitive :: (scene: Scene, primitive: Primitive, origin: Vector3, direction: Vector3, tmin: float, tmax: float) -> HitInfo
+intersect_primitive :: (scene: Scene, primitive: Primitive, world_origin: Vector3, world_dir: Vector3, tmin: float, tmax: float) -> HitInfo
 {
-    ray: Ray;
-    ray.tmin      = tmin;
-    ray.tmax      = tmax;
-    ray.origin    = transform_point(primitive.xform.inverse, origin);
-    ray.direction = transform_vector(primitive.xform.inverse, direction);
+    origin := transform_point(primitive.xform.inverse, world_origin);
+    dir    := transform_vector(primitive.xform.inverse, world_dir);
 
     intersect: IntersectInfo = ---;
 
     if #complete primitive.type ==
     {
         case .SPHERE;
-            intersect = intersect_sphere(scene.spheres[primitive.id], ray);
+            intersect = intersect_sphere(scene.spheres[primitive.id], origin, dir, tmin, tmax);
 
         case .DISK;
-            intersect = intersect_disk(scene.disks[primitive.id], ray);
+            intersect = intersect_disk(scene.disks[primitive.id], origin, dir, tmin, tmax);
 
         case .BOX;
-            intersect = intersect_box(scene.boxes[primitive.id], ray);
+            intersect = intersect_box(scene.boxes[primitive.id], origin, dir, tmin, tmax);
 
         case .MESH;
-            intersect = intersect_mesh(scene.meshes[primitive.id], ray);
+            intersect = intersect_mesh(scene.meshes[primitive.id], origin, dir, tmin, tmax);
     }
 
-    info := HitInfo.{ type = .MISSED };
+    info := HitInfo.{ t = -1 };
 
     if (intersect.t >= 0.0)
     {
         // @todo: May be transform the minimum hit only??
-        info.type         = .INTERSECT;
         info.material_id  = primitive.material_id;
         info.p            = transform_point(primitive.xform.forward, intersect.p);
         info.n            = transform_vector(transpose(primitive.xform.inverse), intersect.n);
@@ -232,7 +221,7 @@ intersect_bvh :: (nodes: []BVHNode, primitives: []Primitive, ray: Ray, scene: Sc
 
         visited := 0;
 
-        info := HitInfo.{ type = .MISSED };
+        info := HitInfo.{ t = -1 };
 
         origin  := ray.origin;
         dir     := ray.direction;
@@ -255,7 +244,7 @@ intersect_bvh :: (nodes: []BVHNode, primitives: []Primitive, ray: Ray, scene: Sc
                     {
                         primitive := primitives[node.first_child_or_primitive + it];
                         current := intersect_primitive(scene, primitive, origin, dir, tmin, tmax);
-                        if (current.type == .INTERSECT)
+                        if (current.t >= 0.0)
                         {
                             tmax = current.t;
                             info = current;

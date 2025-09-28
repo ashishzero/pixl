@@ -438,7 +438,7 @@ trace_ray :: (scene: Scene, primary_ray: Ray, depth: s32) -> Vector3
     {
         hit, num_visited := intersect(scene, ray);
 
-        if hit.type == .INTERSECT
+        if hit.t >= 0.0
         {
             emitted := emitted_color_at_hit(scene, hit);
             desc    := scatter(scene, ray, hit);
