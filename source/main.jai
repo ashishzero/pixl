@@ -262,7 +262,7 @@ cosine_hemisphere_pdf :: (cos_theta: float) -> float
 
 sample_surface :: (dir: Vector3, hit: HitInfo, material: Material, u1: float, u2: Vector2) -> Sample
 {
-    if !(hit.flags & .FRONT_FACE) && (hit.flags & .IS_SPHERE_NOCHECKIN)
+    if !(hit.flags & .FRONT_FACE) && (hit.flags & .DEBUG__IS_SPHERE)
     {
         //sample := Sample.{ attenuation = .{0, 0, 0}, pdf = -1 };
         //bfn := atomic_add(*back_face_count, 1);
@@ -314,7 +314,7 @@ sample_surface :: (dir: Vector3, hit: HitInfo, material: Material, u1: float, u2
 
         check_valid_n := dot(hit.n, sample.next_dir);
 
-        if check_valid_n < -0.0001 && (hit.flags & .IS_SPHERE_NOCHECKIN)
+        if check_valid_n < -0.0001 && (hit.flags & .DEBUG__IS_SPHERE)
         {
             print("invalid next dir\n");
             debug_break();

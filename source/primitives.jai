@@ -57,6 +57,7 @@ MeshDesc :: struct
 IntersectFlags :: enum_flags u32
 {
     FRONT_FACE :: 0x1;
+    DEBUG__IS_SPHERE :: 0x2;
 }
 
 IntersectInfo :: struct
@@ -137,7 +138,7 @@ intersect_sphere :: (sphere: SphereDesc, ray: Ray) -> bool, IntersectInfo
 
     set_face_normal(ray.direction, n, *info);
 
-    info.flags |= .IS_SPHERE_NOCHECKIN;
+    info.flags |= .DEBUG__IS_SPHERE;
 
     info.shading_dpdu = normalize(dpdu);
     info.shading_dpdv = normalize(dpdv);
