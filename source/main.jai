@@ -258,30 +258,21 @@ cosine_hemisphere_pdf :: (cos_theta: float) -> float
     return cos_theta * INV_PI;
 }
 
-//back_face_count := 0;
-
 sample_surface :: (dir: Vector3, hit: HitInfo, material: Material, u1: float, u2: Vector2) -> Sample
 {
-    if !(hit.flags & .FRONT_FACE) && (hit.flags & .DEBUG__IS_SPHERE)
-    {
-        //sample := Sample.{ attenuation = .{0, 0, 0}, pdf = -1 };
-        //bfn := atomic_add(*back_face_count, 1);
-        //print("back face\n");
-        //return sample;
-    }
+    // @todo: handle backface
 
-    t := normalize(hit.shading_dpdu - hit.shading_n * dot(hit.shading_dpdu, hit.shading_n));
-    b := cross(hit.shading_n, t);
-    handedness := ifx (dot(b, hit.shading_dpdv) < 0.0) then -1.0 else 1.0;
+    t := normalize(hit.dpdu - hit.n * dot(hit.dpdu, hit.n));
+    b := cross(hit.n, t);
+    handedness := ifx (dot(b, hit.dpdv) < 0.0) then -1.0 else 1.0;
     b *= handedness;
 
     inv_TBN : Matrix3 = ---;
     inv_TBN.v[0] = t;
     inv_TBN.v[1] = b;
-    inv_TBN.v[2] = hit.shading_n;
+    inv_TBN.v[2] = hit.n;
 
-    //n  := Vector3.{0, 0, 1};
-    n := forward_transform(inv_TBN, hit.n);
+    n  := Vector3.{0, 0, 1};
     wo := forward_transform(inv_TBN, -dir);
     wi := sample_cosine_hemisphere(u2);
 
@@ -300,27 +291,12 @@ sample_surface :: (dir: Vector3, hit: HitInfo, material: Material, u1: float, u2
     sample.next_dir    = inverse_transform(inv_TBN, wi);
     sample.pdf         = cosine_hemisphere_pdf(abs(wi.z));
 
-    {
-        un   := uniform_normal();
-        ndir := hit.n + un;
+  //  check_valid_n := dot(hit.n, sample.next_dir);
 
-        if (abs(ndir.x) <= EPSILON && abs(ndir.y) <= EPSILON)
-            ndir = hit.n;
-
-        ndir = normalize(ndir);
-
-        if (dot(ndir, hit.n) < 0)
-            ndir = -ndir;
-
-        check_valid_n := dot(hit.n, sample.next_dir);
-
-        if check_valid_n < -0.0001 && (hit.flags & .DEBUG__IS_TRIANGLE)
-        {
-            print("invalid next dir: % == %\n", hit.shading_n, hit.n);
-            debug_break();
-        }
-        //sample.next_dir = ndir;
-    }
+  //  if check_valid_n < -0.0001
+  //  {
+  //      debug_break();
+  //  }
 
     return sample;
 }
@@ -408,9 +384,8 @@ scatter :: (scene: Scene, ray: Ray, hit: HitInfo) -> ScatterInfo
         case .DIELECTRIC;
             assert(material.refractive_index != 0.0);
 
-            ri := ifx hit.flags & .FRONT_FACE then
-                     (1.0 / material.refractive_index)
-                else material.refractive_index;
+            front_face := dot(ray.direction, hit.n) <= 0.0;
+            ri := ifx front_face then (1.0 / material.refractive_index) else material.refractive_index;
 
             cos_theta := min(dot(-ray.direction, hit.n), 1.0);
             sin_theta := sqrt(1.0 - cos_theta * cos_theta);
@@ -1946,7 +1921,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=500, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=200, max_depth=2);
     load_scene(*scene, .SHADERBALL_DIFFUSE);
     prepare_for_rendering(*scene);
 

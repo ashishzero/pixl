@@ -54,24 +54,15 @@ MeshDesc :: struct
     blas    : AccelerationStructure; // @todo: Remove this, and add this to Primitive instead
 }
 
-IntersectFlags :: enum_flags u32
-{
-    FRONT_FACE :: 0x1;
-    DEBUG__IS_SPHERE :: 0x2;
-    DEBUG__IS_TRIANGLE :: 0x4;
-}
-
 IntersectInfo :: struct
 {
-    p : Vector3;
-    t : float;
-    n : Vector3;
-    shading_n : Vector3;
-    shading_dpdu : Vector3;
-    shading_dpdv : Vector3;
-    u : float;
-    v : float;
-    flags : IntersectFlags;
+    p    : Vector3;
+    t    : float;
+    n    : Vector3;
+    dpdu : Vector3;
+    dpdv : Vector3;
+    u    : float;
+    v    : float;
 };
 
 point_at :: inline (ray: Ray, t: float) -> Vector3
@@ -133,17 +124,10 @@ intersect_sphere :: (sphere: SphereDesc, ray: Ray) -> bool, IntersectInfo
     y_radius := sqrt(hit_p.x * hit_p.x + hit_p.z * hit_p.z);
     cos_phi := hit_p.x / y_radius;
     sin_phi := hit_p.z / y_radius;
-    
-    dpdu := Vector3.{-2 * PI * hit_p.z, 0.0, 2 * PI * hit_p.x};
-    dpdv := PI * Vector3.{hit_p.y * cos_phi, -sphere.radius * sin_theta, hit_p.y * sin_phi};
 
-    set_face_normal(ray.direction, n, *info);
-
-    info.flags |= .DEBUG__IS_SPHERE;
-
-    info.shading_dpdu = normalize(dpdu);
-    info.shading_dpdv = normalize(dpdv);
-    info.shading_n    = n;
+    info.n    = n;
+    info.dpdu = Vector3.{-2 * PI * hit_p.z, 0.0, 2 * PI * hit_p.x};
+    info.dpdv = PI * Vector3.{hit_p.y * cos_phi, -sphere.radius * sin_theta, hit_p.y * sin_phi};
 
     return true, info;
 }
@@ -195,8 +179,8 @@ intersect_box :: (box: BoxDesc, ray: Ray) -> bool, IntersectInfo
     info.t = t0;
     info.p = hit_p;
 
-    n   := Vector3.{0, 0, 0};
-    n.component[t_axis] = t_sign;
+    info.n = Vector3.{0, 0, 0};
+    info.n.component[t_axis] = t_sign;
 
     p    := hit_p - box.min;
     diag := box.max - box.min;
@@ -205,28 +189,26 @@ intersect_box :: (box: BoxDesc, ray: Ray) -> bool, IntersectInfo
     {
         info.u = p.z / diag.z;
         info.v = p.y / diag.y;
-        info.shading_dpdu = Vector3.{0, 0, 1};
-        info.shading_dpdv = Vector3.{0, 1, 0};
+        info.dpdu = Vector3.{0, 0, 1};
+        info.dpdv = Vector3.{0, 1, 0};
     }
     else if (t_axis == 1)
     {
         info.u = p.x / diag.x;
         info.v = p.z / diag.z;
-        info.shading_dpdu = Vector3.{1, 0, 0};
-        info.shading_dpdv = Vector3.{0, 0, 1};
+        info.dpdu = Vector3.{1, 0, 0};
+        info.dpdv = Vector3.{0, 0, 1};
     }
     else
     {
         info.u = p.x / diag.x;
         info.v = p.y / diag.y;
-        info.shading_dpdu = Vector3.{1, 0, 0};
-        info.shading_dpdv = Vector3.{0, 1, 0};
+        info.dpdu = Vector3.{1, 0, 0};
+        info.dpdv = Vector3.{0, 1, 0};
     }
 
     Clamp(*info.u, 0.0, 1.0);
     Clamp(*info.v, 0.0, 1.0);
-
-    set_face_normal(ray.direction, n, *info);
 
     return true, info;
 }
@@ -270,14 +252,10 @@ intersect_disk :: (disk: DiskDesc, ray: Ray) -> bool, IntersectInfo
 
     hit_factor := disk.radius / sqrt(hit_p.x * hit_p.x + hit_p.y * hit_p.y);
 
-    dpdu := Vector3.{2 * PI * hit_p.y, 2 * PI * hit_p.x, 0.0};
-    dpdv := Vector3.{hit_p.x * hit_factor, hit_p.y * hit_factor, 0.0};
-
-    info.shading_dpdu = normalize(dpdu);
-    info.shading_dpdv = normalize(dpdv);
-
-    set_face_normal(ray.direction, normal, *info);
-
+    info.n    = normal;
+    info.dpdu = Vector3.{2 * PI * hit_p.y, 2 * PI * hit_p.x, 0.0};
+    info.dpdv = Vector3.{hit_p.x * hit_factor, hit_p.y * hit_factor, 0.0};
+    
     return true, info;
 }
 
@@ -323,17 +301,9 @@ intersect_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3
     info.u = uv.x;
     info.v = uv.y;
 
-    n := w * v0.n + u * v1.n + v * v2.n;
-    dpdu := w * v0.t + u * v1.t + v * v2.t;
-    dpdv := w * v0.b + u * v1.b + v * v2.b;
-
-    info.shading_n    = n;
-    info.shading_dpdu = dpdu;
-    info.shading_dpdv = dpdv;
-
-    set_face_normal(direction, n, *info);
-
-    info.flags |= .DEBUG__IS_TRIANGLE;
+    info.n    = w * v0.n + u * v1.n + v * v2.n;
+    info.dpdu = w * v0.t + u * v1.t + v * v2.t;
+    info.dpdv = w * v0.b + u * v1.b + v * v2.b;
 
     return true, info;
 }
@@ -411,98 +381,6 @@ intersect_mesh :: (mesh: MeshDesc, ray: Ray) -> bool, IntersectInfo
     return hit, info;
 }
 
-intersect_mesh_slow :: (mesh: MeshDesc, ray: Ray) -> bool, IntersectInfo
-{
-    tmin := ray.tmin;
-    tmax := ray.tmax;
-    hit  := false;
-
-    hit_i0, hit_i1, hit_i2 : u32;
-    hit_t, hit_u, hit_v : float;
-
-    // https://www.graphics.cornell.edu/pubs/1997/MT97.pdf
-
-    index := 0;
-
-    while index < mesh.indices.count
-    {
-        defer index += 3;
-
-        i0 := mesh.indices[index + 0];
-        i1 := mesh.indices[index + 1];
-        i2 := mesh.indices[index + 2];
-
-        v0 := mesh.vertices[i0].p;
-        v1 := mesh.vertices[i1].p;
-        v2 := mesh.vertices[i2].p;
-
-        edge1 := v1 - v0;
-        edge2 := v2 - v0;
-        pvec  := cross(ray.direction, edge2);
-
-        det := dot(edge1, pvec);
-
-        if (det < EPSILON)
-            continue;
-
-        tvec := ray.origin - v0;
-        u := dot(tvec, pvec);
-        if u < 0.0 || u > det then
-            continue;
-
-        qvec := cross(tvec, edge1);
-        v    := dot(ray.direction, qvec);
-        if v < 0.0 || u + v > det then
-            continue;
-
-        t := dot(edge2, qvec);
-        inv_det := 1.0 / det;
-
-        t *= inv_det;
-
-        if (t <= tmin || tmax <= t)
-            continue;
-
-        tmax = t;
-
-        u *= inv_det;
-        v *= inv_det;
-
-        hit_t = t;
-        hit_u = u;
-        hit_v = v;
-
-        hit_i0 = i0;
-        hit_i1 = i1;
-        hit_i2 = i2;
-
-        hit = true;
-    }
-
-    info: IntersectInfo;
-
-    if hit
-    {
-        hit_w := 1.0 - hit_u - hit_v;
-
-        hit_p := point_at(ray, hit_t);
-
-        info.t = hit_t;
-        info.p = hit_p;
-
-        uv := hit_w * mesh.vertices[hit_i0].uv + hit_u * mesh.vertices[hit_i1].uv + hit_v * mesh.vertices[hit_i2].uv;
-        info.u = uv.x;
-        info.v = uv.y;
-
-        normal := hit_w * mesh.vertices[hit_i0].n + hit_u * mesh.vertices[hit_i1].n + hit_v * mesh.vertices[hit_i2].n;
-        normal = normalize(normal);
-
-        set_face_normal(ray.direction, normal, *info);
-    }
-
-    return hit, info;
-}
-
 hits :: (origin: Vector3, inv_dir: Vector3, box: Box3, t0: float, t1: float) -> bool
 {
     for 0..2
@@ -567,19 +445,6 @@ concat :: (b1: Box3, b2: Box3) -> Box3
 }
 
 #scope_file
-
-set_face_normal :: inline (direction: Vector3, outward_normal : Vector3, info: *IntersectInfo)
-{
-    if (dot(direction, outward_normal) < 0)
-    {
-        info.flags |= .FRONT_FACE;
-        info.n = outward_normal;
-    }
-    else
-    {
-        info.n = -outward_normal;
-    }
-}
 
 solve_quadratic :: (a: float, b: float, c: float) -> (bool, float, float)
 {
