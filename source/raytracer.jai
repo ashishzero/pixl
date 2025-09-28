@@ -15,12 +15,43 @@ Transform :: struct
     inverse: Matrix4;
 }
 
+PrimitiveSphere :: struct
+{
+    radius: float;
+}
+
+PrimitiveDisk :: struct
+{
+    radius: float;
+}
+
+PrimitiveBox :: struct
+{
+    vmin: Vector3;
+    vmax: Vector3;
+}
+
+PrimitiveMesh :: struct
+{
+    indices: []u32;
+    vertices: []Vertex3D;
+    blas: AccelerationStructure;
+}
+
+PrimitiveShape :: union
+{
+    sphere : PrimitiveSphere;
+    disk   : PrimitiveDisk;
+    box    : PrimitiveBox;
+    mesh   : PrimitiveMesh;
+}
+
 Primitive :: struct
 {
     type        : PrimitiveType;
     xform       : Transform;
-    id          : PrimitiveID;
     material_id : MaterialID;
+    shape       : PrimitiveShape;
 }
 
 MaterialType :: enum u32
@@ -140,10 +171,6 @@ Scene :: struct
     environment := Vector3.{0.7, 0.8, 1.0};
 
     primitives : [..]Primitive;
-    spheres    : [..]SphereDesc;
-    disks      : [..]DiskDesc;
-    boxes      : [..]BoxDesc;
-    meshes     : [..]MeshDesc;
 
     tlas       : AccelerationStructure;
     mapped     : [..]Primitive;
@@ -166,7 +193,7 @@ HitInfo :: struct
 
 #scope_file
 
-intersect_primitive :: (scene: Scene, primitive: Primitive, world_origin: Vector3, world_dir: Vector3, tmin: float, tmax: float) -> HitInfo
+intersect_primitive :: (primitive: Primitive, world_origin: Vector3, world_dir: Vector3, tmin: float, tmax: float) -> HitInfo
 {
     origin := transform_point(primitive.xform.inverse, world_origin);
     dir    := transform_vector(primitive.xform.inverse, world_dir);
@@ -176,16 +203,16 @@ intersect_primitive :: (scene: Scene, primitive: Primitive, world_origin: Vector
     if #complete primitive.type ==
     {
         case .SPHERE;
-            intersect = intersect_sphere(scene.spheres[primitive.id], origin, dir, tmin, tmax);
+            intersect = intersect_sphere(primitive.shape.sphere.radius, origin, dir, tmin, tmax);
 
         case .DISK;
-            intersect = intersect_disk(scene.disks[primitive.id], origin, dir, tmin, tmax);
+            intersect = intersect_disk(primitive.shape.disk.radius, origin, dir, tmin, tmax);
 
         case .BOX;
-            intersect = intersect_box(scene.boxes[primitive.id], origin, dir, tmin, tmax);
+            intersect = intersect_box(primitive.shape.box.vmin, primitive.shape.box.vmax, origin, dir, tmin, tmax);
 
         case .MESH;
-            intersect = intersect_mesh(scene.meshes[primitive.id], origin, dir, tmin, tmax);
+            intersect = intersect_mesh(primitive.shape.mesh.indices, primitive.shape.mesh.vertices, primitive.shape.mesh.blas, origin, dir, tmin, tmax);
     }
 
     info := HitInfo.{ t = -1 };
@@ -209,25 +236,18 @@ intersect_primitive :: (scene: Scene, primitive: Primitive, world_origin: Vector
 
 #scope_export
 
-// @todo: Remove scene from here
-intersect_bvh :: (nodes: []BVHNode, primitives: []Primitive, ray: Ray, scene: Scene) -> HitInfo, int
+intersect_bvh :: (nodes: []BVHNode, primitives: []Primitive, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> HitInfo, int
 {
+    visited := 0;
+    info := HitInfo.{ t = -1 };
+
     if nodes.count
     {
         nodes_stack : [64]u32 = ---;
 
         top : u32 = 1;
         nodes_stack[0] = 0;
-
-        visited := 0;
-
-        info := HitInfo.{ t = -1 };
-
-        origin  := ray.origin;
-        dir     := ray.direction;
         inv_dir := Vector3.{1.0 / dir.x, 1.0 / dir.y, 1.0 / dir.z};
-        tmin    := ray.tmin;
-        tmax    := ray.tmax;
 
         while top > 0
         {
@@ -243,7 +263,7 @@ intersect_bvh :: (nodes: []BVHNode, primitives: []Primitive, ray: Ray, scene: Sc
                     for 0..node.num_primitives-1
                     {
                         primitive := primitives[node.first_child_or_primitive + it];
-                        current := intersect_primitive(scene, primitive, origin, dir, tmin, tmax);
+                        current := intersect_primitive(primitive, origin, dir, tmin, tmax);
                         if (current.t >= 0.0)
                         {
                             tmax = current.t;
@@ -260,18 +280,14 @@ intersect_bvh :: (nodes: []BVHNode, primitives: []Primitive, ray: Ray, scene: Sc
                 }
             }
         }
+    }
 
-        return info, visited;
-    }
-    else
-    {
-        return .{}, 0;
-    }
+    return info, visited;
 }
 
-intersect :: (scene: Scene, ray: Ray) -> HitInfo, int
+intersect :: (scene: Scene, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> HitInfo, int
 {
-    hit, num_visited := intersect_bvh(scene.tlas.nodes, scene.mapped, ray, scene);
+    hit, num_visited := intersect_bvh(scene.tlas.nodes, scene.mapped, origin, dir, tmin, tmax);
     return hit, num_visited;
 }
 

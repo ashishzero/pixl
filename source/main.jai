@@ -301,6 +301,14 @@ sample_surface :: (dir: Vector3, hit: HitInfo, material: Material, u1: float, u2
     return sample;
 }
 
+Ray :: struct
+{
+    origin    : Vector3;
+    tmin      : float;
+    direction : Vector3;
+    tmax      : float;
+}
+
 ScatterInfo :: struct
 {
     attenuation : Vector3;
@@ -436,7 +444,7 @@ trace_ray :: (scene: Scene, primary_ray: Ray, depth: s32) -> Vector3
 
     for 0..depth
     {
-        hit, num_visited := intersect(scene, ray);
+        hit, num_visited := intersect(scene, ray.origin, ray.direction, ray.tmin, ray.tmax);
 
         if hit.t >= 0.0
         {
@@ -712,7 +720,7 @@ join :: (using wavefront: *Wavefront)
     array_free(threads);
 }
 
-load_bunny :: () -> MeshDesc, Matrix4
+load_bunny :: () -> PrimitiveMesh, Matrix4
 {
     theta := 20.0 / 360.0 * 2 * PI;
 
@@ -728,7 +736,7 @@ load_bunny :: () -> MeshDesc, Matrix4
     return bunny, xform;
 }
 
-load_spotted_cow :: () -> MeshDesc, Matrix4
+load_spotted_cow :: () -> PrimitiveMesh, Matrix4
 {
     theta := 30.0 / 360.0 * 2 * PI;
 
@@ -744,7 +752,7 @@ load_spotted_cow :: () -> MeshDesc, Matrix4
     return monkey, xform;
 }
 
-load_dragon :: () -> MeshDesc, Matrix4
+load_dragon :: () -> PrimitiveMesh, Matrix4
 {
     theta := 90.0 / 360.0 * 2 * PI;
 
@@ -760,7 +768,7 @@ load_dragon :: () -> MeshDesc, Matrix4
     return dragon, xform;
 }
 
-load_backdrop :: () -> MeshDesc, Matrix4
+load_backdrop :: () -> PrimitiveMesh, Matrix4
 {
     scale := 2.0;
     position := Vector3.{0, 0, -10.1};
@@ -769,7 +777,7 @@ load_backdrop :: () -> MeshDesc, Matrix4
     return backdrop, xform;
 }
 
-load_shaderball :: () -> MeshDesc, MeshDesc, Matrix4
+load_shaderball :: () -> PrimitiveMesh, PrimitiveMesh, Matrix4
 {
     scale := 2.0;
     position := Vector3.{0, 0, 0};
@@ -977,10 +985,9 @@ add_sphere :: (scene: *Scene, xform: Matrix4, radius: float, material_id: Materi
     _, inv := inverse(xform);
 
     primitive := add_primitive(scene, .SPHERE);
-    array_add(*scene.spheres, .{ radius });
+    primitive.shape.sphere.radius = radius;
     primitive.xform.forward = xform;
     primitive.xform.inverse = inv;
-    primitive.id = (scene.spheres.count - 1).(PrimitiveID);
     bbox: Box3 = ---;
     bbox.vmin = center - Vector3.{radius, radius, radius};
     bbox.vmax = center + Vector3.{radius, radius, radius};
@@ -1000,10 +1007,9 @@ add_disk :: (scene: *Scene, p: Vector3, radius: float, material_id: MaterialID)
         radius = 1;
 
     primitive := add_primitive(scene, .DISK);
-    array_add(*scene.disks, DiskDesc.{ radius });
+    primitive.shape.disk.radius = radius;
     primitive.xform.forward = make_translation_matrix4(p);
     primitive.xform.inverse = make_translation_matrix4(-p);
-    primitive.id = (scene.disks.count - 1).(PrimitiveID);
 
     bbox := bounding_box_from_points(p - Vector3.{radius, radius, 0}, p + Vector3.{radius, radius, 0});
     //primitive.bbox = pad_to_minimus(bbox, 0.0001);
@@ -1016,10 +1022,10 @@ add_box :: (scene: *Scene, xform: Matrix4, min: Vector3, max: Vector3, material_
     _, inv := inverse(xform);
 
     primitive := add_primitive(scene, .BOX);
-    array_add(*scene.boxes, BoxDesc.{ min, max });
+    primitive.shape.box.vmin = min;
+    primitive.shape.box.vmax = max;
     primitive.xform.forward = xform;
     primitive.xform.inverse = inv;
-    primitive.id = (scene.boxes.count - 1).(PrimitiveID);
     bbox := transform_box(xform, Box3.{min, max});
     array_add(*scene.tlas.bboxes, bbox);
     primitive.material_id = material_id;
@@ -1045,20 +1051,20 @@ add_translated_box :: (scene: *Scene, xform: Matrix4, p: Vector3, q: Vector3, ma
     add_box(scene, make_translation_matrix4(h) * xform, -d, d, material_id);
 }
 
-add_mesh :: (scene: *Scene, xform: Matrix4, desc: MeshDesc, material_id: MaterialID)
+add_mesh :: (scene: *Scene, xform: Matrix4, mesh: PrimitiveMesh, material_id: MaterialID)
 {
     primitive := add_primitive(scene, .MESH);
-    array_add(*scene.meshes, desc);
+
+    primitive.shape.mesh = mesh;
 
     _, inv := inverse(xform);
 
     primitive.xform.forward = xform;
     primitive.xform.inverse = inv;
-    primitive.id = (scene.meshes.count - 1).(PrimitiveID);
 
     bbox := Box3_Empty;
 
-    for v: desc.vertices
+    for v: mesh.vertices
     {
         p := transform_point(xform, v.p);
         bbox = concat(bbox, p);
@@ -1610,7 +1616,7 @@ build_bvh_binned_sah :: (nodes: []BVHNode, indices: []u32, bboxes: []Box3)
     build_bvh_sah_binned_recursive(*builder, 0, 0, indices.count - 1, indices, bboxes, centriods);
 }
 
-build_blas :: (using mesh: *MeshDesc)
+build_blas :: (using mesh: *PrimitiveMesh)
 {    
     num_triangles := indices.count / 3;
 
@@ -1676,7 +1682,7 @@ orthonormal_basis :: (x_axis: Vector3) -> (y_axis: Vector3, z_axis: Vector3)
     return y_axis, z_axis;
 }
 
-load_obj_model :: (path: string) -> MeshDesc
+load_obj_model :: (path: string) -> PrimitiveMesh
 {
     auto_release_temp();
 
@@ -1816,7 +1822,7 @@ load_obj_model :: (path: string) -> MeshDesc
         indices[it] = entry.*;
     }
 
-    mesh: MeshDesc;
+    mesh: PrimitiveMesh;
 
     mesh.vertices = array_copy(array_view(attrs, 0, num_attrs));
     mesh.indices  = indices;
@@ -2125,7 +2131,7 @@ draw_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, color: Vector4, pv: 
     //draw_line(v2.p, v0.p, color, projection);
 }
 
-draw_mesh :: (mesh: MeshDesc, color: Vector4, pv: Matrix4, inv_transpose: Matrix4)
+draw_mesh :: (mesh: PrimitiveMesh, color: Vector4, pv: Matrix4, inv_transpose: Matrix4)
 {
     num_triangles := mesh.indices.count / 3;
 
