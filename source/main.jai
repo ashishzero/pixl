@@ -3,6 +3,9 @@
 RAYTRACE_BITMAP_WIDTH  :: 1920;
 RAYTRACE_BITMAP_HEIGHT :: 1080;
 
+//RAYTRACE_BITMAP_WIDTH  :: 800;
+//RAYTRACE_BITMAP_HEIGHT :: 600;
+
 want_screenshot := false;
 
 reflect :: inline (d: Vector3, n: Vector3) -> Vector3
@@ -39,7 +42,7 @@ smoothstep :: inline (a: float, b: float, v: float) -> float
     return 1;
 }
 
-sample :: inline (sampler: Sampler, u: float, v: float) -> Vector3
+sample_texture :: inline (sampler: Sampler, u: float, v: float) -> Vector3
 {
     if #complete sampler.type ==
     {
@@ -90,52 +93,13 @@ sample :: inline (sampler: Sampler, u: float, v: float) -> Vector3
     }
 }
 
-// https://media.disneyanimation.com/uploads/production/publication_asset/48/asset/s2012_pbs_disney_brdf_notes_v3.pdf
-
-schlick_reflectance :: inline (cosine: float) -> float
-{
-    x  := 1.0 - cosine;
-    x2 := x * x;
-    y  := x2 * x2 * x; // y=pow(1 - cosine, 5);
-    return y;
-}
-
-brdf_disney :: (l: Vector3, v: Vector3, m: Material)
-{
-    INV_PI :: 1.0 / PI;
-
-    h := normalize(0.5 * (l + v));
-
-    cos_d := dot(l, h);
-    cos_l := l.z; // dot(l, n)
-    cos_v := v.z; // dot(v, n)
-
-    Fd_90 := 0.5 + 2 * m.roughness * cos_d * cos_d;
-    Fd_90_minus_1 := Fd_90 - 1;
-
-    fl := schlick_reflectance(cos_l);
-    fv := schlick_reflectance(cos_v);
-
-    fd := (1.0 + Fd_90_minus_1 * fl) * (1.0 + Fd_90_minus_1 * fv);
-
-
-}
-
-sample_surface :: (v: Vector3, n: Vector3, t: Vector3, material: Material) -> l: Vector3, f: Vector3
-{
-    l: Vector3;
-    f: Vector3;
-
-    return l, f;
-}
-
 emitted_color_at_hit :: (scene: Scene, hit: HitInfo) -> Vector3
 {
-    material := scene.materials[hit.material_id];
+    material := scene.materials_old[hit.material_id];
     color    := material.emission;
     if (material.type == .DIFFUSE_LIGHT)
     {
-        color *= sample(material.sampler, hit.u, hit.v);
+        color *= sample_texture(material.sampler, hit.u, hit.v);
     }
     return color;
 }
@@ -165,10 +129,207 @@ uniform_normal :: () -> Vector3
     return n;
 }
 
+
+// https://media.disneyanimation.com/uploads/production/publication_asset/48/asset/s2012_pbs_disney_brdf_notes_v3.pdf
+
+schlick_reflectance :: inline (cosine: float) -> float
+{
+    x  := 1.0 - cosine;
+    x2 := x * x;
+    y  := x2 * x2 * x; // y=pow(1 - cosine, 5);
+    return y;
+}
+
+
+Surface :: struct
+{
+    color           : Vector3;
+    subsurface      : float;
+    metallic        : float;
+    specular        : float;
+    specular_tint   : float;
+    roughness       : float;
+    anisotropic     : float;
+    sheen           : float;
+    sheen_tint      : float;
+    clearcoat       : float;
+    clearcoat_gloss : float;
+}
+
+same_hemisphere :: (v1: Vector3, v2: Vector3) -> bool
+{
+    return v1.z * v2.z > 0;
+}
+
+INV_PI :: 1.0 / PI;
+PI_OVER_4 :: PI / 4;
+PI_OVER_2 :: PI / 2;
+
+brdf :: (wi: Vector3, n: Vector3, wo: Vector3, surface: Surface) -> Vector3
+{
+    h := normalize(0.5 * (wi + wo));
+
+    fd : Vector3;
+
+    // do we need this check?
+    if (same_hemisphere(wi, wo))
+    {
+        fd = surface.color * INV_PI;
+
+        //  cos_d := dot(l, h);
+        //  cos_l := l.z; // dot(l, n)
+        //  cos_v := v.z; // dot(v, n)
+
+        //  Fd_90 := 0.5 + 2 * m.roughness * cos_d * cos_d;
+        //  Fd_90_minus_1 := Fd_90 - 1;
+
+        //  fl := schlick_reflectance(cos_l);
+        //  fv := schlick_reflectance(cos_v);
+
+        //  fd := (1.0 + Fd_90_minus_1 * fl) * (1.0 + Fd_90_minus_1 * fv);
+
+    }
+
+    return fd;
+}
+
+sample_uniform_disk_concentric :: (u: Vector2) -> Vector2
+{
+    uoff_x := 2 * u.x - 1;
+    uoff_y := 2 * u.y - 1;
+
+    if (uoff_x == 0.0 && uoff_y == 0.0)
+        return Vector2.{0, 0};
+
+    theta, r: float = ---;
+
+    if (abs(uoff_x) > abs(uoff_y))
+    {
+        r = uoff_x;
+        theta = PI_OVER_4 * (uoff_y / uoff_x);
+    }
+    else
+    {
+        r = uoff_y;
+        theta = PI_OVER_2 - PI_OVER_4 * (uoff_x / uoff_y);
+    }
+
+    sample: Vector2 = ---;
+    sample.x = r * cos(theta);
+    sample.y = r * sin(theta);
+
+    return sample;
+}
+
+sample_cosine_hemisphere :: (u: Vector2) -> Vector3
+{
+    d := sample_uniform_disk_concentric(u);
+    z := sqrt(max(1 - d.x * d.x - d.y * d.y, 0));
+    return Vector3.{d.x, d.y, z};
+}
+
+Sample :: struct
+{
+    attenuation : Vector3;
+    next_dir    : Vector3;
+    pdf         : float;
+}
+
+forward_transform :: (xform: Matrix3, p: Vector3) -> Vector3
+{
+    r: Vector3 = ---;
+    r.x = xform._11 * p.x + xform._12 * p.y + xform._13 * p.z;
+    r.y = xform._21 * p.x + xform._22 * p.y + xform._23 * p.z;
+    r.z = xform._31 * p.x + xform._32 * p.y + xform._33 * p.z;
+    return r;
+}
+
+inverse_transform :: (xform: Matrix3, p: Vector3) -> Vector3
+{
+    r: Vector3 = ---;
+    r.x = xform._11 * p.x + xform._21 * p.y + xform._31 * p.z;
+    r.y = xform._12 * p.x + xform._22 * p.y + xform._32 * p.z;
+    r.z = xform._13 * p.x + xform._23 * p.y + xform._33 * p.z;
+    return r;
+}
+
+cosine_hemisphere_pdf :: (cos_theta: float) -> float
+{
+    return cos_theta * INV_PI;
+}
+
+//back_face_count := 0;
+
+sample_surface :: (dir: Vector3, hit: HitInfo, material: Material, u1: float, u2: Vector2) -> Sample
+{
+    if !(hit.flags & .FRONT_FACE) && (hit.flags & .IS_SPHERE_NOCHECKIN)
+    {
+        //sample := Sample.{ attenuation = .{0, 0, 0}, pdf = -1 };
+        //bfn := atomic_add(*back_face_count, 1);
+        //print("back face\n");
+        //return sample;
+    }
+
+    t := normalize(hit.shading_dpdu - hit.shading_n * dot(hit.shading_dpdu, hit.shading_n));
+    b := cross(hit.shading_n, t);
+    handedness := ifx (dot(b, hit.shading_dpdv) < 0.0) then -1.0 else 1.0;
+    b *= handedness;
+
+    inv_TBN : Matrix3 = ---;
+    inv_TBN.v[0] = t;
+    inv_TBN.v[1] = b;
+    inv_TBN.v[2] = hit.shading_n;
+
+    //n  := Vector3.{0, 0, 1};
+    n := forward_transform(inv_TBN, hit.n);
+    wo := forward_transform(inv_TBN, -dir);
+    wi := sample_cosine_hemisphere(u2);
+
+    if (wo.z < 0)
+    {
+        wi.z *= -1;
+    }
+
+    base := sample_texture(material.sampler, hit.u, hit.v);
+    base *= material.color;
+
+    surface := Surface.{ color = base };
+
+    sample: Sample;
+    sample.attenuation = brdf(wi, n, wo, surface);
+    sample.next_dir    = inverse_transform(inv_TBN, wi);
+    sample.pdf         = cosine_hemisphere_pdf(abs(wi.z));
+
+    {
+        un   := uniform_normal();
+        ndir := hit.n + un;
+
+        if (abs(ndir.x) <= EPSILON && abs(ndir.y) <= EPSILON)
+            ndir = hit.n;
+
+        ndir = normalize(ndir);
+
+        if (dot(ndir, hit.n) < 0)
+            ndir = -ndir;
+
+        check_valid_n := dot(hit.n, sample.next_dir);
+
+        if check_valid_n < -0.0001 && (hit.flags & .IS_SPHERE_NOCHECKIN)
+        {
+            print("invalid next dir\n");
+            debug_break();
+        }
+        //sample.next_dir = ndir;
+    }
+
+    return sample;
+}
+
 ScatterInfo :: struct
 {
     attenuation : Vector3;
     scattered   : Ray;
+    pdf         : float;
     scatter     : bool;
 }
 
@@ -176,11 +337,32 @@ scatter :: (scene: Scene, ray: Ray, hit: HitInfo) -> ScatterInfo
 {
     info: ScatterInfo;
 
-    material := scene.materials[hit.material_id];
+    material := scene.materials_old[hit.material_id];
 
     if #complete material.type ==
     {
         case .LAMBERTIAN;
+
+        #if true
+        {
+            u1 := random_get_zero_to_one();
+            u2x := random_get_zero_to_one();
+            u2y := random_get_zero_to_one();
+
+            u2 := Vector2.{u2x, u2y};
+
+            surface := sample_surface(ray.direction, hit, scene.materials[hit.material_id], u1, u2);
+
+            info.scattered.direction = surface.next_dir;
+            info.scattered.origin = hit.p;
+            info.scattered.tmin = 0.001;
+            info.scattered.tmax = FLOAT32_MAX;
+            info.pdf = surface.pdf;
+            info.attenuation = surface.attenuation;
+            info.scatter = surface.pdf > 0.0;
+        }
+        else
+        {
             n   := hit.n;
             dir := n + uniform_normal();
 
@@ -191,8 +373,10 @@ scatter :: (scene: Scene, ray: Ray, hit: HitInfo) -> ScatterInfo
             info.scattered.origin = hit.p;
             info.scattered.tmin = 0.001;
             info.scattered.tmax = FLOAT32_MAX;
-            info.attenuation = sample(material.sampler, hit.u, hit.v) * material.albedo;
+            info.attenuation = sample_texture(material.sampler, hit.u, hit.v) * material.albedo;
+            info.pdf = 1;
             info.scatter = true;
+        }
 
         case .METAL;
             reflected := reflect(ray.direction, hit.n);
@@ -219,7 +403,7 @@ scatter :: (scene: Scene, ray: Ray, hit: HitInfo) -> ScatterInfo
                 info.scattered.tmax = FLOAT32_MAX;
             }
 
-            info.attenuation = sample(material.sampler, hit.u, hit.v) * material.albedo;
+            info.attenuation = sample_texture(material.sampler, hit.u, hit.v) * material.albedo;
 
         case .DIELECTRIC;
             assert(material.refractive_index != 0.0);
@@ -248,7 +432,7 @@ scatter :: (scene: Scene, ray: Ray, hit: HitInfo) -> ScatterInfo
             info.scattered.origin = hit.p;
             info.scattered.tmin = 0.001;
             info.scattered.tmax = FLOAT32_MAX;
-            info.attenuation = sample(material.sampler, hit.u, hit.v) * material.albedo;
+            info.attenuation = sample_texture(material.sampler, hit.u, hit.v) * material.albedo;
 
             info.scatter = true;
 
@@ -257,7 +441,7 @@ scatter :: (scene: Scene, ray: Ray, hit: HitInfo) -> ScatterInfo
             info.scattered.origin = hit.p;
             info.scattered.tmin = 0.001;
             info.scattered.tmax = FLOAT32_MAX;
-            info.attenuation = sample(material.sampler, hit.u, hit.v) * material.albedo;
+            info.attenuation = sample_texture(material.sampler, hit.u, hit.v) * material.albedo;
 
             info.scatter = true;
 
@@ -268,14 +452,14 @@ scatter :: (scene: Scene, ray: Ray, hit: HitInfo) -> ScatterInfo
     return info;
 }
 
-trace_ray :: (scene: Scene, first_ray: Ray, depth: s32) -> Vector3
+trace_ray :: (scene: Scene, primary_ray: Ray, depth: s32) -> Vector3
 {
     color := Vector3.{0, 0, 0};
     attenuation := Vector3.{1, 1, 1};
 
-    ray := first_ray;
+    ray := primary_ray;
 
-    for 0..depth-1
+    for 0..depth
     {
         hit, num_visited := intersect(scene, ray);
 
@@ -286,14 +470,13 @@ trace_ray :: (scene: Scene, first_ray: Ray, depth: s32) -> Vector3
 
             color += attenuation * emitted;
 
-            if (!desc.scatter)
+            if (!desc.scatter || desc.pdf <= 0.0)
             {
                 break;
             }
 
             cosine := max(0.0, dot(hit.n, -ray.direction));
-
-            attenuation *= cosine * desc.attenuation;
+            attenuation *= cosine * desc.attenuation / desc.pdf;
             ray = desc.scattered;
         }
         else
@@ -611,19 +794,20 @@ load_backdrop :: () -> MeshDesc, Matrix4
     return backdrop, xform;
 }
 
-load_shaderball :: () -> MeshDesc, Matrix4
+load_shaderball :: () -> MeshDesc, MeshDesc, Matrix4
 {
     scale := 2.0;
     position := Vector3.{0, 0, 0};
-    backdrop := load_obj_model("data/shaderball/shaderball.obj");
+    internals := load_obj_model("data/shaderball/shader_ball_internals.obj");
+    externals := load_obj_model("data/shaderball/shader_ball_externals.obj");
 
-    theta := 30.0 / 360.0 * 2 * PI;
+    theta := 60.0 / 360.0 * 2 * PI;
 
     orientation: Quaternion;
     set_from_axis_and_angle(*orientation, 0, 1, 0, theta);
 
     xform    := make_translation_matrix4(position) * rotation_matrix(Matrix4, orientation) * make_scale_matrix4(.{scale, scale, scale});
-    return backdrop, xform;
+    return internals, externals, xform;
 }
 
 quaternion_between_vectors :: (from: Vector3, to: Vector3) -> Quaternion
@@ -783,14 +967,12 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
             environment          = .{0.7, 0.7, 0.7};
 
-            white := add_lambertian_material(scene, .{0.73, 0.73, 0.73});
             red   := add_lambertian_material(scene, .{0.65, 0.05, 0.05});
-            metal := add_metal_material(scene, .{0.97, 0.8, 0.35}, 2);
-
+            black   := add_lambertian_material(scene, .{0.1, 0.1, 0.1});
             checker := add_checker_pattern(scene, .{.9, .9, .9}, .{0.1, 0.1, 0.1}, .{40, 40});
 
             backdrop, backdrop_xform     := load_backdrop();
-            shaderball, shaderball_xform := load_shaderball();
+            internals, externals, shaderball_xform := load_shaderball();
 
             add_box(scene, Matrix4_Identity, .{ -5, 10, -15 }, .{ -1, 10.01, -11 }, light);
             add_box(scene, Matrix4_Identity, .{  1, 10, -15 }, .{  5, 10.01, -11 }, light);
@@ -798,7 +980,9 @@ load_scene :: (using scene: *Scene, type: SceneType)
             //add_sphere(scene, Vector3.{0, 2, 0}, 2, red);
 
             add_mesh(scene, backdrop_xform, backdrop, checker);
-            add_mesh(scene, shaderball_xform, shaderball, red);
+            //add_sphere(scene, Vector3.{0, 2, 0}, 2, red);
+            add_mesh(scene, shaderball_xform, internals, black);
+            add_mesh(scene, shaderball_xform, externals, red);
     }
 }
 
@@ -909,37 +1093,53 @@ add_mesh :: (scene: *Scene, xform: Matrix4, desc: MeshDesc, material_id: Materia
     primitive.material_id = material_id;
 }
 
-add_material :: (scene: *Scene, type: MaterialType) -> MaterialID, *MaterialOld
+add_material :: (scene: *Scene, type: MaterialType) -> MaterialID, *MaterialOld, *Material
 {
-    id := scene.materials.count.(MaterialID);
+    id := scene.materials_old.count.(MaterialID);
+    material_old := array_add(*scene.materials_old);
+    material_old.type = type;
     material := array_add(*scene.materials);
-    material.type = type;
-    return id, material;
+    return id, material_old, material;
 }
 
 add_checker_pattern :: (scene: *Scene, color1: Vector3, color2: Vector3, scale: Vector2) -> MaterialID
 {
-    id, material := add_material(scene, .LAMBERTIAN);
-    material.scale = 0.0;
-    material.albedo = .{1, 1, 1};
-    material.fuzz = 0.0;
-    material.refractive_index = 0;
-    material.sampler.type = .CHECKERBOARD;
-    material.sampler.checker.colors[0] = color1;
-    material.sampler.checker.colors[1] = color2;
-    material.sampler.checker.scale = scale;
+    id, material_old, material := add_material(scene, .LAMBERTIAN);
+    material_old.scale = 0.0;
+    material_old.albedo = .{1, 1, 1};
+    material_old.fuzz = 0.0;
+    material_old.refractive_index = 0;
+    material_old.sampler.type = .CHECKERBOARD;
+    material_old.sampler.checker.colors[0] = color1;
+    material_old.sampler.checker.colors[1] = color2;
+    material_old.sampler.checker.scale = scale;
+
+    material.sampler = material_old.sampler;
+    material.color = material_old.albedo;
+
     return id;
 }
 
 add_lambertian_material :: (scene: *Scene, albedo: Vector3, bitmap: Bitmap = .{}) -> MaterialID
 {
-    id, material := add_material(scene, .LAMBERTIAN);
-    material.scale = 0.0;
-    material.albedo = albedo;
-    material.fuzz = 0.0;
-    material.refractive_index = 0;
-    material.sampler.type = .BITMAP;
-    material.sampler.bitmap = bitmap;
+    id, material_old, material := add_material(scene, .LAMBERTIAN);
+    material_old.scale = 0.0;
+    material_old.albedo = albedo;
+    material_old.fuzz = 0.0;
+    material_old.refractive_index = 0;
+    material_old.sampler.type = .BITMAP;
+    material_old.sampler.bitmap = bitmap;
+
+    memset(material, 0, size_of(type_of(material)));
+
+    material.color = albedo;
+
+    if bitmap.data
+    {
+        material.sampler.type = .BITMAP;
+        material.sampler.bitmap = bitmap;
+    }
+
     return id;
 }
 
@@ -1093,17 +1293,16 @@ generate_ray :: (query: Vector2, camera: CameraTransform, lens_focal_length: flo
         dir   := normalize(target);
         ft    := lens_focal_length / dir.z;
         focus := ft * dir;
-
-        target = focus - origin;
+        target = focus;
     }
 
     origin = transform_point(camera.inv_view, origin);
-    dir    := transform_vector(camera.inv_view, target);
+    target = transform_point(camera.inv_view, target);
 
     ray: Ray = ---;
 
     ray.origin    = origin;
-    ray.direction = normalize(dir);
+    ray.direction = normalize(target - origin);
     ray.tmin      = 0.0;
     ray.tmax      = FLOAT32_INFINITY;
 
@@ -1462,6 +1661,46 @@ build_blas :: (using mesh: *MeshDesc)
     build_bvh_binned_sah(blas.nodes, blas.indices, blas.bboxes);
 }
 
+sign_of :: (v: float) -> float
+{
+    return ((0 < v).(float) - (v < 0).(float));
+}
+
+orthonormal_basis :: (x_axis: Vector3) -> (y_axis: Vector3, z_axis: Vector3)
+{
+    cross := Vector3.{1, 1, 1};
+    if x_axis.x > x_axis.y
+    {
+        if x_axis.x > x_axis.z
+        {
+            cross.x = 0;
+        }
+        else
+        {
+            cross.z = 0;
+        }
+    }
+    else
+    {
+        if x_axis.y > x_axis.z
+        {
+            cross.y = 0;
+        }
+        else
+        {
+            cross.z = 0;
+        }
+    }
+
+    y_axis := cross_product(cross, x_axis);
+    normalize(*y_axis, fallback=.{z=1});
+
+    z_axis := cross_product(x_axis, y_axis);
+    normalize(*z_axis, fallback=.{z=1});
+
+    return y_axis, z_axis;
+}
+
 load_obj_model :: (path: string) -> MeshDesc
 {
     auto_release_temp();
@@ -1591,9 +1830,11 @@ load_obj_model :: (path: string) -> MeshDesc
             entry.* = num_attrs.(u32);
             attrs[num_attrs].p  = vertices[index.vertex_index];
             if texcoords
-            attrs[num_attrs].uv = texcoords[index.texcoord_index];
+                attrs[num_attrs].uv = texcoords[index.texcoord_index];
             if normals
                 attrs[num_attrs].n  = normals[index.normal_index];
+            attrs[num_attrs].t = Vector3.{0, 0, 0};
+            attrs[num_attrs].b = Vector3.{0, 0, 0};
             num_attrs += 1;
         }
 
@@ -1605,10 +1846,10 @@ load_obj_model :: (path: string) -> MeshDesc
     mesh.vertices = array_copy(array_view(attrs, 0, num_attrs));
     mesh.indices  = indices;
 
+    num_triangles := indices.count / 3;
+
     if !normals
     {
-        num_triangles := indices.count / 3;
-
         for 0..num_triangles-1
         {
             v0 := *mesh.vertices[indices[it * 3 + 0]];
@@ -1625,6 +1866,65 @@ load_obj_model :: (path: string) -> MeshDesc
             v1.n = n;
             v2.n = n;
         }
+    }
+
+    num_triangles_included := NewArray(num_attrs, u32,,temp);
+
+    for 0..num_triangles-1
+    {
+        i0 := indices[it * 3 + 0];
+        i1 := indices[it * 3 + 1];
+        i2 := indices[it * 3 + 2];
+
+        v0 := *mesh.vertices[i0];
+        v1 := *mesh.vertices[i1];
+        v2 := *mesh.vertices[i2];
+
+        delta_uv1 := v1.uv - v0.uv;
+        delta_uv2 := v2.uv - v0.uv;
+        det       := delta_uv1.x * delta_uv2.y - delta_uv1.y * delta_uv2.x;
+        degen     := abs(det) == 0.0;
+
+        tangent, bitangent : Vector3;
+
+        if (!degen)
+        {
+            inv_det  := 1.0 / det;
+            delta_p1 := v1.p - v0.p;
+            delta_p2 := v2.p - v0.p;
+            tangent = (delta_p1 * delta_uv2.y - delta_p2 * delta_uv1.y) * inv_det;
+            bitangent = (delta_p2 * delta_uv1.x - delta_p1 * delta_uv2.x) * inv_det;
+        }
+
+        if (degen || length_squared(cross(tangent, bitangent)) == 0.0)
+        {
+            normal := normalize((v0.n + v1.n + v2.n) / 3);
+            tangent, bitangent = orthonormal_basis(normal);
+        }
+
+        v0.t += tangent;
+        v1.t += tangent;
+        v2.t += tangent;
+
+        v0.b += bitangent;
+        v1.b += bitangent;
+        v2.b += bitangent;
+
+        num_triangles_included[i0] += 1;
+        num_triangles_included[i1] += 1;
+        num_triangles_included[i2] += 1;
+    }
+
+    for 0..mesh.vertices.count-1
+    {
+        v := *mesh.vertices[it];
+
+        v.t /= num_triangles_included[it].(float);
+        v.b /= num_triangles_included[it].(float);
+
+        v.t = normalize(v.t - v.n * dot(v.t, v.n));
+        handedness := ifx (dot(cross(v.n, v.t), v.b) < 0.0) then -1.0 else 1.0;
+        v.b = cross(v.n, v.t) * handedness;
     }
 
     build_blas(*mesh);
@@ -1646,7 +1946,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=200, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=150, max_depth=1);
     load_scene(*scene, .SHADERBALL_DIFFUSE);
     prepare_for_rendering(*scene);
 
@@ -1919,7 +2219,7 @@ draw_one_frame :: (wnd: Window_Type, map: *Simp.Texture, scene: Scene, num_threa
     Simp.set_shader_for_images(map);
 
     {
-        aspect_ratio := render_width.(float) / render_height.(float);
+        aspect_ratio := RAYTRACE_BITMAP_WIDTH.(float) / RAYTRACE_BITMAP_HEIGHT.(float);
 
         rect_height := render_height.(float) * MAP_RATIO;
         rect_width := aspect_ratio * rect_height;

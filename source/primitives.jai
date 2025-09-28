@@ -43,6 +43,8 @@ Vertex3D :: struct
     p  : Vector3;
     uv : Vector2;
     n  : Vector3;
+    t  : Vector3;
+    b  : Vector3;
 }
 
 MeshDesc :: struct
@@ -62,6 +64,9 @@ IntersectInfo :: struct
     p : Vector3;
     t : float;
     n : Vector3;
+    shading_n : Vector3;
+    shading_dpdu : Vector3;
+    shading_dpdv : Vector3;
     u : float;
     v : float;
     flags : IntersectFlags;
@@ -108,11 +113,35 @@ intersect_sphere :: (sphere: SphereDesc, ray: Ray) -> bool, IntersectInfo
 
     n := info.p / sphere.radius;
 
-    uv := encode_spherical_uv(n);
-    info.u = uv.x;
-    info.v = uv.y;
+    // spherical encoding
+    phi   := atan2(n.z, n.x);
+    if (phi < 0)
+    {
+        phi += 2 * PI;
+    }
+
+    cos_theta := clamp(n.y, -1.0, 1.0);
+    sin_theta := sqrt(1 - cos_theta * cos_theta);
+
+    theta := acos(cos_theta);
+
+    info.u = phi / (2 * PI);
+    info.v = theta / PI;
+
+    y_radius := sqrt(hit_p.x * hit_p.x + hit_p.z * hit_p.z);
+    cos_phi := hit_p.x / y_radius;
+    sin_phi := hit_p.z / y_radius;
+    
+    dpdu := Vector3.{-2 * PI * hit_p.z, 0.0, 2 * PI * hit_p.x};
+    dpdv := PI * Vector3.{hit_p.y * cos_phi, -sphere.radius * sin_theta, hit_p.y * sin_phi};
 
     set_face_normal(ray.direction, n, *info);
+
+    info.flags |= .IS_SPHERE_NOCHECKIN;
+
+    info.shading_dpdu = normalize(dpdu);
+    info.shading_dpdv = normalize(dpdv);
+    info.shading_n    = n;
 
     return true, info;
 }
@@ -174,16 +203,22 @@ intersect_box :: (box: BoxDesc, ray: Ray) -> bool, IntersectInfo
     {
         info.u = p.z / diag.z;
         info.v = p.y / diag.y;
+        info.shading_dpdu = Vector3.{0, 0, 1};
+        info.shading_dpdv = Vector3.{0, 1, 0};
     }
     else if (t_axis == 1)
     {
         info.u = p.x / diag.x;
         info.v = p.z / diag.z;
+        info.shading_dpdu = Vector3.{1, 0, 0};
+        info.shading_dpdv = Vector3.{0, 0, 1};
     }
     else
     {
         info.u = p.x / diag.x;
         info.v = p.y / diag.y;
+        info.shading_dpdu = Vector3.{1, 0, 0};
+        info.shading_dpdv = Vector3.{0, 1, 0};
     }
 
     Clamp(*info.u, 0.0, 1.0);
@@ -222,12 +257,22 @@ intersect_disk :: (disk: DiskDesc, ray: Ray) -> bool, IntersectInfo
 
     v := sqrt(distsq) / disk.radius;
 
-    theta := atan2(hit_p.y, hit_p.x) / (2 * PI);
-    if theta < 0.0 then
-        theta += 1.0;
+    theta   := atan2(normal.y, normal.x);
+    if (theta < 0)
+    {
+        theta += 2 * PI;
+    }
 
-    info.u = theta;
+    info.u = theta / (2 * PI);
     info.v = v;
+
+    hit_factor := disk.radius / sqrt(hit_p.x * hit_p.x + hit_p.y * hit_p.y);
+
+    dpdu := Vector3.{2 * PI * hit_p.y, 2 * PI * hit_p.x, 0.0};
+    dpdv := Vector3.{hit_p.x * hit_factor, hit_p.y * hit_factor, 0.0};
+
+    info.shading_dpdu = normalize(dpdu);
+    info.shading_dpdv = normalize(dpdv);
 
     set_face_normal(ray.direction, normal, *info);
 
@@ -244,31 +289,24 @@ intersect_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3
 
     det := dot(edge1, pvec);
 
-    // @todo: remove culling
-
-    if (det <= 0.0) // culling
+    if (abs(det) < EPSILON)
         return false, .{};
+    inv_det := 1.0 / det;
 
     tvec := origin - v0.p;
-    u := dot(tvec, pvec);
-    if u < 0.0 || u > det then
+    u := dot(tvec, pvec) * inv_det;
+    if u < 0.0 || u > 1.0 then
         return false, .{};
 
     qvec := cross(tvec, edge1);
-    v    := dot(direction, qvec);
-    if v < 0.0 || u + v > det then
+    v    := dot(direction, qvec) * inv_det;
+    if v < 0.0 || u + v > 1.0 then
         return false, .{};
 
-    t := dot(edge2, qvec);
-    inv_det := 1.0 / det;
-
-    t *= inv_det;
+    t := dot(edge2, qvec) * inv_det;
 
     if (t <= tmin || tmax <= t)
         return false, .{};
-
-    u *= inv_det;
-    v *= inv_det;
 
     info: IntersectInfo;
 
@@ -283,12 +321,17 @@ intersect_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3
     info.u = uv.x;
     info.v = uv.y;
 
-    normal := w * v0.n + u * v1.n + v * v2.n;
-    normal = normalize(normal);
+    n := w * v0.n + u * v1.n + v * v2.n;
+    n  = normalize(n);
 
-    // back faces are culled
-    info.flags |= .FRONT_FACE;
-    info.n = normal;
+    dpdu := w * v0.t + u * v1.t + v * v2.t;
+    dpdv := w * v0.b + u * v1.b + v * v2.b;
+
+    info.shading_n    = n;
+    info.shading_dpdu = dpdu;
+    info.shading_dpdv = dpdv;
+
+    set_face_normal(direction, n, *info);
 
     return true, info;
 }
@@ -522,15 +565,6 @@ concat :: (b1: Box3, b2: Box3) -> Box3
 }
 
 #scope_file
-
-encode_spherical_uv :: inline (n: Vector3) -> Vector2
-{
-    phi   := atan2(-n.z, n.x) / (2 * PI) + 0.5;
-    theta := acos(clamp(n.y, -1.0, 1.0));
-    u     := phi;
-    v     := theta * PI;
-    return Vector2.{u, 1.0 - v};
-}
 
 set_face_normal :: inline (direction: Vector3, outward_normal : Vector3, info: *IntersectInfo)
 {

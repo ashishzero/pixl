@@ -71,6 +71,7 @@ Material :: struct
     sheen_tint      : float;
     clearcoat       : float;
     clearcoat_gloss : float;
+    sampler         : Sampler;
 }
 
 MaterialOld :: struct
@@ -134,7 +135,8 @@ Scene :: struct
     config: PathTracerConfig;
     bitmap: Bitmap;
 
-    materials   : [..]MaterialOld;
+    materials_old : [..]MaterialOld;
+    materials     : [..]Material;
     environment := Vector3.{0.7, 0.8, 1.0};
 
     primitives : [..]Primitive;
