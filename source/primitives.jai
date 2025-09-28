@@ -1,9 +1,10 @@
 
 EPSILON :: 1.192092896e-07;
 
-Box3_Empty :: Box3.{ vmin = .{FLOAT32_INFINITY, FLOAT32_INFINITY, FLOAT32_INFINITY},
-                     vmax = .{-FLOAT32_INFINITY, -FLOAT32_INFINITY, -FLOAT32_INFINITY}
-                    };
+Box3_Empty :: Box3.{
+    vmin = .{FLOAT32_INFINITY, FLOAT32_INFINITY, FLOAT32_INFINITY},
+    vmax = .{-FLOAT32_INFINITY, -FLOAT32_INFINITY, -FLOAT32_INFINITY}
+};
 
 Ray :: struct
 {
@@ -77,8 +78,10 @@ point_at :: inline (origin: Vector3, direction: Vector3, t: float) -> Vector3
     return point;
 }
 
-intersect_sphere :: (sphere: SphereDesc, ray: Ray) -> bool, IntersectInfo
+intersect_sphere :: (sphere: SphereDesc, ray: Ray) -> IntersectInfo
 {
+    info := IntersectInfo.{ t = -1 };
+
     oc := -ray.origin;
     a  := dot(ray.direction, ray.direction);
     b  := -2 * dot(ray.direction, oc);
@@ -87,7 +90,7 @@ intersect_sphere :: (sphere: SphereDesc, ray: Ray) -> bool, IntersectInfo
     solved, t0, t1 := solve_quadratic(a, b, c);
 
     if !solved then
-        return false, .{};
+        return info;
 
     root := t0;
 
@@ -95,12 +98,11 @@ intersect_sphere :: (sphere: SphereDesc, ray: Ray) -> bool, IntersectInfo
     {
         root = t1;
         if root < ray.tmin || ray.tmax < root then
-            return false, .{};
+            return info;
     }
 
     hit_p := point_at(ray, root);
 
-    info : IntersectInfo;
     info.t = root;
     info.p = hit_p;
 
@@ -129,11 +131,13 @@ intersect_sphere :: (sphere: SphereDesc, ray: Ray) -> bool, IntersectInfo
     info.dpdu = Vector3.{-2 * PI * hit_p.z, 0.0, 2 * PI * hit_p.x};
     info.dpdv = PI * Vector3.{hit_p.y * cos_phi, -sphere.radius * sin_theta, hit_p.y * sin_phi};
 
-    return true, info;
+    return info;
 }
 
-intersect_box :: (box: BoxDesc, ray: Ray) -> bool, IntersectInfo
+intersect_box :: (box: BoxDesc, ray: Ray) -> IntersectInfo
 {
+    info := IntersectInfo.{ t = -1 };
+
     t0 := ray.tmin;
     t1 := ray.tmax;
 
@@ -164,18 +168,17 @@ intersect_box :: (box: BoxDesc, ray: Ray) -> bool, IntersectInfo
         }
 
         if t0 > t1 then
-            return false, .{};
+            return info;
     }
 
     if t_axis == -1
     {
         // inside the slab
-        return false, .{};
+        return info;
     }
 
     hit_p := point_at(ray, t0);
 
-    info: IntersectInfo;
     info.t = t0;
     info.p = hit_p;
 
@@ -210,32 +213,33 @@ intersect_box :: (box: BoxDesc, ray: Ray) -> bool, IntersectInfo
     Clamp(*info.u, 0.0, 1.0);
     Clamp(*info.v, 0.0, 1.0);
 
-    return true, info;
+    return info;
 }
 
-intersect_disk :: (disk: DiskDesc, ray: Ray) -> bool, IntersectInfo
+intersect_disk :: (disk: DiskDesc, ray: Ray) -> IntersectInfo
 {
+    info := IntersectInfo.{ t = -1 };
+
     radius2 := disk.radius * disk.radius;
     normal := Vector3.{0, 0, -1};
 
     denom := ray.direction.z; // DotProduct(normal, ray.direction)
 
     if (abs(denom) == 0.0)
-        return false, .{};
+        return info;
 
     root := -ray.origin.z / denom; // -DotProduct(normal, ray.origin)
 
     if root < ray.tmin || ray.tmax < root then
-        return false, .{};
+        return info;
 
     hit_p := point_at(ray, root);
 
     distsq := hit_p.x * hit_p.x + hit_p.y * hit_p.y;
 
     if (distsq > radius2)
-        return false, .{};
+        return info;
 
-    info: IntersectInfo;
     info.t = root;
     info.p = hit_p;
 
@@ -256,12 +260,14 @@ intersect_disk :: (disk: DiskDesc, ray: Ray) -> bool, IntersectInfo
     info.dpdu = Vector3.{2 * PI * hit_p.y, 2 * PI * hit_p.x, 0.0};
     info.dpdv = Vector3.{hit_p.x * hit_factor, hit_p.y * hit_factor, 0.0};
     
-    return true, info;
+    return info;
 }
 
-intersect_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3, direction: Vector3, tmin: float, tmax: float) -> bool, IntersectInfo
+intersect_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3, direction: Vector3, tmin: float, tmax: float) -> IntersectInfo
 {
     // https://www.graphics.cornell.edu/pubs/1997/MT97.pdf
+
+    info := IntersectInfo.{ t = -1 };
 
     edge1 := v1.p - v0.p;
     edge2 := v2.p - v0.p;
@@ -270,25 +276,23 @@ intersect_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3
     det := dot(edge1, pvec);
 
     if (abs(det) < EPSILON)
-        return false, .{};
+        return info;
     inv_det := 1.0 / det;
 
     tvec := origin - v0.p;
     u := dot(tvec, pvec) * inv_det;
     if u < 0.0 || u > 1.0 then
-        return false, .{};
+        return info;
 
     qvec := cross(tvec, edge1);
     v    := dot(direction, qvec) * inv_det;
     if v < 0.0 || u + v > 1.0 then
-        return false, .{};
+        return info;
 
     t := dot(edge2, qvec) * inv_det;
 
     if (t <= tmin || tmax <= t)
-        return false, .{};
-
-    info: IntersectInfo;
+        return info;
 
     w := 1.0 - u - v;
 
@@ -305,13 +309,15 @@ intersect_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3
     info.dpdu = w * v0.t + u * v1.t + v * v2.t;
     info.dpdv = w * v0.b + u * v1.b + v * v2.b;
 
-    return true, info;
+    return info;
 }
 
 // @todo: cleanup/copynpaste from intersect_bvh
 
-intersect_blas :: (mesh: MeshDesc, ray: Ray) -> bool, IntersectInfo
+intersect_blas :: (mesh: MeshDesc, ray: Ray) -> IntersectInfo
 {
+    info := IntersectInfo.{ t = -1 };
+
     using blas := mesh.blas;
 
     nodes_stack : [64]u32 = ---;
@@ -320,7 +326,6 @@ intersect_blas :: (mesh: MeshDesc, ray: Ray) -> bool, IntersectInfo
     nodes_stack[0] = 0;
 
     hit  := false;
-    info : IntersectInfo;
 
     origin  := ray.origin;
     dir     := ray.direction;
@@ -351,9 +356,9 @@ intersect_blas :: (mesh: MeshDesc, ray: Ray) -> bool, IntersectInfo
                     vtx1       := mesh.vertices[vtx_idx1];
                     vtx2       := mesh.vertices[vtx_idx2];
 
-                    intersect, current := intersect_triangle(vtx0, vtx1, vtx2, origin, dir, tmin, tmax);
+                    current := intersect_triangle(vtx0, vtx1, vtx2, origin, dir, tmin, tmax);
 
-                    if intersect
+                    if current.t >= 0.0
                     {
                         tmax = current.t;
                         info = current;
@@ -372,13 +377,13 @@ intersect_blas :: (mesh: MeshDesc, ray: Ray) -> bool, IntersectInfo
         }
     }
 
-    return hit, info;
+    return info;
 }
 
-intersect_mesh :: (mesh: MeshDesc, ray: Ray) -> bool, IntersectInfo
+intersect_mesh :: (mesh: MeshDesc, ray: Ray) -> IntersectInfo
 {
-    hit, info := intersect_blas(mesh, ray);
-    return hit, info;
+    info := intersect_blas(mesh, ray);
+    return info;
 }
 
 hits :: (origin: Vector3, inv_dir: Vector3, box: Box3, t0: float, t1: float) -> bool

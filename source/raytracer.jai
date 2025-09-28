@@ -160,9 +160,15 @@ HitType :: enum u32
 
 HitInfo :: struct
 {
-    type            : HitType;
-    material_id     : MaterialID;
-    using intersect : IntersectInfo;
+    type        : HitType;
+    material_id : MaterialID;
+    p           : Vector3;
+    t           : float;
+    n           : Vector3;
+    dpdu        : Vector3;
+    dpdv        : Vector3;
+    u           : float;
+    v           : float;
 }
 
 #scope_file
@@ -175,34 +181,38 @@ intersect_primitive :: (scene: Scene, primitive: Primitive, origin: Vector3, dir
     ray.origin    = transform_point(primitive.xform.inverse, origin);
     ray.direction = transform_vector(primitive.xform.inverse, direction);
 
-    info: HitInfo = .{};
+    intersect: IntersectInfo = ---;
 
-    hit := false;
     if #complete primitive.type ==
     {
         case .SPHERE;
-            hit, info.intersect = intersect_sphere(scene.spheres[primitive.id], ray);
+            intersect = intersect_sphere(scene.spheres[primitive.id], ray);
 
         case .DISK;
-            hit, info.intersect = intersect_disk(scene.disks[primitive.id], ray);
+            intersect = intersect_disk(scene.disks[primitive.id], ray);
 
         case .BOX;
-            hit, info.intersect = intersect_box(scene.boxes[primitive.id], ray);
+            intersect = intersect_box(scene.boxes[primitive.id], ray);
 
         case .MESH;
-            hit, info.intersect = intersect_mesh(scene.meshes[primitive.id], ray);
+            intersect = intersect_mesh(scene.meshes[primitive.id], ray);
     }
 
-    if (hit)
+    info := HitInfo.{ type = .MISSED };
+
+    if (intersect.t >= 0.0)
     {
         // @todo: May be transform the minimum hit only??
         info.type         = .INTERSECT;
         info.material_id  = primitive.material_id;
-        info.p            = transform_point(primitive.xform.forward, info.p);
-        info.n            = transform_vector(transpose(primitive.xform.inverse), info.n);
+        info.p            = transform_point(primitive.xform.forward, intersect.p);
+        info.n            = transform_vector(transpose(primitive.xform.inverse), intersect.n);
         info.n            = normalize(info.n);
-        info.dpdu         = transform_vector(primitive.xform.forward, info.dpdu);
-        info.dpdv         = transform_vector(primitive.xform.forward, info.dpdv);
+        info.dpdu         = transform_vector(primitive.xform.forward, intersect.dpdu);
+        info.dpdv         = transform_vector(primitive.xform.forward, intersect.dpdv);
+        info.t            = intersect.t;
+        info.u            = intersect.u;
+        info.v            = intersect.v;
     }
 
     return info;
