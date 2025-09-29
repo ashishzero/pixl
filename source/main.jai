@@ -42,55 +42,63 @@ smoothstep :: inline (a: float, b: float, v: float) -> float
     return 1;
 }
 
-sample_texture :: inline (sampler: Sampler, u: float, v: float) -> Vector3
+sample_texture :: (texture: Texture2D, u: float, v: float) -> texture.ValueType
 {
-    if #complete sampler.type ==
+    value := texture.values[0];
+
+    if (texture.flags & .CHECKERBOARD)
     {
-        case .NONE;
-            return .{1, 1, 1};
+        u_scaled := u * texture.scale.x;
+        v_scaled := v * texture.scale.y;
 
-        case .BITMAP;
-            if !sampler.bitmap.width || !sampler.bitmap.height || !sampler.bitmap.data.data then
-                return .{1, 1, 1};
+        // @todo: antialiasing
+        // this can be done after we have differentials for du and dv
+        // https://pbr-book.org/3ed-2018/Texture/Solid_and_Procedural_Texturing
 
-            u = clamp(u, 0.0, (1.0 - 0.000001).(float));
-            v = clamp(v, 0.0, (1.0 - 0.000001).(float));
+        if ((u_scaled.(int) + v_scaled.(int)) & 1) == 1
+        {
+            value = texture.values[0];
+        }
+        else
+        {
+            value = texture.values[1];
+        }
+    }
 
-            // @todo: bilinear interpolate
-            x := (u * (sampler.bitmap.width - 1)).(s32);
-            y := (v * (sampler.bitmap.height - 1)).(s32);
+    if (texture.bitmap.width && texture.bitmap.height && texture.bitmap.data)
+    {
+        u = clamp(u, 0.0, (1.0 - 0.000001).(float));
+        v = clamp(v, 0.0, (1.0 - 0.000001).(float));
 
-            index := y * sampler.bitmap.stride + x * 4;
+        // @todo: bilinear interpolate
+        x := (u * (texture.bitmap.width - 1)).(s32);
+        y := (v * (texture.bitmap.height - 1)).(s32);
 
-            r := sampler.bitmap.data[index + 0].(float);
-            g := sampler.bitmap.data[index + 1].(float);
-            b := sampler.bitmap.data[index + 2].(float);
+        index := y * texture.bitmap.stride + x * 4;
+
+        #if texture.ValueType == Vector3
+        {
+            r := texture.bitmap.data[index + 0].(float);
+            g := texture.bitmap.data[index + 1].(float);
+            b := texture.bitmap.data[index + 2].(float);
 
             r /= 255;
             g /= 255;
             b /= 255;
 
-            return .{r, g, b};
-
-        case .CHECKERBOARD;
-            EDGE_WIDTH :: 0.01;
-
-            u_scaled := u * sampler.checker.scale.x;
-            v_scaled := v * sampler.checker.scale.y;
-
-            // @todo: antialiasing
-            // this can be done after we have differentials for du and dv
-            // https://pbr-book.org/3ed-2018/Texture/Solid_and_Procedural_Texturing
-
-            if ((u_scaled.(int) + v_scaled.(int)) & 1) == 1
-            {
-                return sampler.checker.colors[0];
-            }
-            else
-            {
-                return sampler.checker.colors[1];
-            }
+            value.x *= r;
+            value.y *= g;
+            value.z *= b;
+        }
+        else
+        {
+            r := texture.bitmap.data[index].(float);
+            r /= 255;
+            value *= r;
+        }
     }
+
+    return value;
 }
 
 emitted_color_at_hit :: (scene: Scene, hit: HitInfo) -> Vector3
@@ -140,7 +148,6 @@ schlick_reflectance :: inline (cosine: float) -> float
     return y;
 }
 
-
 Surface :: struct
 {
     color           : Vector3;
@@ -169,28 +176,27 @@ brdf :: (wi: Vector3, n: Vector3, wo: Vector3, surface: Surface) -> Vector3
 {
     h := normalize(0.5 * (wi + wo));
 
-    fd : Vector3;
+    fd := 0.0;
 
     // do we need this check?
     if (same_hemisphere(wi, wo))
     {
-        fd = surface.color * INV_PI;
+        cos_d := dot(wi, h);
+        cos_l := dot(wi, n);
+        cos_v := dot(wo, n);
 
-        //  cos_d := dot(l, h);
-        //  cos_l := l.z; // dot(l, n)
-        //  cos_v := v.z; // dot(v, n)
+        Fd_90 := 0.5 + 2 * surface.roughness * cos_d * cos_d;
+        Fd_90_minus_1 := Fd_90 - 1;
 
-        //  Fd_90 := 0.5 + 2 * m.roughness * cos_d * cos_d;
-        //  Fd_90_minus_1 := Fd_90 - 1;
+        fl := schlick_reflectance(cos_l);
+        fv := schlick_reflectance(cos_v);
 
-        //  fl := schlick_reflectance(cos_l);
-        //  fv := schlick_reflectance(cos_v);
-
-        //  fd := (1.0 + Fd_90_minus_1 * fl) * (1.0 + Fd_90_minus_1 * fv);
-
+        fd = (1.0 + Fd_90_minus_1 * fl) * (1.0 + Fd_90_minus_1 * fv);
     }
 
-    return fd;
+    color := surface.color * INV_PI * fd;
+
+    return color;
 }
 
 sample_uniform_disk_concentric :: (u: Vector2) -> Vector2
@@ -258,9 +264,28 @@ cosine_hemisphere_pdf :: (cos_theta: float) -> float
     return cos_theta * INV_PI;
 }
 
+material_surface :: (material: Material, u: float, v: float) -> Surface
+{
+    surface: Surface = ---;
+    surface.color           = sample_texture(material.albedo, u, v);
+    surface.subsurface      = sample_texture(material.subsurface, u, v);
+    surface.metallic        = sample_texture(material.metallic, u, v);
+    surface.specular        = sample_texture(material.specular, u, v);
+    surface.specular_tint   = sample_texture(material.specular_tint, u, v);
+    surface.roughness       = sample_texture(material.roughness, u, v);
+    surface.anisotropic     = sample_texture(material.anisotropic, u, v);
+    surface.sheen           = sample_texture(material.sheen, u, v);
+    surface.sheen_tint      = sample_texture(material.sheen_tint, u, v);
+    surface.clearcoat       = sample_texture(material.clearcoat, u, v);
+    surface.clearcoat_gloss = sample_texture(material.clearcoat_gloss, u, v);
+    return surface;
+}
+
 sample_surface :: (dir: Vector3, hit: HitInfo, material: Material, u1: float, u2: Vector2) -> Sample
 {
     // @todo: handle backface
+
+    surface := material_surface(material, hit.u, hit.v);
 
     t := normalize(hit.dpdu - hit.n * dot(hit.dpdu, hit.n));
     b := cross(hit.n, t);
@@ -274,17 +299,14 @@ sample_surface :: (dir: Vector3, hit: HitInfo, material: Material, u1: float, u2
 
     n  := Vector3.{0, 0, 1};
     wo := forward_transform(inv_TBN, -dir);
-    wi := sample_cosine_hemisphere(u2);
 
+    
+    // Diffuse Reflection
+    wi := sample_cosine_hemisphere(u2);
     if (wo.z < 0)
     {
         wi.z *= -1;
     }
-
-    base := sample_texture(material.sampler, hit.u, hit.v);
-    base *= material.color;
-
-    surface := Surface.{ color = base };
 
     sample: Sample;
     sample.attenuation = brdf(wi, n, wo, surface);
@@ -326,9 +348,6 @@ scatter :: (scene: Scene, ray: Ray, hit: HitInfo) -> ScatterInfo
     if #complete material.type ==
     {
         case .LAMBERTIAN;
-
-        #if true
-        {
             u1 := random_get_zero_to_one();
             u2x := random_get_zero_to_one();
             u2y := random_get_zero_to_one();
@@ -344,23 +363,6 @@ scatter :: (scene: Scene, ray: Ray, hit: HitInfo) -> ScatterInfo
             info.pdf = surface.pdf;
             info.attenuation = surface.attenuation;
             info.scatter = surface.pdf > 0.0;
-        }
-        else
-        {
-            n   := hit.n;
-            dir := n + uniform_normal();
-
-            if (abs(dir.x) <= EPSILON && abs(dir.y) <= EPSILON)
-                dir = n;
-
-            info.scattered.direction = normalize(dir);
-            info.scattered.origin = hit.p;
-            info.scattered.tmin = 0.001;
-            info.scattered.tmax = FLOAT32_MAX;
-            info.attenuation = sample_texture(material.sampler, hit.u, hit.v) * material.albedo;
-            info.pdf = 1;
-            info.scatter = true;
-        }
 
         case .METAL;
             reflected := reflect(ray.direction, hit.n);
@@ -1090,14 +1092,11 @@ add_checker_pattern :: (scene: *Scene, color1: Vector3, color2: Vector3, scale: 
     material_old.albedo = .{1, 1, 1};
     material_old.fuzz = 0.0;
     material_old.refractive_index = 0;
-    material_old.sampler.type = .CHECKERBOARD;
-    material_old.sampler.checker.colors[0] = color1;
-    material_old.sampler.checker.colors[1] = color2;
-    material_old.sampler.checker.scale = scale;
-
-    material.sampler = material_old.sampler;
-    material.color = material_old.albedo;
-
+    material_old.sampler.flags |= .CHECKERBOARD;
+    material_old.sampler.values[0] = color1;
+    material_old.sampler.values[1] = color2;
+    material_old.sampler.scale = scale;
+    material.albedo = material_old.sampler;
     return id;
 }
 
@@ -1108,19 +1107,9 @@ add_lambertian_material :: (scene: *Scene, albedo: Vector3, bitmap: Bitmap = .{}
     material_old.albedo = albedo;
     material_old.fuzz = 0.0;
     material_old.refractive_index = 0;
-    material_old.sampler.type = .BITMAP;
+    material_old.sampler.values[0] = albedo;
     material_old.sampler.bitmap = bitmap;
-
-    memset(material, 0, size_of(type_of(material)));
-
-    material.color = albedo;
-
-    if bitmap.data
-    {
-        material.sampler.type = .BITMAP;
-        material.sampler.bitmap = bitmap;
-    }
-
+    material.albedo = material_old.sampler;
     return id;
 }
 
@@ -1131,7 +1120,7 @@ add_metal_material :: (scene: *Scene, albedo: Vector3 = .{1, 1, 1}, fuzz: float 
     material.albedo = albedo;
     material.fuzz = fuzz;
     material.refractive_index = 0;
-    material.sampler.type = .BITMAP;
+    material.sampler.values[0] = .{1, 1, 1};
     material.sampler.bitmap = bitmap;
     return id;
 }
@@ -1143,7 +1132,7 @@ add_dielectric_material :: (scene: *Scene, albedo: Vector3 = .{1, 1, 1}, refract
     material.albedo = albedo;
     material.fuzz = 0.0;
     material.refractive_index = ifx refractive_index != 0 then refractive_index else 1.0;
-    material.sampler.type = .BITMAP;
+    material.sampler.values[0] = .{1, 1, 1};
     material.sampler.bitmap = bitmap;
     return id;
 }
@@ -1155,7 +1144,6 @@ add_isotropic_material :: (scene: *Scene, color: Vector3) -> MaterialID
     material.albedo = color;
     material.fuzz = 0.0;
     material.refractive_index = 0.0;
-    material.sampler.type = .NONE;
     return id;
 }
 
@@ -1167,7 +1155,7 @@ add_diffuse_light :: (scene: *Scene, color: Vector3, bitmap : Bitmap = .{}) -> M
     material.fuzz = 0.0;
     material.refractive_index = 0.0;
     material.emission = color;
-    material.sampler.type = .BITMAP;
+    material.sampler.values[0] = .{1, 1, 1};
     material.sampler.bitmap = bitmap;
     return id;
 }

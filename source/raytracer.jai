@@ -65,44 +65,36 @@ MaterialType :: enum u32
 
 Bitmap :: Simp.Bitmap;
 
-SamplerType :: enum
+SamplerFlags :: enum_flags u32
 {
-    NONE;
-    BITMAP;
-    CHECKERBOARD;
+    CHECKERBOARD :: 0x1;
 }
 
-Checker :: struct
+Texture2D :: struct(ValueType: Type)
+#modify
 {
-    colors : [2]Vector3;
+    return ValueType == Vector3 || ValueType == float;
+}
+{
+    flags  : SamplerFlags;
+    values : [2]ValueType;
     scale  : Vector2;
-}
-
-Sampler :: struct
-{
-    type: SamplerType;
-
-    union
-    {
-        bitmap  : Bitmap;
-        checker : Checker;
-    }
+    bitmap : Bitmap;
 }
 
 Material :: struct
 {
-    color           : Vector3;
-    subsurface      : float;
-    metallic        : float;
-    specular        : float;
-    specular_tint   : float;
-    roughness       : float;
-    anisotropic     : float;
-    sheen           : float;
-    sheen_tint      : float;
-    clearcoat       : float;
-    clearcoat_gloss : float;
-    sampler         : Sampler;
+    albedo          : Texture2D(Vector3);
+    subsurface      : Texture2D(float);
+    metallic        : Texture2D(float);
+    specular        : Texture2D(float);
+    specular_tint   : Texture2D(float);
+    roughness       : Texture2D(float);
+    anisotropic     : Texture2D(float);
+    sheen           : Texture2D(float);
+    sheen_tint      : Texture2D(float);
+    clearcoat       : Texture2D(float);
+    clearcoat_gloss : Texture2D(float);
 }
 
 MaterialOld :: struct
@@ -113,7 +105,7 @@ MaterialOld :: struct
     emission         : Vector3;
     fuzz             : float;
     refractive_index : float;
-    sampler          : Sampler;
+    sampler          : Texture2D(Vector3);
 }
 
 BVHNode :: struct
@@ -223,9 +215,11 @@ intersect_primitive :: (primitive: Primitive, world_origin: Vector3, world_dir: 
         info.material_id  = primitive.material_id;
         info.p            = transform_point(primitive.xform.forward, intersect.p);
         info.n            = transform_vector(transpose(primitive.xform.inverse), intersect.n);
-        info.n            = normalize(info.n);
         info.dpdu         = transform_vector(primitive.xform.forward, intersect.dpdu);
         info.dpdv         = transform_vector(primitive.xform.forward, intersect.dpdv);
+        info.n            = normalize(info.n);
+        info.dpdu         = normalize(info.dpdu); // @todo: are these necessary to normalize?
+        info.dpdv         = normalize(info.dpdv);
         info.t            = intersect.t;
         info.u            = intersect.u;
         info.v            = intersect.v;
