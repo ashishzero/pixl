@@ -85,16 +85,18 @@ Texture2D :: struct(ValueType: Type)
 Material :: struct
 {
     albedo          : Texture2D(Vector3);
-    subsurface      : Texture2D(float);
     metallic        : Texture2D(float);
-    specular        : Texture2D(float);
-    specular_tint   : Texture2D(float);
     roughness       : Texture2D(float);
-    anisotropic     : Texture2D(float);
-    sheen           : Texture2D(float);
-    sheen_tint      : Texture2D(float);
-    clearcoat       : Texture2D(float);
-    clearcoat_gloss : Texture2D(float);
+    eta             : Texture2D(float);
+    //subsurface      : Texture2D(float);    
+    //specular        : Texture2D(float);
+    //specular_tint   : Texture2D(float);
+    //anisotropic     : Texture2D(float);
+    //sheen           : Texture2D(float);
+    //sheen_tint      : Texture2D(float);
+    //clearcoat       : Texture2D(float);
+    //clearcoat_gloss : Texture2D(float);
+    
 }
 
 MaterialOld :: struct

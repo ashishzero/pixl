@@ -10,7 +10,7 @@ want_screenshot := false;
 
 reflect :: inline (d: Vector3, n: Vector3) -> Vector3
 {
-    return d - 2 * dot(d, n) * n;
+    return -d + 2 * dot(d, n) * n;
 }
 
 refract :: inline (uv: Vector3, n: Vector3, factor: float) -> Vector3
@@ -138,6 +138,8 @@ uniform_normal :: () -> Vector3
 }
 
 
+
+
 // https://media.disneyanimation.com/uploads/production/publication_asset/48/asset/s2012_pbs_disney_brdf_notes_v3.pdf
 
 schlick_reflectance :: inline (cosine: float) -> float
@@ -151,16 +153,17 @@ schlick_reflectance :: inline (cosine: float) -> float
 Surface :: struct
 {
     color           : Vector3;
-    subsurface      : float;
     metallic        : float;
-    specular        : float;
-    specular_tint   : float;
     roughness       : float;
-    anisotropic     : float;
-    sheen           : float;
-    sheen_tint      : float;
-    clearcoat       : float;
-    clearcoat_gloss : float;
+    //subsurface      : float;
+    //specular        : float;
+    //specular_tint   : float;
+    
+    //anisotropic     : float;
+    //sheen           : float;
+    //sheen_tint      : float;
+    //clearcoat       : float;
+    //clearcoat_gloss : float;
 }
 
 same_hemisphere :: (v1: Vector3, v2: Vector3) -> bool
@@ -194,9 +197,13 @@ brdf :: (wi: Vector3, n: Vector3, wo: Vector3, surface: Surface) -> Vector3
         fd = (1.0 + Fd_90_minus_1 * fl) * (1.0 + Fd_90_minus_1 * fv);
     }
 
-    color := surface.color * INV_PI * fd;
+    diffuse_f := (1.0 - surface.metallic) * surface.color * INV_PI * fd;
+    // @todo: use roughness
+    diffuse_s := surface.metallic * Vector3.{1, 1, 1};
 
-    return color;
+    f := diffuse_f + diffuse_s;
+
+    return f;
 }
 
 sample_uniform_disk_concentric :: (u: Vector2) -> Vector2
@@ -268,17 +275,23 @@ material_surface :: (material: Material, u: float, v: float) -> Surface
 {
     surface: Surface = ---;
     surface.color           = sample_texture(material.albedo, u, v);
-    surface.subsurface      = sample_texture(material.subsurface, u, v);
     surface.metallic        = sample_texture(material.metallic, u, v);
-    surface.specular        = sample_texture(material.specular, u, v);
-    surface.specular_tint   = sample_texture(material.specular_tint, u, v);
     surface.roughness       = sample_texture(material.roughness, u, v);
-    surface.anisotropic     = sample_texture(material.anisotropic, u, v);
-    surface.sheen           = sample_texture(material.sheen, u, v);
-    surface.sheen_tint      = sample_texture(material.sheen_tint, u, v);
-    surface.clearcoat       = sample_texture(material.clearcoat, u, v);
-    surface.clearcoat_gloss = sample_texture(material.clearcoat_gloss, u, v);
+
+    //surface.subsurface      = sample_texture(material.subsurface, u, v);    
+    //surface.specular        = sample_texture(material.specular, u, v);
+    //surface.specular_tint   = sample_texture(material.specular_tint, u, v);    
+    //surface.anisotropic     = sample_texture(material.anisotropic, u, v);
+    //surface.sheen           = sample_texture(material.sheen, u, v);
+    //surface.sheen_tint      = sample_texture(material.sheen_tint, u, v);
+    //surface.clearcoat       = sample_texture(material.clearcoat, u, v);
+    //surface.clearcoat_gloss = sample_texture(material.clearcoat_gloss, u, v);
     return surface;
+}
+
+effectively_smooth :: inline (metallic: float) -> bool
+{
+    return metallic > 0.999999;
 }
 
 sample_surface :: (dir: Vector3, hit: HitInfo, material: Material, u1: float, u2: Vector2) -> Sample
@@ -300,18 +313,38 @@ sample_surface :: (dir: Vector3, hit: HitInfo, material: Material, u1: float, u2
     n  := Vector3.{0, 0, 1};
     wo := forward_transform(inv_TBN, -dir);
 
-    
-    // Diffuse Reflection
-    wi := sample_cosine_hemisphere(u2);
-    if (wo.z < 0)
+    wi  : Vector3;
+
+    if (u1 < surface.metallic)
     {
-        wi.z *= -1;
+        // Specular
+        if (effectively_smooth(surface.metallic))
+        {
+            wi = .{ x = -wo.x, y = -wo.y, z = wo.z };
+        }
+        else
+        {
+            debug_break();
+        }
     }
+    else
+    {
+        // Diffuse Reflection
+        wi = sample_cosine_hemisphere(u2);
+        if (wo.z < 0)
+        {
+            wi.z *= -1;
+        }
+    }
+
+    specular_pdf := surface.metallic;
+    diffuse_pdf  := cosine_hemisphere_pdf(abs(wi.z));
+    pdf          := surface.metallic * specular_pdf + (1.0 - surface.metallic) * diffuse_pdf;
 
     sample: Sample;
     sample.attenuation = brdf(wi, n, wo, surface);
     sample.next_dir    = inverse_transform(inv_TBN, wi);
-    sample.pdf         = cosine_hemisphere_pdf(abs(wi.z));
+    sample.pdf         = pdf;
 
   //  check_valid_n := dot(hit.n, sample.next_dir);
 
@@ -365,7 +398,7 @@ scatter :: (scene: Scene, ray: Ray, hit: HitInfo) -> ScatterInfo
             info.scatter = surface.pdf > 0.0;
 
         case .METAL;
-            reflected := reflect(ray.direction, hit.n);
+        reflected := reflect(-ray.direction, hit.n);
             dir := reflected;
 
             info.scatter = true;
@@ -406,7 +439,7 @@ scatter :: (scene: Scene, ray: Ray, hit: HitInfo) -> ScatterInfo
 
             if should_reflect || reflectance(cos_theta, ri) > random_get_zero_to_one()
             {
-                dir = reflect(ray.direction, hit.n);
+                dir = reflect(-ray.direction, hit.n);
             }
             else
             {
@@ -952,8 +985,8 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
             environment          = .{0.7, 0.7, 0.7};
 
-            red   := add_lambertian_material(scene, .{0.65, 0.05, 0.05});
-            black   := add_lambertian_material(scene, .{0.1, 0.1, 0.1});
+            red   := add_material_new(scene, .{0.65, 0.05, 0.05}, 1.0);
+            black   := add_lambertian_material(scene, .{0.01, 0.01, 0.01});
             checker := add_checker_pattern(scene, .{.9, .9, .9}, .{0.1, 0.1, 0.1}, .{40, 40});
 
             backdrop, backdrop_xform     := load_backdrop();
@@ -1110,6 +1143,23 @@ add_lambertian_material :: (scene: *Scene, albedo: Vector3, bitmap: Bitmap = .{}
     material_old.sampler.values[0] = albedo;
     material_old.sampler.bitmap = bitmap;
     material.albedo = material_old.sampler;
+    return id;
+}
+
+texture_from_value :: (value: $T) -> Texture2D(T)
+{
+    texture: Texture2D(T);
+    texture.values[0] = value;
+    return texture;
+}
+
+add_material_new :: (scene: *Scene, albedo: Vector3, metallic := 0.0) -> MaterialID
+{
+    id, material_old, material := add_material(scene, .LAMBERTIAN);
+    material.albedo = texture_from_value(albedo);
+    material.metallic = texture_from_value(metallic);
+    material.roughness = texture_from_value(0.0);
+    material.eta = texture_from_value(1.0);
     return id;
 }
 
