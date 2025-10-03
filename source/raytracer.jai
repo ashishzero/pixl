@@ -54,18 +54,9 @@ Primitive :: struct
     shape       : PrimitiveShape;
 }
 
-MaterialType :: enum u32
-{
-    LAMBERTIAN    :: 0;
-    METAL         :: 1;
-    DIELECTRIC    :: 2;
-    ISOTROPIC     :: 3;
-    DIFFUSE_LIGHT :: 4;
-}
-
 Bitmap :: Simp.Bitmap;
 
-SamplerFlags :: enum_flags u32
+TextureFlags :: enum_flags u32
 {
     CHECKERBOARD :: 0x1;
 }
@@ -76,38 +67,58 @@ Texture2D :: struct(ValueType: Type)
     return ValueType == Vector3 || ValueType == float;
 }
 {
-    flags  : SamplerFlags;
+    flags  : TextureFlags;
     values : [2]ValueType;
     scale  : Vector2;
     bitmap : Bitmap;
 }
 
+SurfaceProperties :: struct
+{
+    metalness         : float;
+    roughness         : float;
+    anisotropic       : float;
+
+    color             : Vector3;
+    diffuse_roughness : float;
+
+    metal_ior         : Vector3;
+    metal_k           : Vector3;
+
+    emission          : Vector3;
+    emission_strength : float;
+
+    //specular        : float;
+    //subsurface      : float;
+    //sheen           : float;
+    //sheen_tint      : float;
+    //clearcoat       : float;
+    //clearcoat_gloss : float;
+}
+    //eta             : float;
+
 Material :: struct
 {
-    albedo          : Texture2D(Vector3);
-    metallic        : Texture2D(float);
-    roughness       : Texture2D(float);
-    eta             : Texture2D(float);
+    metalness         : Texture2D(float);
+    roughness         : Texture2D(float);
+    anisotropic       : Texture2D(float);
+
+    color             : Texture2D(Vector3);
+    diffuse_roughness : Texture2D(float);
+
+    metal_ior         : Texture2D(Vector3);
+    metal_k           : Texture2D(Vector3);
+
+    emission          : Texture2D(Vector3);
+    emission_strength : Texture2D(float);
+
+    //specular        : Texture2D(float);    
+    //ior             : Texture2D(float);
     //subsurface      : Texture2D(float);    
-    //specular        : Texture2D(float);
-    //specular_tint   : Texture2D(float);
-    //anisotropic     : Texture2D(float);
     //sheen           : Texture2D(float);
     //sheen_tint      : Texture2D(float);
     //clearcoat       : Texture2D(float);
-    //clearcoat_gloss : Texture2D(float);
-    
-}
-
-MaterialOld :: struct
-{
-    type             : MaterialType;
-    scale            : float;
-    albedo           : Vector3;
-    emission         : Vector3;
-    fuzz             : float;
-    refractive_index : float;
-    sampler          : Texture2D(Vector3);
+    //clearcoat_gloss : Texture2D(float);    
 }
 
 BVHNode :: struct
@@ -160,8 +171,7 @@ Scene :: struct
     config: PathTracerConfig;
     bitmap: Bitmap;
 
-    materials_old : [..]MaterialOld;
-    materials     : [..]Material;
+    materials   : [..]Material;
     environment := Vector3.{0.7, 0.8, 1.0};
 
     primitives : [..]Primitive;
