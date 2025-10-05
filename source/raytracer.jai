@@ -75,18 +75,15 @@ Texture2D :: struct(ValueType: Type)
 
 SurfaceProperties :: struct
 {
-    metalness         : float;
-    roughness         : float;
-    anisotropic       : float;
+    color                : Vector3;
+    metalness            : float;
+    diffuse_roughness    : float;
+    specular_color       : Vector3;
+    specular_roughness   : float;
+    specular_anisotropic : float;
 
-    color             : Vector3;
-    diffuse_roughness : float;
-
-    metal_ior         : Vector3;
-    metal_k           : Vector3;
-
-    emission          : Vector3;
-    emission_strength : float;
+    emission_strength    : float;
+    emission             : Vector3;
 
     //specular        : float;
     //subsurface      : float;
@@ -95,22 +92,18 @@ SurfaceProperties :: struct
     //clearcoat       : float;
     //clearcoat_gloss : float;
 }
-    //eta             : float;
 
 Material :: struct
 {
-    metalness         : Texture2D(float);
-    roughness         : Texture2D(float);
-    anisotropic       : Texture2D(float);
+    color                : Texture2D(Vector3);
+    metalness            : Texture2D(float);
+    diffuse_roughness    : Texture2D(float);
+    specular_color       : Texture2D(Vector3);
+    specular_roughness   : Texture2D(float);
+    specular_anisotropic : Texture2D(float);
 
-    color             : Texture2D(Vector3);
-    diffuse_roughness : Texture2D(float);
-
-    metal_ior         : Texture2D(Vector3);
-    metal_k           : Texture2D(Vector3);
-
-    emission          : Texture2D(Vector3);
-    emission_strength : Texture2D(float);
+    emission             : Texture2D(Vector3);
+    emission_strength    : Texture2D(float);
 
     //specular        : Texture2D(float);    
     //ior             : Texture2D(float);
