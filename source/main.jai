@@ -1,4 +1,5 @@
 #load "raytracer.jai";
+#load "bxdf.jai";
 
 RAYTRACE_BITMAP_WIDTH  :: 1920;
 RAYTRACE_BITMAP_HEIGHT :: 1080;
@@ -36,6 +37,7 @@ smoothstep :: inline (a: float, b: float, v: float) -> float
 
 sample_texture :: (texture: Texture2D, u: float, v: float) -> texture.ValueType
 {
+    // @todo: remove flags and always sample!!
     value := texture.values[0];
 
     if (texture.flags & .CHECKERBOARD)
@@ -93,14 +95,6 @@ sample_texture :: (texture: Texture2D, u: float, v: float) -> texture.ValueType
     return value;
 }
 
-sample_uniform_sphere :: (u: Vector2) -> Vector3
-{
-    z := 1 - 2 * u.x;
-    r := sqrt(max(0.0, 1.0 - z * z));
-    phi := 2 * PI * u.y;
-    return .{r * cos(phi), r * sin(phi), z};
-}
-
 sample_uniform_disk_polar :: (u: Vector2) -> Vector2
 {
     r := sqrt(u.x);
@@ -111,42 +105,7 @@ sample_uniform_disk_polar :: (u: Vector2) -> Vector2
     return sample;
 }
 
-sample_uniform_disk_concentric :: (u: Vector2) -> Vector2
-{
-    uoff_x := 2 * u.x - 1;
-    uoff_y := 2 * u.y - 1;
-
-    if (uoff_x == 0.0 && uoff_y == 0.0)
-        return Vector2.{0, 0};
-
-    theta, r: float = ---;
-
-    if (abs(uoff_x) > abs(uoff_y))
-    {
-        r = uoff_x;
-        theta = PI_OVER_4 * (uoff_y / uoff_x);
-    }
-    else
-    {
-        r = uoff_y;
-        theta = PI_OVER_2 - PI_OVER_4 * (uoff_x / uoff_y);
-    }
-
-    sample: Vector2 = ---;
-    sample.x = r * cos(theta);
-    sample.y = r * sin(theta);
-
-    return sample;
-}
-
-sample_cosine_hemisphere :: (u: Vector2) -> Vector3
-{
-    d := sample_uniform_disk_concentric(u);
-    z := sqrt(max(1 - d.x * d.x - d.y * d.y, 0));
-    return Vector3.{d.x, d.y, z};
-}
-
-forward_transform :: (xform: Matrix3, p: Vector3) -> Vector3
+ForwardTransform :: (xform: Matrix3, p: Vector3) -> Vector3
 {
     r: Vector3 = ---;
     r.x = xform._11 * p.x + xform._12 * p.y + xform._13 * p.z;
@@ -155,7 +114,7 @@ forward_transform :: (xform: Matrix3, p: Vector3) -> Vector3
     return r;
 }
 
-inverse_transform :: (xform: Matrix3, p: Vector3) -> Vector3
+InverseTransform :: (xform: Matrix3, p: Vector3) -> Vector3
 {
     r: Vector3 = ---;
     r.x = xform._11 * p.x + xform._21 * p.y + xform._31 * p.z;
@@ -164,16 +123,13 @@ inverse_transform :: (xform: Matrix3, p: Vector3) -> Vector3
     return r;
 }
 
-INV_PI :: 1.0 / PI;
-PI_OVER_4 :: PI / 4;
-PI_OVER_2 :: PI / 2;
-
-material_surface_properties :: (material: Material, hit: HitInfo) -> SurfaceProperties
+SampleMaterialSurfaceProperties :: (material: Material, hit: HitInfo) -> SurfaceProperties
 {
     surface: SurfaceProperties   = ---;
     surface.color                = sample_texture(material.color, hit.u, hit.v);
     surface.metalness            = sample_texture(material.metalness, hit.u, hit.v);
     surface.diffuse_roughness    = sample_texture(material.diffuse_roughness, hit.u, hit.v);
+    surface.specular_weight      = sample_texture(material.specular_weight, hit.u, hit.v);
     surface.specular_color       = sample_texture(material.specular_color, hit.u, hit.v);
     surface.specular_roughness   = sample_texture(material.specular_roughness, hit.u, hit.v);
     surface.specular_anisotropic = sample_texture(material.specular_anisotropic, hit.u, hit.v);
@@ -182,350 +138,30 @@ material_surface_properties :: (material: Material, hit: HitInfo) -> SurfaceProp
     return surface;
 }
 
-BSDFSample :: struct
-{
-    Fr  : Vector3;
-    L   : Vector3;
-    pdf : float = -1;
-}
-
-smooth_surface :: inline (alpha: Vector2) -> bool
-{
-    return max(alpha.x, alpha.y) < 1.0e-3;
-}
-
 mix :: (x: $T, y: T, t: float) -> T
 {
     return x * (1.0 - t) + y * t;
 }
 
-//------------------------------------------------------------------------
-// Diffuse Model
-// EON: Apractical energy-preserving rough diffuse BRDF
-// https://arxiv.org/pdf/2410.18026
-
-FON1 :: 0.5- 2.0 / (3.0 * PI);
-FON2 :: 2.0/ 3.0 - 28.0 / (15.0 * PI);
-
-e_fon_approx :: (mu: float, roughness: float) -> float
-{
-    G_COEFFS :: Vector2.[ .{0.05710852, -0.3321814}, .{0.4918818, 0.07144299} ];
-    mucomp   := 1.0 - mu;
-    mucomp2  := mucomp * mucomp;
-    vcomp    := Vector2.{mucomp, mucomp2};
-    gx       := dot(G_COEFFS[0], vcomp);
-    gy       := dot(G_COEFFS[1], vcomp);
-    goverpi  := gx + gy * mucomp2;
-    return(1.0 + roughness * goverpi) / (1.0 + FON1 * roughness);
-}
-
-fr_diffuse :: (V: Vector3, L: Vector3, color: Vector3, roughness: float) -> Vector3
-{
-    NoV      := V.z;
-    NoL      := L.z;
-    VoL      := dot(V, L);
-    s        := VoL - NoL * NoV;
-    s_over_t := ifx (s > 0.0) then (s / max(NoL, NoV)) else s;        // FON s/t
-    AF       := 1.0 / (1.0 + FON1 * roughness);                       // FON A coeff
-    f_ss     := (color * INV_PI) * AF * (1.0 + roughness * s_over_t); // single-scatter
-    EFo      := e_fon_approx(NoV, roughness);                         // FON V albedo(approx)
-    EFi      := e_fon_approx(NoL, roughness);                         // FON L albedo(approx)
-    avgEF    := AF * (1.0 + FON2 * roughness);                        // average albedo
-    rho_ms   := (color * color) * avgEF / (Vector3.{1, 1, 1} - color * (1.0 - avgEF));
-    eps      := 1.0e-7;
-    f_ms     := (rho_ms * INV_PI) * max(eps, 1.0 - EFo) * max(eps, 1.0 - EFi) / max(eps, 1.0 - avgEF); // multi-scatterlobe
-    return f_ss + f_ms;
-}
-
-ltc_coeffs :: (mu: float, roughness: float) -> float, float, float, float
-{
-    r := roughness;
-    a := 1.0 + r * (0.303392 + (-0.518982 + 0.111709 * mu) * mu + (-0.276266 + 0.335918 * mu) * r);
-    b := r * (-1.16407 + 1.15859 * mu + (0.150815 - 0.150105 * mu) * r) / (mu * mu * mu - 1.43545);
-    c := 1.0 + (0.20013 + (-0.506373 + 0.261777 * mu) * mu) * r;
-    d := ((0.540852 + (-1.01625 + 0.475392 * mu) * mu) * r) / (-1.0743 + mu * (0.0725628 + mu));
-    return a, b, c, d;
-}
-
-orthonormal_basis_ltc :: (w: Vector3) -> Matrix3
-{
-    lensq := dot(w.xy, w.xy);
-    X     := ifx (lensq > 0.0) then (Vector3.{w.x, w.y, 0.0} / sqrt(lensq)) else Vector3.{1, 0, 0};
-    Y     := Vector3.{-X.y, X.x, 0.0}; // cross(Z, X)
-    Z     := Vector3.{0, 0, 1};
-
-    LTC : Matrix3 = ---;
-    LTC.v[0] = X;
-    LTC.v[1] = Y;
-    LTC.v[2] = Z;
-    return LTC;
-}
-
-cltc_sample :: (V: Vector3, roughness: float, u1: float, u2: float) -> Vector3, float
-{
-    a, b, c, d := ltc_coeffs(abs(V.z), roughness);    // coeffs of LTC M
-    radius     := sqrt(u1);                           // CLTC sampling
-    phi        := 2.0 * PI * u2;                      // CLTC sampling
-    x          := radius * cos(phi);                  // CLTC sampling factors
-    y          := radius * sin(phi);                  // CLTC sampling factors
-    vz         := 1.0 / sqrt(d * d + 1.0);            // CLTC sampling factors
-    s          := 0.5 * (1.0 + vz);                   // CLTC sampling factors
-    x           = -mix(sqrt(1.0 - y * y), x, s);      // CLTC sampling
-    wh         := Vector3.{x, y, sqrt(max(1.0 - (x * x + y * y), 0.0))}; // H sample via CLTC
-    pdf_H      := wh.z / (PI * s);                    // PDF of H sample
-    L          := Vector3.{a * wh.x + b * wh.z, c * wh.y, d * wh.x + wh.z}; // // M H (unnormalized)
-    len        := length(L);                          // ∥M H∥=1/∥inv(M) H∥
-    detM       := c * (a- b * d);                     // |M|
-    pdf_L      := pdf_H * len * len * len / detM;     // L sample PDF
-    from_LTC   := orthonormal_basis_ltc(V);           // L -> local space
-    L           = normalize(from_LTC * L);            // L -> local space
-    return L, pdf_L;
-}
-
-cltc_pdf :: (V_local: Vector3, L_local: Vector3, roughness: float) -> float
-{
-    to_LTC     := transpose(orthonormal_basis_ltc(V_local)); // V -> LTC space
-    L          := to_LTC * L_local;                          // V -> LTC space
-    a, b, c, d := ltc_coeffs(abs(V_local.z), roughness);     // coeffs of LTC M
-    detM       := c * (a - b * d);                           // |M|
-    H          := Vector3.{c * (L.x - b * L.z), (a - b * d) * L.y, -c * (d * L.x - a * L.z)}; // adj(M)L
-    lensq      := dot(H, H);                                 // |M|∥inv(M) H∥
-    vz         := 1.0 / sqrt(d * d + 1.0);                   // CLTC sampling factors
-    s          := 0.5 * (1.0 + vz);                          // CLTC sampling factors
-    pdf        := detM * detM/(lensq * lensq) * max(H.z, 0.0) / (PI * s);
-    return pdf;
-}
-
-uniform_lobe_sample :: (u1: float, u2: float) -> Vector3
-{
-    sintheta := sqrt(1.0 - u1 * u1);
-    phi      := 2.0 * PI * u2;
-    L : Vector3 = ---;
-    L.x = sintheta * cos(phi);
-    L.y = sintheta * sin(phi);
-    L.z = u1;
-    return L;
-}
-
-sample_diffuse :: (V: Vector3, roughness: float, u1: float, u2: float) -> Vector3, float
-{
-    NoV   := abs(V.z);
-    P_u   := pow(roughness, 0.1) * (0.162925 + NoV * (-0.372058 + (0.538233 - 0.290822 * NoV) * NoV));
-    P_c   := 1.0 - P_u; // probability of CLTC sample
-
-    L     : Vector3 = ---;
-    pdf_c : float   = ---;
-
-    if (u1 <= P_u)
-    {
-        u1    = u1 / P_u;
-        L     = uniform_lobe_sample(u1, u2); // sample L from uniform lobe
-        pdf_c = cltc_pdf(V, L, roughness);   // evaluate CLTC PDF at L
-    }
-    else
-    {
-        u1       = (u1 - P_u) / P_c;
-        L, pdf_c = cltc_sample(V, roughness, u1, u2); // sample L from CLTC lobe
-    }
-
-    pdf_u := 1.0 / (2.0 * PI);
-    pdf   := P_u * pdf_u + P_c * pdf_c; // MIS PDF of L
-    return L, pdf;
-}
-
-pdf_diffuse :: (V: Vector3, L: Vector3, roughness: float) -> float
-{
-    NoV   := abs(V.z);
-    P_u   := pow(roughness, 0.1) * (0.162925 + NoV * (-0.372058 + (0.538233 - 0.290822 * NoV) * NoV));
-    P_c   := 1.0 - P_u;
-    pdf_c := cltc_pdf(V, L, roughness);
-    pdf_u := 1.0 / (2.0 * PI);
-    return P_u * pdf_u + P_c * pdf_c;
-}
-
-//------------------------------------------------------------------------
-
-//fr_metal :: () -> Vector3
-//{
-//    //------------------------------------------------------------------------
-//    // F82 Model
-//}
-
-fr_metal :: (cosine: float, u: Vector3, k: Vector3) -> Vector3
-{
-    //------------------------------------------------------------------------
-    // https://seblagarde.wordpress.com/2013/04/29/memo-on-fresnel-equations/
-    c2 := cosine * cosine;
-    ct := Vector3.{c2, c2, c2};
-    uc := 2 * cosine * u;
-    t0 := u * u + k * k;
-    t1 := t0 * ct;
-    Rs := (t0 - uc + ct) / (t0 + uc + ct);
-    Rp := (t1 - uc + Vector3.{1, 1, 1}) / (t1 + uc + Vector3.{1, 1, 1});
-    return 0.5 * (Rp + Rs);
-}
-
-microfacet_anisotropic_distribution :: (NoH: float, alphax: float, alphay: float) -> float
-{
-    alphax   = max(alphax, 1.0e-3);
-    alphay   = max(alphay, 1.0e-3);
-    alphax2 := alphax * alphax;
-    alphay2 := alphay * alphay;
-    cos2    := NoH * NoH;
-    sin2    := 1 - cos2;
-    f       := sin2 * (cos2 / alphax2 + sin2 / alphay2) + cos2;
-    inv_D   := PI * alphax * alphay * f * f;
-    D       := 1.0 / max(1.0e-3, inv_D);
-    return D;
-}
-
-microfacet_mask_shadow :: inline (NoV: float, NoL: float, alpha: Vector2) -> float
-{
-    cosV      := NoV;
-    cosL      := NoL;
-    cosV2     := cosV * cosV;
-    cosL2     := cosL * cosL;
-    sinV2     := 1.0 - cosV2;
-    sinL2     := 1.0 - cosL2;
-    sinV      := sqrt(sinV2);
-    sinL      := sqrt(sinL2);
-    alphaV2   := square(alpha.x * cosV) + square(alpha.y * sinV);
-    alphaL2   := square(alpha.x * cosL) + square(alpha.y * sinL);
-    GV        := 0.5 * (sqrt(1.0 + alphaV2 * sinV2 / cosV2) - 1.0);
-    GL        := 0.5 * (sqrt(1.0 + alphaL2 * sinL2 / cosL2) - 1.0);
-    G         := 1.0 / (1.0 + GL + GV);
-    return G;
-}
-
-microfacet_anisotropic_alpha :: (roughness: float, anisotropic: float) -> Vector2
-{
-    roughness    = max(roughness, 1.0e-3);
-    roughness2  := roughness * roughness;
-    aspect      := sqrt(1.0 - 0.9 * anisotropic);
-    alpha_x     := roughness2 / aspect;
-    alpha_y     := roughness2 * aspect;
-    return Vector2.{alpha_x, alpha_y};
-}
-
-microfacet_sample :: (V: Vector3, u: Vector2, alpha: Vector2) -> Vector3
-{
-    N := normalize(Vector3.{alpha.x * V.x, alpha.y * V.y, V.z});
-
-    lensq := N.x * N.x + N.y * N.y;
-
-    X := ifx (lensq > 0.0)
-    {
-        inv_len := 1.0 / sqrt(lensq);
-        Vector3.{-N.y * inv_len, N.x * inv_len, 0.0};
-    }
-    else
-    {
-        Vector3.{1.0, 0.0, 0.0};
-    };
-
-    Y   := cross(N, X);
-
-    r   := sqrt(u.x);
-    phi := 2.0 * PI * u.y;
-    x   := r * cos(phi);
-    y   := r * sin(phi);
-    s   := 0.5 * (1.0 + N.z);
-    y    = (1.0 - s) * sqrt(max(0.0, 1.0 - x * x)) + s * y;
-    
-    H   := x * X + y * Y + sqrt(max(0.0, 1.0 - x * x - y * y)) * N;
-    H.x *= alpha.x;
-    H.y *= alpha.y;
-    H.z  = max(1.0e-6, H.z);
-    H    = normalize(H);
-    return H;
-}
-
-Lobe :: enum
-{
-    METAL;
-    DIFFUSE;
-}
-
-LOBE_COUNT :: 2;
-
-cosine_hemisphere_pdf :: (NoL: float) -> float
-{
-    return NoL * INV_PI;
-}
-
-pdf_metal :: (V: Vector3, L: Vector3, roughness: float, anisotropic: float) -> float
-{
-    H     := normalize(V + L);
-    VoH   := saturate(dot(V, H));
-    NoH    := min(abs(H.z), 1.0);
-    alpha := microfacet_anisotropic_alpha(roughness, anisotropic);
-    D     := microfacet_anisotropic_distribution(NoH, alpha.x, alpha.y);
-    pdf   := D / max(4 * VoH, 1.0e-7);
-    return pdf;
-}
-
-brdf_sample :: (V: Vector3, surface: SurfaceProperties, p: float, u: Vector2) -> BSDFSample
+BSDFSample :: (V: Vector3, surface: SurfaceProperties, p: float, u: Vector2) -> BSDF_Sample
 {
     P_m := surface.metalness;
     P_d := 1.0 - P_m;
 
-    // Nocheckin: Remove this
-    metal_ior := Vector3.{0.000, 0.470, 1.439};
-    metal_k := Vector3.{182.6, 2.189, 1.660};
-
-    front_face := (V.z > 0.0);
-
-    if (p <= P_d)
+    if (p < P_d)
     {
-        if (front_face)
-        {
-            L, pdf_d := sample_diffuse(V, surface.diffuse_roughness, u.x, u.y);
-            Fr       := fr_diffuse(V, L, surface.color, surface.diffuse_roughness);
-            pdf_m    := pdf_metal(V, L, surface.specular_roughness, surface.specular_anisotropic);
-            pdf      := P_m * pdf_m + P_d * pdf_d;
-            return .{Fr, L, pdf};
-        }
+        sample := DiffuseSample(V, surface.color, surface.diffuse_roughness, u.x, u.y);
+        pdf_m  := MetalPDF(V, sample.L, surface.specular_roughness, surface.specular_anisotropic);
+        pdf    := P_m * pdf_m + P_d * sample.pdf;
+        return .{sample.Fr, sample.L, pdf};
     }
     else
     {
-        if (front_face)
-        {
-            alpha  := microfacet_anisotropic_alpha(surface.specular_roughness, surface.specular_anisotropic);
-
-            if smooth_surface(alpha)
-            {
-                L       := Vector3.{-V.x, -V.y, V.z};
-                NoV     := min(V.z, 1.0);
-                NoL     := min(L.z, 1.0);
-                Fr      := fr_metal(NoV, metal_ior, metal_k) / max(NoL, 1.0e-7);
-                pdf_d   := pdf_diffuse(V, L, surface.diffuse_roughness);
-                pdf_m   := 1.0;
-                pdf     := P_m * pdf_m + P_d * pdf_d;
-                return .{Fr, L, pdf};
-            }
-            else
-            {
-                // @todo: fix??
-                H      := microfacet_sample(V, u, alpha);
-                L      := reflect(V, H);
-                NoV    := min(V.z, 1.0);
-                NoL    := min(L.z, 1.0);
-                NoH    := saturate(H.z);
-                VoH    := saturate(dot(V, H));
-                if (L.z * V.z > 0.0 && NoV >= 1.0e-6 && NoL >= 1.0e-6 && NoH >= 1.0e-6)
-                {
-                    D      := microfacet_anisotropic_distribution(NoH, alpha.x, alpha.y);
-                    G      := microfacet_mask_shadow(NoV, NoL, alpha);
-                    Fm     := fr_metal(VoH, metal_ior, metal_k);
-                    Fr     := D * G * Fm / (4 * NoL * NoV);
-                    pdf_m  := D / max(4 * VoH, 1.0e-7);
-                    pdf_d  := pdf_diffuse(V, L, surface.diffuse_roughness);
-                    pdf    := P_m * pdf_m + P_d * pdf_d;
-                    return .{Fr, L, pdf};
-                }
-                return .{};
-            }
-        }
+        Fo     := surface.color;
+        sample := MetalSample(V, Fo, surface.specular_weight, surface.specular_color, surface.specular_roughness, surface.specular_anisotropic, u.x, u.y);
+        pdf_d  := DiffusePDF(V, sample.L, surface.diffuse_roughness);
+        pdf    := P_m * sample.pdf + P_d * pdf_d;
+        return .{sample.Fr, sample.L, pdf};
     }
 
     return .{};
@@ -539,7 +175,7 @@ Ray :: struct
     tmax   : float;
 }
 
-integrate_path :: (scene: Scene, primary: Ray, depth: s32) -> Vector3
+IntegratePath :: (scene: Scene, primary: Ray, depth: s32) -> Vector3
 {
     Lo   := Vector3.{0, 0, 0};
     Fr   := Vector3.{1, 1, 1};
@@ -547,7 +183,7 @@ integrate_path :: (scene: Scene, primary: Ray, depth: s32) -> Vector3
 
     for 0..depth
     {
-        hit, num_visited := intersect(scene, ray.origin, ray.dir, ray.tmin, ray.tmax);
+        hit, num_visited := IntersectScene(scene, ray.origin, ray.dir, ray.tmin, ray.tmax);
 
         if hit.t >= 0.0
         {
@@ -567,15 +203,15 @@ integrate_path :: (scene: Scene, primary: Ray, depth: s32) -> Vector3
             //------------------------------------------------------------------------
             // Sample
             material := scene.materials[hit.material_id];
-            surface  := material_surface_properties(material, hit);
+            surface  := SampleMaterialSurfaceProperties(material, hit);
 
             u   : Vector2;
-            p   := random_get_zero_to_one();
-            u.x  = random_get_zero_to_one();
-            u.y  = random_get_zero_to_one();
+            p   := random_get_zero_to_one_open();
+            u.x  = random_get_zero_to_one_open();
+            u.y  = random_get_zero_to_one_open();
 
-            V      := forward_transform(inv_TBN, -ray.dir);
-            sample := brdf_sample(V, surface, p, u);
+            V      := ForwardTransform(inv_TBN, -ray.dir);
+            sample := BSDFSample(V, surface, p, u);
 
             Le     := surface.emission_strength * surface.emission;
             Lo += Fr * Le;
@@ -585,13 +221,13 @@ integrate_path :: (scene: Scene, primary: Ray, depth: s32) -> Vector3
                 break;
             }
 
-            cosine := saturate(abs(sample.L.z));
+            cosine := saturate(sample.L.z);
             Fr *= cosine * sample.Fr / sample.pdf;
 
             //------------------------------------------------------------------------
             // Next ray
-            ray.origin = hit.p + hit.n * 1.0e-3;
-            ray.dir    = inverse_transform(inv_TBN, sample.L);
+            ray.origin = hit.p;
+            ray.dir    = InverseTransform(inv_TBN, sample.L);
             ray.tmin   = 1.0e-3;
             ray.tmax   = FLOAT32_MAX;
         }
@@ -632,8 +268,8 @@ trace_pixel :: (scene: Scene, x: s32, y: s32, num_samples: s32) -> Vector3
             offset := sample_stratified_square(n_x.(float), n_y.(float), inv_sqrt_samples);
             sample := Vector2.{ x.(float), y.(float) } + offset;
             query  := sample * scale + shift;
-            ray    := generate_ray(query, scene.camera.xform, scene.camera.lens_focal_length, scene.camera.lens_radius);
-            color  := integrate_path(scene, ray, scene.config.max_depth);
+            ray    := GenerateRay(query, scene.camera.xform, scene.camera.lens_focal_length, scene.camera.lens_radius);
+            color  := IntegratePath(scene, ray, scene.config.max_depth);
             sampled += color;
         }
     }
@@ -1090,9 +726,11 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
             id, material        := create_material(scene);
             material.color       = texture_vector3(.{1, 1, 1});
-            material.metalness   = texture_value(0.0);
-            material.diffuse_roughness    = texture_value(1.0);
-            material.specular_roughness   = texture_value(0.0);
+            material.metalness   = texture_value(1.0);
+            material.diffuse_roughness    = texture_value(0.0);
+            material.specular_weight      = texture_value(1.0);
+            material.specular_color       = texture_vector3(.{1, 1, 1});
+            material.specular_roughness   = texture_value(0.5);
             material.specular_anisotropic = texture_value(0.0);
 
             add_sphere(scene, center, radius, id);
@@ -1104,12 +742,17 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
             light := create_emission_material(scene, texture_vector3(.{20, 20, 20}));
 
-            environment          = .{1, 1, 1};
+            environment          = .{0.7, 0.7, 0.7};
 
             id, material        := create_material(scene);
-            material.color       = texture_vector3(.{0.827, 0.686, 0.216});
+            //material.color       = texture_vector3(.{0.827, 0.686, 0.216});
+            material.color       = texture_vector3(.{1, 1, 1});
+            //material.color       = texture_vector3(.{1.000, 0.735, 0.353});
             material.metalness   = texture_value(1.0);
-            material.specular_roughness   = texture_value(0.4);
+            material.specular_weight      = texture_value(0.7);
+            material.specular_color       = texture_vector3(.{1, 1, 1});
+            //material.specular_color       = texture_vector3(.{0.993, 1.000, 1.000});
+            material.specular_roughness   = texture_value(0.3);
             material.specular_anisotropic = texture_value(0.0);
 
             red        := create_lambertian_material(scene, texture_vector3(.{0.65, 0.05, 0.05}));
@@ -1119,7 +762,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
             backdrop, backdrop_xform     := load_backdrop();
             internals, externals, shaderball_xform := load_shaderball();
 
-            //add_box(scene, Matrix4_Identity, .{ -5, 10, -15 }, .{ -1, 10.01, -11 }, light);
+            add_box(scene, Matrix4_Identity, .{ -5, 10, -15 }, .{ -1, 10.01, -11 }, light);
             //add_box(scene, Matrix4_Identity, .{  1, 10, -15 }, .{  5, 10.01, -11 }, light);
 
             //add_sphere(scene, Vector3.{0, 2, 0}, 2, red);
@@ -1156,7 +799,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
     }
 }
 
-add_primitive :: (scene: *Scene, type: PrimitiveType) -> *Primitive
+add_primitive :: (scene: *Scene, type: Primitive_Type) -> *Primitive
 {
     primitive := array_add(*scene.primitives);
     primitive.type = type;
@@ -1213,7 +856,7 @@ add_box :: (scene: *Scene, xform: Matrix4, min: Vector3, max: Vector3, material_
     primitive.shape.box.vmax = max;
     primitive.xform.forward = xform;
     primitive.xform.inverse = inv;
-    bbox := transform_box(xform, Box3.{min, max});
+    bbox := TransformBox(xform, Box3.{min, max});
     array_add(*scene.tlas.bboxes, bbox);
     primitive.material_id = material_id;
 }
@@ -1253,8 +896,8 @@ add_mesh :: (scene: *Scene, xform: Matrix4, mesh: PrimitiveMesh, material_id: Ma
 
     for v: mesh.vertices
     {
-        p := transform_point(xform, v.p);
-        bbox = concat(bbox, p);
+        p := TransformPoint(xform, v.p);
+        bbox = Union(bbox, p);
     }
 
     array_add(*scene.tlas.bboxes, bbox);
@@ -1401,15 +1044,15 @@ calculate_camera_transform :: (using camera: *Camera, aspect_ratio: float)
     inversed, xform.inv_projection = inverse(camera.xform.projection);
 }
 
-generate_ray :: (query: Vector2, camera: CameraTransform, lens_focal_length: float, lens_radius: float) -> Ray
+GenerateRay :: (query: Vector2, camera: CameraTransform, lens_focal_length: float, lens_radius: float) -> Ray
 {
     origin := Vector3.{0, 0, 0};
     target := transform_point(camera.inv_projection, Vector3.{ query.x, query.y, 1.0 });
 
     if lens_radius > 0.0
     {
-        u := random_get_zero_to_one();
-        v := random_get_zero_to_one();
+        u := random_get_zero_to_one_open();
+        v := random_get_zero_to_one_open();
 
         origin.xy = lens_radius * sample_uniform_disk_polar(Vector2.{u, v});
 
@@ -1514,9 +1157,9 @@ radix_sort :: (K: []u32, K_temp: []u32, V: []$T, V_temp: []T, n: s64)
 triangle_bbox :: (p: Vector3, q: Vector3, r: Vector3) -> Box3
 {
     bbox := Box3_Empty;
-    bbox = concat(bbox, p);
-    bbox = concat(bbox, q);
-    bbox = concat(bbox, r);
+    bbox = Union(bbox, p);
+    bbox = Union(bbox, q);
+    bbox = Union(bbox, r);
     return bbox;
 }
 
@@ -1584,8 +1227,8 @@ build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi:
 
     for lo..hi
     {
-        node_bbox     = concat(node_bbox, bboxes[indices[it]]);
-        centriod_bbox = concat(centriod_bbox, centriods[indices[it]]);
+        node_bbox     = Union(node_bbox, bboxes[indices[it]]);
+        centriod_bbox = Union(centriod_bbox, centriods[indices[it]]);
     }
 
     split_axis := 0;
@@ -1641,7 +1284,7 @@ build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi:
     {
         bin_index := find_bin_index(centriods[indices[it]]);
         bins[bin_index].count += 1;
-        bins[bin_index].bbox = concat(bins[bin_index].bbox, bboxes[indices[it]]);
+        bins[bin_index].bbox = Union(bins[bin_index].bbox, bboxes[indices[it]]);
     }
 
     split_costs: [SPLIT_COUNT]float;
@@ -1651,7 +1294,7 @@ build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi:
 
     for 0..SPLIT_COUNT-1
     {
-        prev_box = concat(prev_box, bins[it].bbox);
+        prev_box = Union(prev_box, bins[it].bbox);
         prev_count += bins[it].count;
         split_costs[it] += prev_count * half_area(prev_box);
     }
@@ -1661,7 +1304,7 @@ build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi:
 
     for #v2 < 1..SPLIT_COUNT
     {
-        prev_box = concat(prev_box, bins[it].bbox);
+        prev_box = Union(prev_box, bins[it].bbox);
         prev_count += bins[it].count;
         split_costs[it - 1] += prev_count * half_area(prev_box);
     }
@@ -1736,7 +1379,7 @@ build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi:
     build_bvh_sah_binned_recursive(builder, next + 0, lo, mid, indices, bboxes, centriods);
     build_bvh_sah_binned_recursive(builder, next + 1, mid + 1, hi, indices, bboxes, centriods);
 
-    node.bbox                     = concat(builder.nodes[next + 0].bbox, builder.nodes[next + 1].bbox);
+    node.bbox                     = Union(builder.nodes[next + 0].bbox, builder.nodes[next + 1].bbox);
     node.first_child_or_primitive = next;
     node.num_primitives           = 0;
 }
@@ -2055,9 +1698,21 @@ load_obj_model :: (path: string) -> PrimitiveMesh
     return mesh;
 }
 
+CommandLineArgs :: struct
+{
+    width       := 1920;
+    height      := 1080;
+    scene       := "";
+    num_threads := 0;
+}
+
 main :: ()
 {
     init();
+
+    success, args := parse_arguments(CommandLineArgs);
+
+    print("args = %\n", args);
 
     // test code
   //  N :: 200000;
@@ -2068,8 +1723,8 @@ main :: ()
 
   //  for 0..N
   //  {
-  //      u1 := random_get_zero_to_one();
-  //      u2 := random_get_zero_to_one();
+    //      u1 := random_get_zero_to_one_open();
+    //      u2 := random_get_zero_to_one_open();
   //      sample := cltc_sample(V, roughness, u1, u2);
   //      pdf_a  := cltc_pdf(V, sample.L, roughness);
   //      array_add(*errors, (sample.pdf - pdf_a) / max(pdf_a, 1.0e-9));
@@ -2085,8 +1740,8 @@ main :: ()
 
     MSAA :: 8;
 
-    render_width = 1920;
-    render_height = 1080;
+    render_width  = args.width;
+    render_height = args.height;
 
     wnd := create_window(render_width, render_height, "PixL", wanted_msaa = MSAA);
 
@@ -2094,14 +1749,27 @@ main :: ()
 
     scene: Scene;
     init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=50, max_depth=2);
-    //load_scene(*scene, .WHITE_FURNACE_TEST);
-    //load_scene(*scene, .SHADERBALL_TEST);
-    load_scene(*scene, .MATERIAL_TEST);
+
+    name       := to_upper_copy(args.scene);
+    scene_type := SceneType.MATERIAL_TEST;
+
+    info := type_info(SceneType);
+
+    for info.names
+    {
+        if (name == it)
+        {
+            scene_type = info.values[it_index].(SceneType);
+            break;
+        }
+    }
+
+    load_scene(*scene, scene_type);
     prepare_for_rendering(*scene);
 
     wavefront: Wavefront;
 
-    init(*wavefront, *scene, max_threads = 1);
+    init(*wavefront, *scene, max_threads = args.num_threads.(s32));
     start(*wavefront);
 
     Simp.prepare_window(wnd, wanted_msaa = MSAA);
@@ -2504,6 +2172,7 @@ lane_sync :: ()
 #import "Atomics";
 #import "Hash_Table";
 #import "Hash";
+#import "Command_Line";
 
 Simp :: #import "Simp";
 

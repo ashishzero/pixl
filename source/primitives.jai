@@ -1,13 +1,19 @@
 
 EPSILON :: 1.192092896e-07;
 
+Box3 :: struct
+{
+    vmin: Vector3;
+    vmax: Vector3;
+}
+
 Box3_Empty :: Box3.{
     vmin = .{FLOAT32_INFINITY, FLOAT32_INFINITY, FLOAT32_INFINITY},
     vmax = .{-FLOAT32_INFINITY, -FLOAT32_INFINITY, -FLOAT32_INFINITY}
 };
 
 // @todo: add support for plane
-PrimitiveType :: enum u32
+Primitive_Type :: enum u32
 {
     SPHERE :: 1;
     DISK   :: 2;
@@ -24,7 +30,15 @@ Vertex3D :: struct
     b  : Vector3;
 }
 
-IntersectInfo :: struct
+Acceleration_Structure :: struct
+{
+    // @todo: Make these array view
+    nodes      : [..]BVHNode;
+    indices    : [..]u32;
+    bboxes     : [..]Box3; // @todo: Not needed remove!!
+}
+
+Intersect_Info :: struct
 {
     p    : Vector3;
     t    : float;
@@ -35,22 +49,16 @@ IntersectInfo :: struct
     v    : float;
 };
 
-point_at :: inline (origin: Vector3, dir: Vector3, t: float) -> Vector3
+IntersectSphere :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
 {
-    point := origin + dir * t;
-    return point;
-}
-
-intersect_sphere :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> IntersectInfo
-{
-    info := IntersectInfo.{ t = -1 };
+    info := Intersect_Info.{ t = -1 };
 
     oc := -origin;
     a  := dot(dir, dir);
     b  := -2 * dot(dir, oc);
     c  := dot(oc, oc) - radius * radius;
 
-    solved, t0, t1 := solve_quadratic(a, b, c);
+    solved, t0, t1 := SolveQuadratic(a, b, c);
 
     if !solved then
         return info;
@@ -64,7 +72,7 @@ intersect_sphere :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, 
             return info;
     }
 
-    hit_p := point_at(origin, dir, root);
+    hit_p := PointAt(origin, dir, root);
 
     info.t = root;
     info.p = hit_p;
@@ -97,9 +105,9 @@ intersect_sphere :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, 
     return info;
 }
 
-intersect_box :: (vmin: Vector3, vmax: Vector3, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> IntersectInfo
+IntersectBox :: (vmin: Vector3, vmax: Vector3, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
 {
-    info := IntersectInfo.{ t = -1 };
+    info := Intersect_Info.{ t = -1 };
 
     t0 := tmin;
     t1 := tmax;
@@ -140,7 +148,7 @@ intersect_box :: (vmin: Vector3, vmax: Vector3, origin: Vector3, dir: Vector3, t
         return info;
     }
 
-    hit_p := point_at(origin, dir, t0);
+    hit_p := PointAt(origin, dir, t0);
 
     info.t = t0;
     info.p = hit_p;
@@ -179,9 +187,9 @@ intersect_box :: (vmin: Vector3, vmax: Vector3, origin: Vector3, dir: Vector3, t
     return info;
 }
 
-intersect_disk :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> IntersectInfo
+IntersectDisk :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
 {
-    info := IntersectInfo.{ t = -1 };
+    info := Intersect_Info.{ t = -1 };
 
     radius2 := radius * radius;
     normal := Vector3.{0, 0, -1};
@@ -196,7 +204,7 @@ intersect_disk :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, tm
     if root < tmin || tmax < root then
         return info;
 
-    hit_p := point_at(origin, dir, root);
+    hit_p := PointAt(origin, dir, root);
 
     distsq := hit_p.x * hit_p.x + hit_p.y * hit_p.y;
 
@@ -226,11 +234,11 @@ intersect_disk :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, tm
     return info;
 }
 
-intersect_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> IntersectInfo
+IntersectTriangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
 {
     // https://www.graphics.cornell.edu/pubs/1997/MT97.pdf
 
-    info := IntersectInfo.{ t = -1 };
+    info := Intersect_Info.{ t = -1 };
 
     edge1 := v1.p - v0.p;
     edge2 := v2.p - v0.p;
@@ -259,7 +267,7 @@ intersect_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3
 
     w := 1.0 - u - v;
 
-    hit_p := point_at(origin, dir, t);
+    hit_p := PointAt(origin, dir, t);
 
     info.t = t;
     info.p = hit_p;
@@ -277,9 +285,9 @@ intersect_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3
 
 // @todo: cleanup/copynpaste from intersect_bvh
 
-intersect_blas :: (indices: []u32, vertices: []Vertex3D, blas: AccelerationStructure, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> IntersectInfo
+IntersectBLAS :: (indices: []u32, vertices: []Vertex3D, blas: Acceleration_Structure, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
 {
-    info := IntersectInfo.{ t = -1 };
+    info := Intersect_Info.{ t = -1 };
 
     nodes_stack : [64]u32 = ---;
 
@@ -293,7 +301,7 @@ intersect_blas :: (indices: []u32, vertices: []Vertex3D, blas: AccelerationStruc
         top -= 1;
         node := blas.nodes[nodes_stack[top]];
 
-        if (hits(origin, inv_dir, node.bbox, tmin, tmax))
+        if (Hits(origin, inv_dir, node.bbox, tmin, tmax))
         {
             if (node.num_primitives)
             {
@@ -311,7 +319,7 @@ intersect_blas :: (indices: []u32, vertices: []Vertex3D, blas: AccelerationStruc
                     vtx1       := vertices[vtx_idx1];
                     vtx2       := vertices[vtx_idx2];
 
-                    current := intersect_triangle(vtx0, vtx1, vtx2, origin, dir, tmin, tmax);
+                    current := IntersectTriangle(vtx0, vtx1, vtx2, origin, dir, tmin, tmax);
 
                     if current.t >= 0.0
                     {
@@ -334,13 +342,13 @@ intersect_blas :: (indices: []u32, vertices: []Vertex3D, blas: AccelerationStruc
     return info;
 }
 
-intersect_mesh :: (indices: []u32, vertices: []Vertex3D, blas: AccelerationStructure, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> IntersectInfo
+IntersectMesh :: (indices: []u32, vertices: []Vertex3D, blas: Acceleration_Structure, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
 {
-    info := intersect_blas(indices, vertices, blas, origin, dir, tmin, tmax);
+    info := IntersectBLAS(indices, vertices, blas, origin, dir, tmin, tmax);
     return info;
 }
 
-hits :: (origin: Vector3, inv_dir: Vector3, box: Box3, t0: float, t1: float) -> bool
+Hits :: (origin: Vector3, inv_dir: Vector3, box: Box3, t0: float, t1: float) -> bool
 {
     for 0..2
     {
@@ -372,12 +380,30 @@ hits :: (origin: Vector3, inv_dir: Vector3, box: Box3, t0: float, t1: float) -> 
     return true;
 }
 
-transform_box :: (t: Matrix4, box: Box3) -> Box3
+TransformPoint :: (m: Matrix4, v: Vector3) -> Vector3
+{
+    result: Vector3 = ---;
+    result.x = m._11 * v.x + m._12 * v.y + m._13 * v.z + m._14;
+    result.y = m._21 * v.x + m._22 * v.y + m._23 * v.z + m._24;
+    result.z = m._31 * v.x + m._32 * v.y + m._33 * v.z + m._34;
+    return result;
+}
+
+TransformVector :: (m: Matrix4, v: Vector3) -> Vector3
+{
+    result: Vector3 = ---;
+    result.x = m._11 * v.x + m._12 * v.y + m._13 * v.z;
+    result.y = m._21 * v.x + m._22 * v.y + m._23 * v.z;
+    result.z = m._31 * v.x + m._32 * v.y + m._33 * v.z;
+    return result;
+}
+
+TransformBox :: (t: Matrix4, box: Box3) -> Box3
 {
     center := 0.5 * (box.vmin + box.vmax);
     extent := 0.5 * (box.vmax - box.vmin);
 
-    rcenter := transform_point(t, center);
+    rcenter := TransformPoint(t, center);
     half    := Vector3.{0, 0, 0};
 
     half.x       = abs(extent.x * t.floats[0 + 0]) + abs(extent.y * t.floats[0 + 1]) + abs(extent.z * t.floats[0 + 2]);
@@ -387,7 +413,7 @@ transform_box :: (t: Matrix4, box: Box3) -> Box3
     return Box3.{rcenter - half, rcenter + half};
 }
 
-concat :: (b: Box3, p: Vector3) -> Box3
+Union :: (b: Box3, p: Vector3) -> Box3
 {
     ret: Box3;
     ret.vmin = min(b.vmin, p);
@@ -395,7 +421,7 @@ concat :: (b: Box3, p: Vector3) -> Box3
     return ret;
 }
 
-concat :: (b1: Box3, b2: Box3) -> Box3
+Union :: (b1: Box3, b2: Box3) -> Box3
 {
     ret: Box3;
     ret.vmin = min(b1.vmin, b2.vmin);
@@ -405,7 +431,13 @@ concat :: (b1: Box3, b2: Box3) -> Box3
 
 #scope_file
 
-solve_quadratic :: (a: float, b: float, c: float) -> (bool, float, float)
+PointAt :: inline (origin: Vector3, dir: Vector3, t: float) -> Vector3
+{
+    point := origin + dir * t;
+    return point;
+}
+
+SolveQuadratic :: inline (a: float, b: float, c: float) -> (bool, float, float)
 {
     if (a == 0.0)
     {
