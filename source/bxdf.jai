@@ -284,7 +284,7 @@ Power6 :: inline (x: float) -> float
     return x6;
 }
 
-F82Tint :: (mu: float, Fo: Vector3, specular_weight: float, specular_color: Vector3) -> Vector3
+F82Tint :: (mu: float, Fo: Vector3, specular_color: Vector3) -> Vector3
 {
     mu82   := 1.0 / 7.0;
     f_mu   := F_Schlick(Fo, mu);
@@ -293,12 +293,12 @@ F82Tint :: (mu: float, Fo: Vector3, specular_weight: float, specular_color: Vect
     r_82   := mu82 * Power6(1.0 - mu82);
     f_spec := r_mu * f_82 * (Vector3.{1, 1, 1} - specular_color) / r_82;
     tinted := max(f_mu - f_spec, Vector3.{0, 0, 0});
-    return specular_weight * tinted;
+    return tinted;
 }
 
 #scope_export
 
-MetalFr :: (V: Vector3, L: Vector3, Fo: Vector3, specular_weight: float, specular_color: Vector3, roughness: float, anisotropic: float) -> Vector3
+MetalFr :: (V: Vector3, L: Vector3, Fo: Vector3, specular_color: Vector3, roughness: float, anisotropic: float) -> Vector3
 {
     if (roughness < 1.0e-3)
     {
@@ -314,7 +314,7 @@ MetalFr :: (V: Vector3, L: Vector3, Fo: Vector3, specular_weight: float, specula
         VoH    := saturate(dot(V, H));
         D      := MicrofacetAnisotropicDistribution(NoH, alpha);
         G      := MicrofacetMaskShadow(NoV, NoL, alpha);
-        Fm     := F82Tint(VoH, Fo, specular_weight, specular_color);
+        Fm     := F82Tint(VoH, Fo, specular_color);
         Fr     := D * G * Fm / max(4 * NoL * NoV, 1.0e-6);
         return Fr;
     }
@@ -340,14 +340,14 @@ MetalPDF :: (V: Vector3, L: Vector3, roughness: float, anisotropic: float) -> fl
     }
 }
 
-MetalSample :: (V: Vector3, Fo: Vector3, specular_weight: float, specular_color: Vector3, roughness: float, anisotropic: float, u1: float, u2: float) -> BSDF_Sample
+MetalSample :: (V: Vector3, Fo: Vector3, specular_color: Vector3, roughness: float, anisotropic: float, u1: float, u2: float) -> BSDF_Sample
 {
     if (roughness < 1.0e-3)
     {
         L   := Vector3.{-V.x, -V.y, V.z};
         pdf := 1.0;
         mu  := L.z;
-        Fr  := F82Tint(mu, Fo, specular_weight, specular_color) / max(mu, 1.0e-6);
+        Fr  := F82Tint(mu, Fo, specular_color) / max(mu, 1.0e-6);
         return .{Fr, L, pdf};
     }
     else
@@ -362,10 +362,9 @@ MetalSample :: (V: Vector3, Fo: Vector3, specular_weight: float, specular_color:
         D      := MicrofacetAnisotropicDistribution(NoH, alpha);
         G      := MicrofacetMaskShadow(NoV, NoL, alpha);
         G1     := MicrofacetMask(NoV, alpha);
-        Fm     := F82Tint(VoH, Fo, specular_weight, specular_color);
+        Fm     := F82Tint(VoH, Fo, specular_color);
         Fr     := (D * G * Fm) / max(4 * NoL * NoV, 1.0e-6);
         pdf    := (D * G1) / max(4 * NoV, 1.0e-6);
-        //print("D = %, G = %, Fm = %, pdf = %, Fr = %, Fr/pdf = %, denom = %\n", D, G, Fm, pdf, Fr, Fr/pdf, max(4 * NoL * NoV, 1.0e-6));
         return .{Fr, L, pdf};
     }
 }

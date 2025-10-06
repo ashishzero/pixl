@@ -157,8 +157,7 @@ BSDFSample :: (V: Vector3, surface: SurfaceProperties, p: float, u: Vector2) -> 
     }
     else
     {
-        Fo     := surface.color;
-        sample := MetalSample(V, Fo, surface.specular_weight, surface.specular_color, surface.specular_roughness, surface.specular_anisotropic, u.x, u.y);
+        sample := MetalSample(V, surface.color, surface.specular_color, surface.specular_roughness, surface.specular_anisotropic, u.x, u.y);
         pdf_d  := DiffusePDF(V, sample.L, surface.diffuse_roughness);
         pdf    := P_m * sample.pdf + P_d * pdf_d;
         return .{sample.Fr, sample.L, pdf};
@@ -730,7 +729,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
             material.diffuse_roughness    = texture_value(0.0);
             material.specular_weight      = texture_value(1.0);
             material.specular_color       = texture_vector3(.{1, 1, 1});
-            material.specular_roughness   = texture_value(0.5);
+            material.specular_roughness   = texture_value(0.25);
             material.specular_anisotropic = texture_value(0.0);
 
             add_sphere(scene, center, radius, id);
@@ -746,13 +745,13 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
             id, material        := create_material(scene);
             //material.color       = texture_vector3(.{0.827, 0.686, 0.216});
-            material.color       = texture_vector3(.{1, 1, 1});
-            //material.color       = texture_vector3(.{1.000, 0.735, 0.353});
+            //material.color       = texture_vector3(.{1, 1, 1});
+            material.color       = texture_vector3(.{1.000, 0.735, 0.353});
             material.metalness   = texture_value(1.0);
-            material.specular_weight      = texture_value(0.7);
-            material.specular_color       = texture_vector3(.{1, 1, 1});
-            //material.specular_color       = texture_vector3(.{0.993, 1.000, 1.000});
-            material.specular_roughness   = texture_value(0.3);
+            material.specular_weight      = texture_value(1.0);
+            //material.specular_color       = texture_vector3(.{1, 1, 1});
+            material.specular_color       = texture_vector3(.{0.993, 1.000, 1.000});
+            material.specular_roughness   = texture_value(0.25);
             material.specular_anisotropic = texture_value(0.0);
 
             red        := create_lambertian_material(scene, texture_vector3(.{0.65, 0.05, 0.05}));
@@ -1748,7 +1747,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=50, max_depth=2);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=200, max_depth=5);
 
     name       := to_upper_copy(args.scene);
     scene_type := SceneType.MATERIAL_TEST;
