@@ -299,6 +299,17 @@ RenderShared :: struct
     tile_id: int;
 }
 
+ApplyToneMapping :: (func: Tone_Map_Type, v: Vector3) -> Vector3
+{
+    if #complete func ==
+    {
+        case .LINEAR;
+            return Vector3.{saturate(v.x), saturate(v.y), saturate(v.z)};
+        case .REINHARD;
+            return v / (Vector3.{1, 1, 1} + v);
+    }
+}
+
 render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared)
 {
     width  := scene.config.width;
@@ -359,11 +370,8 @@ render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared
                 scene.rgbx[index].xyz = render;
 
                 // @todo: proper Tone Mapping + Gamma correction
-                render = render / (Vector3.{1, 1, 1} + render); // simple Reinhard
-                render.x = pow(render.x, 1.0/2.2);
-                render.y = pow(render.y, 1.0/2.2);
-                render.z = pow(render.z, 1.0/2.2);
-
+                // https://64.github.io/tonemapping/
+                render = ApplyToneMapping(scene.tonemap, render);
                 write_color(*scene.bitmap, x, y, render);
             }
         }
@@ -715,6 +723,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
             add_mesh(scene, xform, monkey, white);
 
         case .WHITE_FURNACE_TEST;
+            tonemap            = .LINEAR;
             camera.fov         = 45.0 / 360.0;
             camera.position    = .{0, 0, -5};
             camera.orientation = .{};
@@ -726,10 +735,10 @@ load_scene :: (using scene: *Scene, type: SceneType)
             id, material        := create_material(scene);
             material.color       = texture_vector3(.{1, 1, 1});
             material.metalness   = texture_value(1.0);
-            material.diffuse_roughness    = texture_value(0.0);
+            material.diffuse_roughness    = texture_value(0.7);
             material.specular_weight      = texture_value(1.0);
             material.specular_color       = texture_vector3(.{1, 1, 1});
-            material.specular_roughness   = texture_value(0.25);
+            material.specular_roughness   = texture_value(0.4);
             material.specular_anisotropic = texture_value(0.0);
 
             add_sphere(scene, center, radius, id);
@@ -739,37 +748,37 @@ load_scene :: (using scene: *Scene, type: SceneType)
             camera.position      = .{0, 10, -10};
             set_from_axis_and_angle(*camera.orientation, Vector3.{1, 0, 0}, turns_to_radians(0.1));
 
-            light := create_emission_material(scene, texture_vector3(.{20, 20, 20}));
+            light := create_emission_material(scene, texture_vector3(.{40, 40, 40}));
 
-            environment          = .{0.7, 0.7, 0.7};
+            environment          = .{1.0, 1.0, 1.0};
 
             id, material        := create_material(scene);
             //material.color       = texture_vector3(.{0.827, 0.686, 0.216});
             //material.color       = texture_vector3(.{1, 1, 1});
-            material.color       = texture_vector3(.{1.000, 0.735, 0.353});
+            material.color       = texture_vector3(.{1.000, 0.735, 0.353}); // Gold
             material.metalness   = texture_value(1.0);
             material.specular_weight      = texture_value(1.0);
             //material.specular_color       = texture_vector3(.{1, 1, 1});
-            material.specular_color       = texture_vector3(.{0.993, 1.000, 1.000});
+            material.specular_color       = texture_vector3(.{0.993, 1.000, 1.000}); // Gold
             material.specular_roughness   = texture_value(0.25);
             material.specular_anisotropic = texture_value(0.0);
 
             red        := create_lambertian_material(scene, texture_vector3(.{0.65, 0.05, 0.05}));
             black      := create_lambertian_material(scene, texture_vector3(.{0.01, 0.01, 0.01}));
-            checker    := create_lambertian_material(scene, texture_checkerboard(Vector3.{.9, .9, .9}, .{0.1, 0.1, 0.1}, .{40, 40}));
+            checker    := create_lambertian_material(scene, texture_checkerboard(Vector3.{0.9, 0.9, 0.9}, .{0.1, 0.1, 0.1}, .{40, 40}));
 
             backdrop, backdrop_xform     := load_backdrop();
             internals, externals, shaderball_xform := load_shaderball();
 
             add_box(scene, Matrix4_Identity, .{ -5, 10, -15 }, .{ -1, 10.01, -11 }, light);
-            //add_box(scene, Matrix4_Identity, .{  1, 10, -15 }, .{  5, 10.01, -11 }, light);
+            add_box(scene, Matrix4_Identity, .{  1, 10, -15 }, .{  5, 10.01, -11 }, light);
 
             //add_sphere(scene, Vector3.{0, 2, 0}, 2, red);
 
             add_mesh(scene, backdrop_xform, backdrop, checker);
-            add_sphere(scene, Vector3.{0, 2, 0}, 2, id);
-            //add_mesh(scene, shaderball_xform, internals, black);
-            //add_mesh(scene, shaderball_xform, externals, id);
+            //add_sphere(scene, Vector3.{0, 2, 0}, 2, id);
+            add_mesh(scene, shaderball_xform, internals, black);
+            add_mesh(scene, shaderball_xform, externals, id);
 
         case .MATERIAL_TEST;
             camera.fov         = 45.0 / 360.0;
@@ -789,9 +798,17 @@ load_scene :: (using scene: *Scene, type: SceneType)
                 for 0..NUM_TEST_SPHERES-1
                 {
                     roughness := it.(float) / (NUM_TEST_SPHERES - 1).(float);
-                    material  := create_lambertian_material(scene, texture_value(color), roughness);
+                    //material  := create_lambertian_material(scene, texture_value(color), roughness);
 
-                    add_sphere(scene, center, radius, material);
+                    id, material                 := create_material(scene);
+                    material.color                = texture_vector3(.{1.000, 0.735, 0.353}); // Gold
+                    material.metalness            = texture_value(1.0);
+                    material.specular_weight      = texture_value(1.0);
+                    material.specular_color       = texture_vector3(.{0.993, 1.000, 1.000}); // Gold
+                    material.specular_roughness   = texture_value(roughness);
+                    material.specular_anisotropic = texture_value(0.0);
+
+                    add_sphere(scene, center, radius, id);
                     center.x += spacing;
                 }
             }
