@@ -120,9 +120,6 @@ DiffuseFr :: (V: Vector3, L: Vector3, color: Vector3, roughness: float) -> Vecto
     rho_ms   := (color * color) * avgEF / (Vector3.{1, 1, 1} - color * (1.0 - avgEF));
     eps      := 1.0e-6;
     f_ms     := (rho_ms * INV_PI) * max(eps, 1.0 - EFo) * max(eps, 1.0 - EFi) / max(eps, 1.0 - avgEF); // multi-scatterlobe
-
-    //print("SS = %, MS = %, F = %\n", f_ss, f_ms, f_ss + f_ms);
-
     return f_ss + f_ms;
 }
 

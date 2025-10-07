@@ -35,64 +35,131 @@ smoothstep :: inline (a: float, b: float, v: float) -> float
     return 1;
 }
 
-sample_texture :: (texture: Texture2D, u: float, v: float) -> texture.ValueType
+GetPixel :: (x: int, y: int, stride: int, data: *u8, $type: Type, $n: int) -> Vector3
+#modify
 {
-    // @todo: remove flags and always sample!!
-    value := texture.values[0];
-
-    if (texture.flags & .CHECKERBOARD)
+    if (n != 1 && n != 3)
     {
-        u_scaled := u * texture.scale.x;
-        v_scaled := v * texture.scale.y;
+        return false, "Channel must be either 1 or 3";
+    }
+    if (type != u8 && type != float)
+    {
+        return false, "Data must be either u8 or float";
+    }
+    return true;
+}
+{
+    index := y * stride + x * n * size_of(type);
+    ptr   := (data + index).(*type);
 
-        // @todo: antialiasing
-        // this can be done after we have differentials for du and dv
-        // https://pbr-book.org/3ed-2018/Texture/Solid_and_Procedural_Texturing
-
-        if ((u_scaled.(int) + v_scaled.(int)) & 1) == 1
-        {
-            value = texture.values[0];
-        }
-        else
-        {
-            value = texture.values[1];
-        }
+    r     := ptr[0];
+    #if (n == 1)
+    {
+        g := r;
+        b := r;
+    }
+    else
+    {
+        g := ptr[1];
+        b := ptr[2];
     }
 
-    if (texture.bitmap.width && texture.bitmap.height && texture.bitmap.data)
+    #if (type == u8)
     {
-        u = clamp(u, 0.0, (1.0 - 0.000001).(float));
-        v = clamp(v, 0.0, (1.0 - 0.000001).(float));
-
-        // @todo: bilinear interpolate
-        x := (u * (texture.bitmap.width - 1)).(s32);
-        y := (v * (texture.bitmap.height - 1)).(s32);
-
-        index := y * texture.bitmap.stride + x * 4;
-
-        #if texture.ValueType == Vector3
-        {
-            r := texture.bitmap.data[index + 0].(float);
-            g := texture.bitmap.data[index + 1].(float);
-            b := texture.bitmap.data[index + 2].(float);
-
-            r /= 255;
-            g /= 255;
-            b /= 255;
-
-            value.x *= r;
-            value.y *= g;
-            value.z *= b;
-        }
-        else
-        {
-            r := texture.bitmap.data[index].(float);
-            r /= 255;
-            value *= r;
-        }
+        rf := saturate(r.(float) / 255.0);
+        gf := saturate(g.(float) / 255.0);
+        bf := saturate(b.(float) / 255.0);
+    }
+    else
+    {
+        rf := r;
+        gf := g;
+        bf := b;
     }
 
-    return value;
+    return Vector3.{rf, gf, bf};
+}
+
+SampleTexture :: (texture: Texture2D, u: float, v: float) -> Vector3
+{
+    u *= texture.scale.x;
+    v *= texture.scale.y;
+
+    // @todo: antialiasing
+    // this can be done after we have differentials with du and dv
+    // check pbrt for reference
+
+    t := ((u.(int) + v.(int)) & 1).(float);
+    c := lerp(texture.constants[0], texture.constants[1], t);
+
+    if (texture.data)
+    {
+        xp := u * (texture.width - 1).(float) + 0.5;
+        yp := v * (texture.height - 1).(float) + 0.5;
+
+        // Wrap Repeat
+        x0 := xp.(int) % texture.width;
+        y0 := yp.(int) % texture.height;
+        x1 := (x0 + 1) % texture.width;
+        y1 := (y0 + 1) % texture.height;
+
+        xf := fract(xp);
+        yf := fract(yp);
+
+        samples : [4]Vector3 = ---;
+
+        if #complete texture.format ==
+        {
+            case .UNKNOWN;
+                samples[0] = Vector3.{1, 1, 1};
+                samples[1] = Vector3.{1, 1, 1};
+                samples[2] = Vector3.{1, 1, 1};
+                samples[3] = Vector3.{1, 1, 1};
+
+            case .R8_UNORM;
+                samples[0] = GetPixel(x0, y0, texture.stride, texture.data, u8, 1);
+                samples[1] = GetPixel(x1, y0, texture.stride, texture.data, u8, 1);
+                samples[2] = GetPixel(x0, y1, texture.stride, texture.data, u8, 1);
+                samples[3] = GetPixel(x1, y1, texture.stride, texture.data, u8, 1);
+
+            case .R8G8B8_UNORM;
+                samples[0] = GetPixel(x0, y0, texture.stride, texture.data, u8, 3);
+                samples[1] = GetPixel(x1, y0, texture.stride, texture.data, u8, 3);
+                samples[2] = GetPixel(x0, y1, texture.stride, texture.data, u8, 3);
+                samples[3] = GetPixel(x1, y1, texture.stride, texture.data, u8, 3);
+
+            case .R32_FLOAT;
+                samples[0] = GetPixel(x0, y0, texture.stride, texture.data, float, 1);
+                samples[1] = GetPixel(x1, y0, texture.stride, texture.data, float, 1);
+                samples[2] = GetPixel(x0, y1, texture.stride, texture.data, float, 1);
+                samples[3] = GetPixel(x1, y1, texture.stride, texture.data, float, 1);
+
+            case .R32G32B32_FLOAT;
+                samples[0] = GetPixel(x0, y0, texture.stride, texture.data, float, 3);
+                samples[1] = GetPixel(x1, y0, texture.stride, texture.data, float, 3);
+                samples[2] = GetPixel(x0, y1, texture.stride, texture.data, float, 3);
+                samples[3] = GetPixel(x1, y1, texture.stride, texture.data, float, 3);
+        }
+
+        avg_x1 := lerp(samples[0], samples[1], xf);
+        avg_x2 := lerp(samples[2], samples[3], xf);
+        avg    := lerp(avg_x1, avg_x2, yf);
+
+        // @todo: fix this??
+        avg.x = clamp(avg.x, 0.0, 1.0);
+        avg.y = clamp(avg.y, 0.0, 1.0);
+        avg.z = clamp(avg.z, 0.0, 1.0);
+
+        c *= avg;
+    }
+
+    return c;
+}
+
+SampleAlpha :: (texture: Texture2D, u: float, v: float) -> float
+{
+    color := SampleTexture(texture, u, v);
+    return color.x;
 }
 
 sample_uniform_disk_polar :: (u: Vector2) -> Vector2
@@ -126,15 +193,15 @@ InverseTransform :: (xform: Matrix3, p: Vector3) -> Vector3
 SampleMaterialSurfaceProperties :: (material: Material, hit: HitInfo) -> SurfaceProperties
 {
     surface: SurfaceProperties   = ---;
-    surface.color                = sample_texture(material.color, hit.u, hit.v);
-    surface.metalness            = sample_texture(material.metalness, hit.u, hit.v);
-    surface.diffuse_roughness    = sample_texture(material.diffuse_roughness, hit.u, hit.v);
-    surface.specular_weight      = sample_texture(material.specular_weight, hit.u, hit.v);
-    surface.specular_color       = sample_texture(material.specular_color, hit.u, hit.v);
-    surface.specular_roughness   = sample_texture(material.specular_roughness, hit.u, hit.v);
-    surface.specular_anisotropic = sample_texture(material.specular_anisotropic, hit.u, hit.v);
-    surface.emission             = sample_texture(material.emission, hit.u, hit.v);
-    surface.emission_strength    = sample_texture(material.emission_strength, hit.u, hit.v);
+    surface.color                = SampleTexture(material.color, hit.u, hit.v);
+    surface.metalness            = SampleAlpha(material.metalness, hit.u, hit.v);
+    surface.diffuse_roughness    = SampleAlpha(material.diffuse_roughness, hit.u, hit.v);
+    surface.specular_weight      = SampleAlpha(material.specular_weight, hit.u, hit.v);
+    surface.specular_color       = SampleTexture(material.specular_color, hit.u, hit.v);
+    surface.specular_roughness   = SampleAlpha(material.specular_roughness, hit.u, hit.v);
+    surface.specular_anisotropic = SampleAlpha(material.specular_anisotropic, hit.u, hit.v);
+    surface.emission             = SampleTexture(material.emission, hit.u, hit.v);
+    surface.emission_strength    = SampleAlpha(material.emission_strength, hit.u, hit.v);
     return surface;
 }
 
@@ -174,15 +241,43 @@ Ray :: struct
     tmax   : float;
 }
 
+EncodeSphericalUV :: (n: Vector3) -> Vector2
+{
+    phi := atan2(n.z, n.x);
+    if (phi < 0)
+    {
+        phi += 2 * PI;
+    }
+    cos_theta := clamp(n.y, -1.0, 1.0);
+    sin_theta := sqrt(1 - cos_theta * cos_theta);
+    theta     := acos(cos_theta);
+    u         := phi / (2 * PI);
+    v         := theta / PI;
+    return .{u, v};
+}
+
+Ray_Type :: enum
+{
+    PRIMARY;
+    SECONDARY;
+}
+
 IntegratePath :: (scene: Scene, primary: Ray, depth: s32) -> Vector3
 {
-    Lo   := Vector3.{0, 0, 0};
-    Fr   := Vector3.{1, 1, 1};
-    ray  := primary;
+    Lo       := Vector3.{0, 0, 0};
+    Fr       := Vector3.{1, 1, 1};
+    ray      := primary;
+    ray_type := Ray_Type.PRIMARY;
 
     for 0..depth
     {
-        hit, num_visited := IntersectScene(scene, ray.origin, ray.dir, ray.tmin, ray.tmax);
+        hit         := HitInfo.{ t = -1 };
+        num_visited := 0;
+
+        if (!scene.config.flat_background || ray_type == .PRIMARY)
+        {
+            hit, num_visited = IntersectScene(scene, ray.origin, ray.dir, ray.tmin, ray.tmax);
+        }
 
         if hit.t >= 0.0
         {
@@ -231,16 +326,28 @@ IntegratePath :: (scene: Scene, primary: Ray, depth: s32) -> Vector3
             ray.dir    = InverseTransform(inv_TBN, sample.L);
             ray.tmin   = 1.0e-3;
             ray.tmax   = FLOAT32_MAX;
+            ray_type   = .SECONDARY;
         }
         else
         {
-            if (it == 0)
+            if (!scene.config.flat_background || ray_type == .SECONDARY)
             {
-                Lo += Fr * scene.environment;
+                uv  := EncodeSphericalUV(ray.dir);
+                env := SampleTexture(scene.environment, uv.x, uv.y);
+
+                // @todo: is this where exposure goes??
+                env *= scene.exposure;
+
+  //              // @todo: fix this??
+  //              env.x = clamp(env.x, 0.0, 1.0);
+  //              env.y = clamp(env.y, 0.0, 1.0);
+  //              env.z = clamp(env.z, 0.0, 1.0);
+
+                Lo += Fr * env;
             }
             else
             {
-                Lo += Fr * Vector3.{1, 1, 1};
+                Lo = scene.flat_background_color;
             }
             break;
         }
@@ -366,13 +473,14 @@ render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared
 
                 color *= inv_samples;
                 prev_color := scene.rgbx[index].xyz;
-
+                
                 render := lerp(prev_color, color, weight);
 
                 scene.rgbx[index].xyz = render;
 
                 // @todo: proper Tone Mapping + Gamma correction
                 // https://64.github.io/tonemapping/
+                // @todo: use exposure!!
                 render = ApplyToneMapping(scene.tonemap, render);
 
                 if (white_furnace_test_enabled)
@@ -381,6 +489,10 @@ render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared
                     render.y = pow(abs(render.y - 1), 0.5);
                     render.z = pow(abs(render.z - 1), 0.5);
                 }
+
+                Clamp(*render.x, 0.0, 1.0);
+                Clamp(*render.y, 0.0, 1.0);
+                Clamp(*render.z, 0.0, 1.0);
 
                 write_color(*scene.bitmap, x, y, render);
             }
@@ -408,13 +520,14 @@ write_color :: (bitmap: *Bitmap, x: int, y: int, linear: Vector3)
 
 SceneType :: enum
 {
-    BASIC_LIGHT;
-    CORNELL_BOX;
-    CORNELL_DRAGON;
-    CORNELL_MONKEY;
-    WHITE_FURNACE_TEST;
-    SHADERBALL_TEST;
-    MATERIAL_TEST;
+    basic_light;
+    cornell_box;
+    cornell_dragon;
+    cornell_monkey;
+    white_furnace_test;
+    shaderball_test;
+    material_test;
+    envmap_test;
 }
 
 white_furnace_test_enabled   := false;
@@ -650,9 +763,11 @@ turns_to_radians :: (turns: float) -> float
 
 load_scene :: (using scene: *Scene, type: SceneType)
 {
+    envtex := load_texture_from_file("data/envmap/sunny_country_road_2k.hdr");
+
     if #complete type ==
     {
-        case .BASIC_LIGHT;
+        case .basic_light;
             camera.fov           = 40.0 / 360.0;
             camera.position      = .{0, 0, -30};
 
@@ -667,25 +782,25 @@ load_scene :: (using scene: *Scene, type: SceneType)
             xform1 := rotation_matrix(Matrix4, rot1);
             xform2 := rotation_matrix(Matrix4, rot2);
 
-            red   := create_lambertian_material(scene, texture_vector3(.{0.65, 0.05, 0.05}));
+            red   := create_lambertian_material(scene, create_constant_texture(.{0.65, 0.05, 0.05}));
 
             //add_translated_box(scene, xform1, .{-10, -5, -10}, .{5, 5, 25}, red);
 
             add_sphere(scene, Vector3.{15, 15, 75}, 5, red);
 
-        case .CORNELL_BOX;
+        case .cornell_box;
             camera.fov           = 40.0 / 360.0;
             camera.position      = .{278, 278, -800};
 
             //camera.lens_focal_length = 1200;
             //camera.lens_radius = 10.0;
 
-            environment          = .{0.0, 0.0, 0.0};
+            environment = create_constant_texture(.{0, 0, 0});
 
-            red   := create_lambertian_material(scene, texture_vector3(.{0.65, 0.05, 0.05}));
-            white := create_lambertian_material(scene, texture_vector3(.{0.73, 0.73, 0.73}));
-            green := create_lambertian_material(scene, texture_vector3(.{0.12, 0.45, 0.15}));
-            light := create_emission_material(scene, texture_vector3(.{15, 15, 15}));
+            red   := create_lambertian_material(scene, create_constant_texture(.{0.65, 0.05, 0.05}));
+            white := create_lambertian_material(scene, create_constant_texture(.{0.73, 0.73, 0.73}));
+            green := create_lambertian_material(scene, create_constant_texture(.{0.12, 0.45, 0.15}));
+            light := create_emission_material(scene, create_constant_texture(.{15, 15, 15}));
 
             add_box(scene, Matrix4_Identity, .{213, 554, 227}, .{343, 554.01, 332}, light); // top
             add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{0.01, 555, 555}, green); // left
@@ -708,17 +823,17 @@ load_scene :: (using scene: *Scene, type: SceneType)
             add_translated_box(scene, xform1, .{260, 0,  65}, .{425, 165, 225}, white);
             add_translated_box(scene, xform2, .{130, 0, 295}, .{290, 330, 455}, white);
 
-        case .CORNELL_DRAGON;
+        case .cornell_dragon;
             camera.fov           = 40.0 / 360.0;
             camera.position      = .{278, 278, -800};
 
-            environment          = .{0, 0, 0};
+            environment = create_constant_texture(.{0, 0, 0});
             //environment          = .{0.3, 0.2, 0.7};
 
-            red   := create_lambertian_material(scene, texture_vector3(.{0.65, 0.05, 0.05}));
-            white := create_lambertian_material(scene, texture_vector3(.{0.73, 0.73, 0.73}));
-            green := create_lambertian_material(scene, texture_vector3(.{0.12, 0.45, 0.15}));
-            light := create_emission_material(scene, texture_vector3(.{15, 15, 15}));
+            red   := create_lambertian_material(scene, create_constant_texture(.{0.65, 0.05, 0.05}));
+            white := create_lambertian_material(scene, create_constant_texture(.{0.73, 0.73, 0.73}));
+            green := create_lambertian_material(scene, create_constant_texture(.{0.12, 0.45, 0.15}));
+            light := create_emission_material(scene, create_constant_texture(.{15, 15, 15}));
 
             add_box(scene, Matrix4_Identity, .{213, 554, 227}, .{343, 554.01, 332}, light);
             add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{0.01, 555, 555}, green); // left
@@ -727,22 +842,22 @@ load_scene :: (using scene: *Scene, type: SceneType)
             add_box(scene, Matrix4_Identity, .{0, 0, 555}, .{555, 555, 555.01}, white); // back
             add_box(scene, Matrix4_Identity, .{0, 555, 0}, .{555, 555.01, 555}, white); // top
 
-            dragon_material := create_lambertian_material(scene, texture_vector3(.{1, 1, 1}));
+            dragon_material := create_lambertian_material(scene, create_constant_texture(.{1, 1, 1}));
             dragon, xform   := load_dragon();
 
             add_mesh(scene, xform, dragon, dragon_material);
 
-        case .CORNELL_MONKEY;
+        case .cornell_monkey;
             camera.fov           = 40.0 / 360.0;
             camera.position      = .{278, 278, -800};
 
-            environment          = .{0, 0, 0};
+            environment = create_constant_texture(.{0, 0, 0});
             //environment          = .{0.3, 0.2, 0.7};
 
-            red   := create_lambertian_material(scene, texture_vector3(.{0.65, 0.05, 0.05}));
-            white := create_lambertian_material(scene, texture_vector3(.{0.73, 0.73, 0.73}));
-            green := create_lambertian_material(scene, texture_vector3(.{0.12, 0.45, 0.15}));
-            light := create_emission_material(scene, texture_vector3(.{15, 15, 15}));
+            red   := create_lambertian_material(scene, create_constant_texture(.{0.65, 0.05, 0.05}));
+            white := create_lambertian_material(scene, create_constant_texture(.{0.73, 0.73, 0.73}));
+            green := create_lambertian_material(scene, create_constant_texture(.{0.12, 0.45, 0.15}));
+            light := create_emission_material(scene, create_constant_texture(.{15, 15, 15}));
 
             add_box(scene, Matrix4_Identity, .{213, 554, 227}, .{343, 554.01, 332}, light); // top
             add_box(scene, Matrix4_Identity, .{0, 27, 227}, .{0.1, 127, 327}, light); // left
@@ -757,98 +872,151 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
             add_mesh(scene, xform, monkey, white);
 
-        case .WHITE_FURNACE_TEST;
+        case .white_furnace_test;
             white_furnace_test_enabled = true;
 
             tonemap            = .LINEAR;
             camera.fov         = 45.0 / 360.0;
             camera.position    = .{0, 0, -5};
             camera.orientation = .{};
-            environment        = .{1, 1, 1};
+            environment        = create_constant_texture(.{1, 1, 1});
+            
 
             center  := Vector3.{0.0, 0.0, 0.0};
             radius  := 1.0;
 
             id, material        := create_material(scene);
-            material.color       = texture_vector3(.{1, 1, 1});
-            material.metalness   = texture_value(1.0);
-            material.diffuse_roughness    = texture_value(1.0);
-            material.specular_weight      = texture_value(1.0);
-            material.specular_color       = texture_vector3(.{1, 1, 1});
-            material.specular_roughness   = texture_value(0.2);
-            material.specular_anisotropic = texture_value(0.0);
+            material.color       = create_constant_texture(.{1, 1, 1});
+            material.metalness   = create_constant_texture(0.0);
+            material.diffuse_roughness    = create_constant_texture(1.0);
+            material.specular_weight      = create_constant_texture(1.0);
+            material.specular_color       = create_constant_texture(.{1, 1, 1});
+            material.specular_roughness   = create_constant_texture(0.2);
+            material.specular_anisotropic = create_constant_texture(0.0);
 
             add_sphere(scene, center, radius, id);
 
-        case .SHADERBALL_TEST;
+        case .shaderball_test;
             camera.fov           = 40.0 / 360.0;
             camera.position      = .{0, 10, -10};
             set_from_axis_and_angle(*camera.orientation, Vector3.{1, 0, 0}, turns_to_radians(0.1));
 
-            light := create_emission_material(scene, texture_vector3(.{40, 40, 40}));
+            light := create_emission_material(scene, create_constant_texture(.{40, 40, 40}));
 
-            environment          = .{1.0, 1.0, 1.0};
+            environment        = create_constant_texture(.{1.0, 1.0, 1.0});
 
             id, material        := create_material(scene);
             //material.color       = texture_vector3(.{0.827, 0.686, 0.216});
-            //material.color       = texture_vector3(.{1, 1, 1});
-            material.color       = texture_vector3(.{1.000, 0.735, 0.353}); // Gold
-            material.metalness   = texture_value(1.0);
-            material.specular_weight      = texture_value(1.0);
-            //material.specular_color       = texture_vector3(.{1, 1, 1});
-            material.specular_color       = texture_vector3(.{0.993, 1.000, 1.000}); // Gold
-            material.specular_roughness   = texture_value(0.25);
-            material.specular_anisotropic = texture_value(0.0);
+            material.color       = create_constant_texture(.{1, 1, 1});
+            //material.color       = create_constant_texture(.{1.000, 0.735, 0.353}); // Gold
+            material.metalness   = create_constant_texture(0.0);
+            material.diffuse_roughness    = create_constant_texture(1.0);
+            material.specular_weight      = create_constant_texture(1.0);
+            //material.specular_color       = create_constant_texture(.{1, 1, 1});
+            material.specular_color       = create_constant_texture(.{0.993, 1.000, 1.000}); // Gold
+            material.specular_roughness   = create_constant_texture(0.25);
+            material.specular_anisotropic = create_constant_texture(0.0);
 
-            red        := create_lambertian_material(scene, texture_vector3(.{0.65, 0.05, 0.05}));
-            black      := create_lambertian_material(scene, texture_vector3(.{0.01, 0.01, 0.01}));
-            checker    := create_lambertian_material(scene, texture_checkerboard(Vector3.{0.9, 0.9, 0.9}, .{0.1, 0.1, 0.1}, .{40, 40}));
+            red        := create_lambertian_material(scene, create_constant_texture(.{0.65, 0.05, 0.05}));
+            black      := create_lambertian_material(scene, create_constant_texture(.{0.01, 0.01, 0.01}));
+            checker    := create_lambertian_material(scene, create_checkerboard_texture(Vector3.{0.9, 0.9, 0.9}, .{0.1, 0.1, 0.1}, .{40, 40}));
+
+            earth      := load_texture_from_file("data/misc/earth.png", 3);
+            textured   := create_lambertian_material(scene, earth);
 
             backdrop, backdrop_xform     := load_backdrop();
             internals, externals, shaderball_xform := load_shaderball();
 
-            add_box(scene, Matrix4_Identity, .{ -5, 10, -15 }, .{ -1, 10.01, -11 }, light);
-            add_box(scene, Matrix4_Identity, .{  1, 10, -15 }, .{  5, 10.01, -11 }, light);
+  //          add_box(scene, Matrix4_Identity, .{ -5, 10, -15 }, .{ -1, 10.01, -11 }, light);
+  //          add_box(scene, Matrix4_Identity, .{  1, 10, -15 }, .{  5, 10.01, -11 }, light);
 
-            //add_sphere(scene, Vector3.{0, 2, 0}, 2, red);
+            add_sphere(scene, Vector3.{0, 2, 0}, 2, textured);
 
             add_mesh(scene, backdrop_xform, backdrop, checker);
             //add_sphere(scene, Vector3.{0, 2, 0}, 2, id);
-            add_mesh(scene, shaderball_xform, internals, black);
-            add_mesh(scene, shaderball_xform, externals, id);
+            //add_mesh(scene, shaderball_xform, internals, black);
+            //add_mesh(scene, shaderball_xform, externals, id);
 
-        case .MATERIAL_TEST;
+        case .material_test;
             camera.fov         = 45.0 / 360.0;
             camera.position    = .{0, 0, -5};
             camera.orientation = .{};
-            environment        = .{0.16, 0.16, 0.16};
+            environment        = envtex;
+
+            config.flat_background = true;
 
             NUM_TEST_SPHERES :: 11;
 
-            // Diffuse
+            radius  := 0.2;
+            spacing := 2 * radius + 0.1;
+            start_x := -3.0;
+            start_y :=  1.0;
+
+            // Diffuse (Roughness)
             {
                 color   := Vector3.{0.02, 0.53, 0.42};
-                center  := Vector3.{-3.0, 0.0, 0.0};
-                radius  := 0.2;
-                spacing := 2 * radius + 0.1;
+                center  := Vector3.{start_x, start_y, 0.0};
+                start_y -= spacing;
 
                 for 0..NUM_TEST_SPHERES-1
                 {
                     roughness := it.(float) / (NUM_TEST_SPHERES - 1).(float);
-                    //material  := create_lambertian_material(scene, texture_value(color), roughness);
+                    material  := create_lambertian_material(scene, create_constant_texture(color), roughness);
+                    add_sphere(scene, center, radius, material);
+                    center.x += spacing;
+                }
+            }
+
+            // Metal (Roughness)
+            {
+                center  := Vector3.{start_x, start_y, 0.0};
+                start_y -= spacing;
+
+                for 0..NUM_TEST_SPHERES-1
+                {
+                    roughness := it.(float) / (NUM_TEST_SPHERES - 1).(float);
 
                     id, material                 := create_material(scene);
-                    material.color                = texture_vector3(.{1.000, 0.735, 0.353}); // Gold
-                    material.metalness            = texture_value(1.0);
-                    material.specular_weight      = texture_value(1.0);
-                    material.specular_color       = texture_vector3(.{0.993, 1.000, 1.000}); // Gold
-                    material.specular_roughness   = texture_value(roughness);
-                    material.specular_anisotropic = texture_value(0.0);
+                    material.color                = create_constant_texture(.{1.000, 0.735, 0.353}); // Gold
+                    material.metalness            = create_constant_texture(1.0);
+                    material.specular_weight      = create_constant_texture(1.0);
+                    material.specular_color       = create_constant_texture(.{0.993, 1.000, 1.000}); // Gold
+                    material.specular_roughness   = create_constant_texture(roughness);
+                    material.specular_anisotropic = create_constant_texture(0.0);
 
                     add_sphere(scene, center, radius, id);
                     center.x += spacing;
                 }
             }
+
+            // Metal (Anisotropic)
+            {
+                roughness := 0.25;
+                center    := Vector3.{start_x, start_y, 0.0};
+                start_y   -= spacing;
+
+                for 0..NUM_TEST_SPHERES-1
+                {
+                    anisotropic := it.(float) / (NUM_TEST_SPHERES - 1).(float);
+
+                    id, material                 := create_material(scene);
+                    material.color                = create_constant_texture(.{0.617, 0.576, 0.540}); // Titanium
+                    material.metalness            = create_constant_texture(1.0);
+                    material.specular_weight      = create_constant_texture(1.0);
+                    material.specular_color       = create_constant_texture(.{0.695, 0.726, 0.770}); // Titanium
+                    material.specular_roughness   = create_constant_texture(roughness);
+                    material.specular_anisotropic = create_constant_texture(anisotropic);
+
+                    add_sphere(scene, center, radius, id);
+                    center.x += spacing;
+                }
+            }
+
+        case .envmap_test;
+            camera.fov         = 45.0 / 360.0;
+            camera.position    = .{0, 0, -5};
+            camera.orientation = .{};
+            environment        = envtex;
     }
 }
 
@@ -964,54 +1132,103 @@ create_material :: (scene: *Scene) -> MaterialID, *Material
     return id, material;
 }
 
-create_lambertian_material :: (scene: *Scene, color: Texture2D(Vector3), roughness := 0.0) -> MaterialID
+create_lambertian_material :: (scene: *Scene, color: Texture2D, roughness := 0.0) -> MaterialID
 {
     id, material := create_material(scene);
     material.color = color;
-    material.diffuse_roughness = texture_value(roughness);
+    material.diffuse_roughness = create_constant_texture(roughness);
     return id;
 }
 
 create_metal_material :: (scene: *Scene, roughness := 0.0) -> MaterialID
 {
     id, material := create_material(scene);
-    material.metalness = texture_value(1.0);
-    material.specular_roughness = texture_value(roughness);
+    material.metalness = create_constant_texture(1.0);
+    material.specular_roughness = create_constant_texture(roughness);
     return id;
 }
 
-create_emission_material :: (scene: *Scene, color: Texture2D(Vector3), strength := 1.0) -> MaterialID
+create_emission_material :: (scene: *Scene, color: Texture2D, strength := 1.0) -> MaterialID
 {
     id, material := create_material(scene);
     material.emission = color;
-    material.emission_strength = texture_value(strength);
+    material.emission_strength = create_constant_texture(strength);
     return id;
 }
 
-texture_value :: (value: $T) -> Texture2D(T)
+create_constant_texture :: (color: Vector3) -> Texture2D
 {
-    texture: Texture2D(T);
-    texture.values = .[value, value];
+    texture: Texture2D;
+    texture.scale     = Vector2.{1, 1};
+    texture.constants = .[color, color];
     return texture;
 }
 
-texture_vector3 :: (value: Vector3) -> Texture2D(Vector3)
+create_constant_texture :: (alpha: float) -> Texture2D
 {
-    return texture_value(value);
+    return create_constant_texture(Vector3.{alpha, alpha, alpha});
 }
 
-texture_checkerboard :: (v0: $T, v1: T, scale: Vector2) -> Texture2D(T)
+create_checkerboard_texture :: (color_0: Vector3, color_1: Vector3, scale := Vector2.{1, 1}) -> Texture2D
 {
-    texture: Texture2D(T);
-    texture.values = .[v0, v1];
-    texture.scale  = scale;
-    texture.flags |= .CHECKERBOARD;
+    texture: Texture2D;
+    texture.scale = scale;
+    texture.constants = .[color_0, color_1];
     return texture;
+}
+
+create_checkerboard_texture :: (alpha_0: float, alpha_1: float, scale := Vector2.{1, 1}) -> Texture2D
+{
+    return create_checkerboard_texture(Vector3.{alpha_0, alpha_0, alpha_0}, Vector3.{alpha_1, alpha_1, alpha_1}, scale);
+}
+
+load_texture_from_file :: (path: string, desired_num_channels := 0) -> Texture2D
+{
+    w, h, channels: s32;
+
+    if (ends_with(path, ".hdr"))
+    {
+        data := stbi_loadf(temp_c_string(path), *w, *h, *channels, 0);
+        assert(channels == 1 || channels == 3, "Unsupported image format");
+
+        if (!data)
+        {
+            print("Failed to load texture: %. Reason: %\n", path, stbi_failure_reason());
+            return .{};
+        }
+
+        texture := create_constant_texture(.{1, 1, 1});
+        texture.format = ifx channels == 1 then .R32_FLOAT else .R32G32B32_FLOAT;
+        texture.width  = w.(u32);
+        texture.height = h.(u32);
+        texture.stride = w.(u32) * channels.(u32) * size_of(float);
+        texture.data   = data.(*u8);
+        return texture;
+    }
+    else
+    {
+        data    := stbi_load(temp_c_string(path), *w, *h, *channels, 0);
+        assert(channels == 1 || channels == 3, "Unsupported image format");
+
+        if (!data)
+        {
+            print("Failed to load texture: %. Reason: %\n", path, stbi_failure_reason());
+            return .{};
+        }
+
+        texture := create_constant_texture(.{1, 1, 1});
+        texture.format = ifx channels == 1 then .R8_UNORM else .R8G8B8_UNORM;
+        texture.width  = w.(u32);
+        texture.height = h.(u32);
+        texture.stride = w.(u32) * channels.(u32) * size_of(u8);
+        texture.data   = data;
+        return texture;
+    }
 }
 
 init_scene :: (scene: *Scene, width: s32, height: s32, multisamples: u32 = 16, max_depth: s32 = 5)
 {
-    create_lambertian_material(scene, texture_vector3(.{0, 0, 0}));
+    create_lambertian_material(scene, create_constant_texture(.{0, 0, 0}));
     Simp.bitmap_alloc(*scene.bitmap, width, height, .RGBA8);
     scene.bitmap.flags |= .IS_SRGB;
 
@@ -1755,7 +1972,7 @@ CommandLineArgs :: struct
 {
     width       := 1920;
     height      := 1080;
-    scene       := "";
+    scene       := SceneType.material_test;
     num_threads := 0;
 }
 
@@ -1802,22 +2019,7 @@ main :: ()
 
     scene: Scene;
     init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=200, max_depth=5);
-
-    name       := to_upper_copy(args.scene);
-    scene_type := SceneType.MATERIAL_TEST;
-
-    info := type_info(SceneType);
-
-    for info.names
-    {
-        if (name == it)
-        {
-            scene_type = info.values[it_index].(SceneType);
-            break;
-        }
-    }
-
-    load_scene(*scene, scene_type);
+    load_scene(*scene, args.scene);
     prepare_for_rendering(*scene);
 
     wavefront: Wavefront;
@@ -2235,6 +2437,7 @@ lane_sync :: ()
 #import "Hash_Table";
 #import "Hash";
 #import "Command_Line";
+#import "stb_image";
 
 Simp :: #import "Simp";
 

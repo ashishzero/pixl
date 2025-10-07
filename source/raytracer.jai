@@ -50,21 +50,24 @@ Primitive :: struct
 
 Bitmap :: Simp.Bitmap;
 
-TextureFlags :: enum_flags u32
+Texture_Format :: enum u32
 {
-    CHECKERBOARD :: 0x1;
+    UNKNOWN;
+    R8_UNORM;
+    R8G8B8_UNORM;
+    R32_FLOAT;
+    R32G32B32_FLOAT;
 }
 
-Texture2D :: struct(ValueType: Type)
-#modify
+Texture2D :: struct
 {
-    return ValueType == Vector3 || ValueType == float;
-}
-{
-    flags  : TextureFlags;
-    values : [2]ValueType;
-    scale  : Vector2;
-    bitmap : Bitmap;
+    format    : Texture_Format;
+    width     : u32;
+    height    : u32;
+    stride    : u32;
+    scale     : Vector2;
+    constants : [2]Vector3;
+    data      : *u8;
 }
 
 SurfaceProperties :: struct
@@ -90,16 +93,16 @@ SurfaceProperties :: struct
 
 Material :: struct
 {
-    color                : Texture2D(Vector3);
-    metalness            : Texture2D(float);
-    diffuse_roughness    : Texture2D(float);
-    specular_weight      : Texture2D(float);
-    specular_color       : Texture2D(Vector3);
-    specular_roughness   : Texture2D(float);
-    specular_anisotropic : Texture2D(float);
+    color                : Texture2D;
+    metalness            : Texture2D;
+    diffuse_roughness    : Texture2D;
+    specular_weight      : Texture2D;
+    specular_color       : Texture2D;
+    specular_roughness   : Texture2D;
+    specular_anisotropic : Texture2D;
 
-    emission             : Texture2D(Vector3);
-    emission_strength    : Texture2D(float);
+    emission             : Texture2D;
+    emission_strength    : Texture2D;
 
     //specular        : Texture2D(float);    
     //ior             : Texture2D(float);
@@ -140,10 +143,11 @@ CameraTransform :: struct
 
 PathTracerConfig :: struct
 {
-    width        : int = 1280;
-    height       : int = 720;
-    multisamples : u32 = 16;
-    max_depth    : s32 = 5;
+    width           : int = 1280;
+    height          : int = 720;
+    multisamples    : u32 = 16;
+    max_depth       : s32 = 5;
+    flat_background := false;
 }
 
 Tone_Map_Type :: enum u32
@@ -160,7 +164,9 @@ Scene :: struct
     bitmap:  Bitmap;
 
     materials   : [..]Material;
-    environment := Vector3.{0.7, 0.8, 1.0};
+    environment : Texture2D;
+    flat_background_color := Vector3.{0.5, 0.5, 0.5};
+    exposure := 10.0; // @todo: to Camera?
 
     primitives : [..]Primitive;
 
