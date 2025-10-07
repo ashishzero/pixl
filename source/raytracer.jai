@@ -146,11 +146,18 @@ PathTracerConfig :: struct
     max_depth    : s32 = 5;
 }
 
+Tone_Map_Type :: enum u32
+{
+    LINEAR;
+    REINHARD;
+}
+
 Scene :: struct
 {
-    camera: Camera;
-    config: PathTracerConfig;
-    bitmap: Bitmap;
+    camera:  Camera;
+    config:  PathTracerConfig;
+    tonemap: Tone_Map_Type = .REINHARD;
+    bitmap:  Bitmap;
 
     materials   : [..]Material;
     environment := Vector3.{0.7, 0.8, 1.0};
