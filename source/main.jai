@@ -377,9 +377,9 @@ render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared
 
                 if (white_furnace_test_enabled)
                 {
-                    render.x = (render.x - 1) * 5 + 0.5;
-                    render.y = (render.y - 1) * 5 + 0.5;
-                    render.z = (render.z - 1) * 5 + 0.5;
+                    render.x = pow(abs(render.x - 1), 0.5);
+                    render.y = pow(abs(render.y - 1), 0.5);
+                    render.z = pow(abs(render.z - 1), 0.5);
                 }
 
                 write_color(*scene.bitmap, x, y, render);
@@ -473,8 +473,8 @@ wavefront_raytrace_entry :: (thread: *Thread) -> s64
                     bias  += (err_r + err_g + err_b);
                     max_error = max(max_error, max(abs(err_r), max(abs(err_g), abs(err_b))));
                 }
-                white_furnace_test_error     = error / (scene.rgbx.count * 3);
-                white_furnace_test_bias      = bias / (scene.rgbx.count * 3);
+                white_furnace_test_error     = error / (scene.rgbx.count);
+                white_furnace_test_bias      = bias / (scene.rgbx.count);
                 white_furnace_test_max_error = max_error;
                 print("White Furnace Test dE = %\%, bias = %\%, max error = %\n", white_furnace_test_error * 100, white_furnace_test_bias * 100, white_furnace_test_max_error);
             }
