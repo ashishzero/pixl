@@ -14,24 +14,23 @@ PI_OVER_2 :: PI / 2;
 
 //------------------------------------------------------------------------
 // Diffuse Model
-// EON: Apractical energy-preserving rough diffuse BRDF
+// EON: A practical energy-preserving rough diffuse BRDF
 // https://arxiv.org/pdf/2410.18026
 
 #scope_file
 
-FON1 :: 0.5- 2.0 / (3.0 * PI);
-FON2 :: 2.0/ 3.0 - 28.0 / (15.0 * PI);
+FON1 :: 0.5 - 2.0 / (3.0 * PI);
+FON2 :: 2.0 / 3.0 - 28.0 / (15.0 * PI);
 
-EFonApprox :: (mu: float, roughness: float) -> float
+E_FON_Approx :: (mu: float, roughness: float) -> float
 {
-    G_COEFFS :: Vector2.[ .{0.05710852, -0.3321814}, .{0.4918818, 0.07144299} ];
-    mucomp   := 1.0 - mu;
-    mucomp2  := mucomp * mucomp;
-    vcomp    := Vector2.{mucomp, mucomp2};
-    gx       := dot(G_COEFFS[0], vcomp);
-    gy       := dot(G_COEFFS[1], vcomp);
-    goverpi  := gx + gy * mucomp2;
-    return(1.0 + roughness * goverpi) / (1.0 + FON1 * roughness);
+    G1      :: 0.057108529;
+    G2      :: 0.49188187;
+    G3      :: -0.33218144;
+    G4      :: 0.07144299;
+    mucomp  := 1.0 - mu;
+    goverpi := mucomp * (G1 + mucomp * (G2 + mucomp * (G3 + mucomp * G4)));
+    return (1.0 + roughness * goverpi) / (1.0 + FON1 * roughness);
 }
 
 LTC_Coeffs :: (mu: float, roughness: float) -> float, float, float, float
@@ -52,15 +51,15 @@ LTC_OrthonormalBasis :: (w: Vector3) -> Matrix3
     Z     := Vector3.{0, 0, 1};
 
     LTC : Matrix3 = ---;
-    LTC.v[0] = X;
-    LTC.v[1] = Y;
-    LTC.v[2] = Z;
+    LTC.v[0] = Vector3.{X.x, Y.x, Z.x};
+    LTC.v[1] = Vector3.{X.y, Y.y, Z.y};
+    LTC.v[2] = Vector3.{X.z, Y.z, Z.z};
     return LTC;
 }
 
 CLTC_Sample :: (V: Vector3, roughness: float, u1: float, u2: float) -> Vector3, float
 {
-    a, b, c, d := LTC_Coeffs(abs(V.z), roughness);    // coeffs of LTC M
+    a, b, c, d := LTC_Coeffs(V.z, roughness);         // coeffs of LTC M
     radius     := sqrt(u1);                           // CLTC sampling
     phi        := 2.0 * PI * u2;                      // CLTC sampling
     x          := radius * cos(phi);                  // CLTC sampling factors
@@ -72,7 +71,7 @@ CLTC_Sample :: (V: Vector3, roughness: float, u1: float, u2: float) -> Vector3, 
     pdf_H      := wh.z / (PI * s);                    // PDF of H sample
     L          := Vector3.{a * wh.x + b * wh.z, c * wh.y, d * wh.x + wh.z}; // M H (unnormalized)
     len        := length(L);                          // ∥M H∥=1/∥inv(M) H∥
-    detM       := c * (a- b * d);                     // |M|
+    detM       := c * (a - b * d);                    // |M|
     pdf_L      := pdf_H * len * len * len / detM;     // L sample PDF
     from_LTC   := LTC_OrthonormalBasis(V);            // L -> local space
     L           = normalize(from_LTC * L);            // L -> local space
@@ -81,7 +80,7 @@ CLTC_Sample :: (V: Vector3, roughness: float, u1: float, u2: float) -> Vector3, 
 
 CLTC_PDF :: (V_local: Vector3, L_local: Vector3, roughness: float) -> float
 {
-    to_LTC     := transpose(LTC_OrthonormalBasis(V_local)); // V -> LTC space
+    to_LTC     := transpose(LTC_OrthonormalBasis(V_local));  // V -> LTC space
     L          := to_LTC * L_local;                          // V -> LTC space
     a, b, c, d := LTC_Coeffs(abs(V_local.z), roughness);     // coeffs of LTC M
     detM       := c * (a - b * d);                           // |M|
@@ -89,7 +88,7 @@ CLTC_PDF :: (V_local: Vector3, L_local: Vector3, roughness: float) -> float
     lensq      := dot(H, H);                                 // |M|∥inv(M) H∥
     vz         := 1.0 / sqrt(d * d + 1.0);                   // CLTC sampling factors
     s          := 0.5 * (1.0 + vz);                          // CLTC sampling factors
-    pdf        := detM * detM/(lensq * lensq) * max(H.z, 0.0) / (PI * s);
+    pdf        := detM * detM / (lensq * lensq) * max(H.z, 0.0) / (PI * s);
     return pdf;
 }
 
@@ -115,12 +114,15 @@ DiffuseFr :: (V: Vector3, L: Vector3, color: Vector3, roughness: float) -> Vecto
     s_over_t := ifx (s > 0.0) then (s / max(max(NoL, NoV), 1.0e-6)) else s; // FON s/t
     AF       := 1.0 / (1.0 + FON1 * roughness);                             // FON A coeff
     f_ss     := (color * INV_PI) * AF * (1.0 + roughness * s_over_t);       // single-scatter
-    EFo      := EFonApprox(NoV, roughness);                                 // FON V albedo(approx)
-    EFi      := EFonApprox(NoL, roughness);                                 // FON L albedo(approx)
+    EFo      := E_FON_Approx(NoV, roughness);                               // FON V albedo
+    EFi      := E_FON_Approx(NoL, roughness);                               // FON L albedo
     avgEF    := AF * (1.0 + FON2 * roughness);                              // average albedo
     rho_ms   := (color * color) * avgEF / (Vector3.{1, 1, 1} - color * (1.0 - avgEF));
     eps      := 1.0e-6;
     f_ms     := (rho_ms * INV_PI) * max(eps, 1.0 - EFo) * max(eps, 1.0 - EFi) / max(eps, 1.0 - avgEF); // multi-scatterlobe
+
+    //print("SS = %, MS = %, F = %\n", f_ss, f_ms, f_ss + f_ms);
+
     return f_ss + f_ms;
 }
 
@@ -163,8 +165,8 @@ DiffuseSample :: (V: Vector3, color: Vector3, roughness: float, u1: float, u2: f
 
 //------------------------------------------------------------------------
 // Microfacet Model
-// Trowbridge–Reitz (GGX) model
-// https://www.pbrt.org/
+// Trowbridge–Reitz (GGX) model + Multiple Scattering Compensation
+// https://blog.selfshadow.com/publications/turquin/ms_comp_final.pdf
 
 #scope_export
 
@@ -174,10 +176,12 @@ MicrofacetAnisotropicDistribution :: (NoH: float, alpha: Vector2) -> float
     alpha_y  := max(alpha.y, 1.0e-3);
     alpha_x2 := alpha_x * alpha_x;
     alpha_y2 := alpha_y * alpha_y;
-    cos2     := NoH * NoH;
+    cos2     := max(NoH * NoH, 1.0e-6);
     sin2     := 1 - cos2;
-    f        := sin2 * (cos2 / alpha_x2 + sin2 / alpha_y2) + cos2;
-    inv_D    := PI * alpha_x * alpha_y * f * f;
+    tan2     := sin2 / cos2;
+    cos4     := cos2 * cos2;
+    f        := 1.0 + tan2 * (cos2 / alpha_x2 + sin2 / alpha_y2);
+    inv_D    := PI * alpha_x * alpha_y * cos4 * f * f;
     D        := 1.0 / max(1.0e-6, inv_D);
     return D;
 }

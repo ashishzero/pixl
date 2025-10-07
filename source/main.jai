@@ -223,6 +223,8 @@ IntegratePath :: (scene: Scene, primary: Ray, depth: s32) -> Vector3
             cosine := saturate(sample.L.z);
             Fr *= cosine * sample.Fr / sample.pdf;
 
+            //print("Fr = %\n", cosine * sample.Fr / sample.pdf);
+
             //------------------------------------------------------------------------
             // Next ray
             ray.origin = hit.p;
@@ -372,6 +374,14 @@ render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared
                 // @todo: proper Tone Mapping + Gamma correction
                 // https://64.github.io/tonemapping/
                 render = ApplyToneMapping(scene.tonemap, render);
+
+                if (white_furnace_test_enabled)
+                {
+                    render.x = (render.x - 1) * 5 + 0.5;
+                    render.y = (render.y - 1) * 5 + 0.5;
+                    render.z = (render.z - 1) * 5 + 0.5;
+                }
+
                 write_color(*scene.bitmap, x, y, render);
             }
         }
@@ -406,6 +416,11 @@ SceneType :: enum
     SHADERBALL_TEST;
     MATERIAL_TEST;
 }
+
+white_furnace_test_enabled   := false;
+white_furnace_test_error     := 0.0;
+white_furnace_test_bias      := 0.0;
+white_furnace_test_max_error := 0.0;
 
 wavefront_raytrace_entry :: (thread: *Thread) -> s64
 {
@@ -442,6 +457,26 @@ wavefront_raytrace_entry :: (thread: *Thread) -> s64
             {
                 save_screenshot(scene.bitmap, *screenshot_index);
                 want_screenshot = false;
+            }
+
+            if white_furnace_test_enabled
+            {
+                error     := 0.0;
+                max_error := 0.0;
+                bias      := 0.0;
+                for scene.rgbx
+                {
+                    err_r := it.x - 1.0;
+                    err_g := it.y - 1.0;
+                    err_b := it.z - 1.0;
+                    error += abs(err_r) + abs(err_g) + abs(err_b);
+                    bias  += (err_r + err_g + err_b);
+                    max_error = max(max_error, max(abs(err_r), max(abs(err_g), abs(err_b))));
+                }
+                white_furnace_test_error     = error / (scene.rgbx.count * 3);
+                white_furnace_test_bias      = bias / (scene.rgbx.count * 3);
+                white_furnace_test_max_error = max_error;
+                print("White Furnace Test dE = %\%, bias = %\%, max error = %\n", white_furnace_test_error * 100, white_furnace_test_bias * 100, white_furnace_test_max_error);
             }
         }
 
@@ -723,6 +758,8 @@ load_scene :: (using scene: *Scene, type: SceneType)
             add_mesh(scene, xform, monkey, white);
 
         case .WHITE_FURNACE_TEST;
+            white_furnace_test_enabled = true;
+
             tonemap            = .LINEAR;
             camera.fov         = 45.0 / 360.0;
             camera.position    = .{0, 0, -5};
@@ -735,10 +772,10 @@ load_scene :: (using scene: *Scene, type: SceneType)
             id, material        := create_material(scene);
             material.color       = texture_vector3(.{1, 1, 1});
             material.metalness   = texture_value(1.0);
-            material.diffuse_roughness    = texture_value(0.7);
+            material.diffuse_roughness    = texture_value(1.0);
             material.specular_weight      = texture_value(1.0);
             material.specular_color       = texture_vector3(.{1, 1, 1});
-            material.specular_roughness   = texture_value(0.4);
+            material.specular_roughness   = texture_value(0.2);
             material.specular_anisotropic = texture_value(0.0);
 
             add_sphere(scene, center, radius, id);
@@ -2099,10 +2136,19 @@ draw_one_frame :: (wnd: Window_Type, map: *Simp.Texture, scene: Scene, num_threa
                             formatInt(mins, minimum_digits=2),
                             formatInt(secs, minimum_digits=2));
 
-    text := tprint("Frame: %; Last frame render time: %ms; Threads: %; Runtime: %",
-                   frame_index, last_frame_render_time_ms, num_threads, total_runtime);
-
-    Simp.draw_text(debug_font, 10, 10, text);
+    if (white_furnace_test_enabled)
+    {
+        text := tprint("Frame: %; Last frame render time: %ms; Threads: %; Runtime: %; White Furnace Test dE = %\%, bias = %\%, max error = %",
+                       frame_index, last_frame_render_time_ms, num_threads, total_runtime,
+                       white_furnace_test_error * 100, white_furnace_test_bias * 100, white_furnace_test_max_error);
+        Simp.draw_text(debug_font, 10, 10, text);
+    }
+    else
+    {
+        text := tprint("Frame: %; Last frame render time: %ms; Threads: %; Runtime: %",
+                       frame_index, last_frame_render_time_ms, num_threads, total_runtime);
+        Simp.draw_text(debug_font, 10, 10, text);
+    }
 
     Simp.swap_buffers(wnd);
 }
