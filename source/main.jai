@@ -401,7 +401,7 @@ Wavefront :: struct
 
 #add_context lane: LaneDescription;
 
-RAY_TRACE_TILE_SIZE : s32 : 4;
+RAY_TRACE_TILE_SIZE : s32 : 16;
 
 RenderShared :: struct
 {
@@ -419,18 +419,58 @@ ApplyToneMapping :: (func: Tone_Map_Type, v: Vector3) -> Vector3
     }
 }
 
+SpiralCoordinates :: (n: int) -> (x: int, y: int)
+{
+    if (n == 0)
+    {
+        return 0, 0;
+    }
+
+    k := ceil((sqrt(n.(float) + 1) - 1) / 2).(int);
+    l := 2 * k + 1;
+    t := l - 1;
+    m := l * l;
+
+    if (n >= m - t)
+    {
+        x := k - (m - n);
+        y := -k;
+        return x, y;
+    }
+
+    m -= t;
+    if (n >= m - t)
+    {
+        x := -k;
+        y := -k + (m - n);
+        return x, y;
+    }
+
+    m -= t;
+    if (n >= m - t)
+    {
+        x := -k + (m - n);
+        y := k;
+        return x, y;
+    }
+
+    x := k;
+    y := k - (m - n - t);
+
+    return x, y;
+}
+
 render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared)
 {
     width  := scene.config.width;
     height := scene.config.height;
 
-    assert(width % RAY_TRACE_TILE_SIZE == 0);
-    assert(height % RAY_TRACE_TILE_SIZE == 0);
+    // @todo: may be enforce this?
+  //  assert(width % RAY_TRACE_TILE_SIZE == 0);
+  //  assert(height % RAY_TRACE_TILE_SIZE == 0);
 
     num_tile_w := width / RAY_TRACE_TILE_SIZE;
     num_tile_h := height / RAY_TRACE_TILE_SIZE;
-
-    num_tiles := num_tile_w * num_tile_h;
 
     if context.lane.index == 0
     {
@@ -440,15 +480,24 @@ render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared
     inv_samples := 1.0 / (num_samples * num_samples).(float);
 
     lane_sync();
+    
+    max_tile_d := max(num_tile_w, num_tile_h);
+    num_tiles  := max_tile_d * max_tile_d;
+    offset_x   := (num_tile_w - 1) / 2;
+    offset_y   := (num_tile_h - 1) / 2;
 
     while !should_quit
     {
         captured_tile_id := atomic_add(*shared.tile_id, 1);
-
         if captured_tile_id >= num_tiles then break;
 
-        tile_y := captured_tile_id / num_tile_w;
-        tile_x := captured_tile_id % num_tile_w;
+        tile_x, tile_y := SpiralCoordinates(captured_tile_id);
+
+        tile_x += offset_x;
+        tile_y += offset_y;
+
+        if (tile_x < 0 || tile_x >= num_tile_w || tile_y < 0 || tile_y >= num_tile_h)
+            continue;
 
         y0 := tile_y * RAY_TRACE_TILE_SIZE;
         y1 := y0 + RAY_TRACE_TILE_SIZE - 1;
@@ -1013,7 +1062,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
             }
 
         case .envmap_test;
-            camera.fov         = 45.0 / 360.0;
+            camera.fov         = 60.0 / 360.0;
             camera.position    = .{0, 0, -5};
             camera.orientation = .{};
             environment        = envtex;
@@ -2018,7 +2067,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=200, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=200, max_depth=1);
     load_scene(*scene, args.scene);
     prepare_for_rendering(*scene);
 
