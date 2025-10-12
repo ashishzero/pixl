@@ -307,6 +307,7 @@ IntegratePath :: (scene: Scene, primary: Ray, depth: s32) -> Vector3
             V      := ForwardTransform(inv_TBN, -ray.dir);
             sample := BSDFSample(V, surface, p, u);
 
+            // @todo: return emission from BSDFSample as well
             Le     := surface.emission_strength * surface.emission;
             Lo += Fr * Le;
 
@@ -376,7 +377,7 @@ trace_pixel :: (scene: Scene, x: s32, y: s32, num_samples: s32) -> Vector3
             offset := sample_stratified_square(n_x.(float), n_y.(float), inv_sqrt_samples);
             sample := Vector2.{ x.(float), y.(float) } + offset;
             query  := sample * scale + shift;
-            ray    := GenerateRay(query, scene.camera.xform, scene.camera.lens_focal_length, scene.camera.lens_radius);
+            ray    := GenerateRay(query, scene.camera);
             color  := IntegratePath(scene, ray, scene.config.max_depth);
             sampled += color;
         }
@@ -394,6 +395,7 @@ LaneDescription :: struct
 
 Wavefront :: struct
 {
+    started := false; // @todo: cleanup
     shared  : RenderShared;
     barrier : SyncBarrier;
     threads : [..]Thread;
@@ -465,7 +467,7 @@ render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared
     width  := scene.config.width;
     height := scene.config.height;
 
-    // @todo: may be enforce this?
+    // @todo: cleanup RAY_TRACE_TILE_SIZE
   //  assert(width % RAY_TRACE_TILE_SIZE == 0);
   //  assert(height % RAY_TRACE_TILE_SIZE == 0);
 
@@ -480,7 +482,7 @@ render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared
     inv_samples := 1.0 / (num_samples * num_samples).(float);
 
     lane_sync();
-    
+
     max_tile_d := max(num_tile_w, num_tile_h);
     num_tiles  := max_tile_d * max_tile_d;
     offset_x   := (num_tile_w - 1) / 2;
@@ -489,6 +491,7 @@ render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared
     while !should_quit
     {
         captured_tile_id := atomic_add(*shared.tile_id, 1);
+
         if captured_tile_id >= num_tiles then break;
 
         tile_x, tile_y := SpiralCoordinates(captured_tile_id);
@@ -684,16 +687,19 @@ init :: (wavefront: *Wavefront, scene: *Scene, max_threads: s32 = 0)
     }
 }
 
-start :: (using wavefront: Wavefront)
+start :: (using wavefront: *Wavefront)
 {
     for * threads
     {
         thread_start(it);
     }
+    wavefront.started = true;
 }
 
 join :: (using wavefront: *Wavefront)
 {
+    if !wavefront.started return;
+
     for * threads
     {
         thread_is_done(it, -1);
@@ -762,12 +768,16 @@ load_backdrop :: () -> PrimitiveMesh, Matrix4
 
 load_shaderball :: () -> PrimitiveMesh, PrimitiveMesh, Matrix4
 {
-    scale := 2.0;
+    scale := 0.5;
     position := Vector3.{0, 0, 0};
-    internals := load_obj_model("data/shaderball/shader_ball_internals.obj");
-    externals := load_obj_model("data/shaderball/shader_ball_externals.obj");
 
-    theta := 30.0 / 360.0 * 2 * PI;
+  //  internals := load_obj_model("data/shaderball/shader_ball_internals.obj");
+  //  externals := load_obj_model("data/shaderball/shader_ball_externals.obj");
+
+    internals := load_obj_model("data/shaderball/shader_ball_bmps_inner.obj");
+    externals := load_obj_model("data/shaderball/shader_ball_bmps_outer.obj");
+
+    theta := -30.0 / 360.0 * 2 * PI;
 
     orientation: Quaternion;
     set_from_axis_and_angle(*orientation, 0, 1, 0, theta);
@@ -812,7 +822,7 @@ turns_to_radians :: (turns: float) -> float
 
 load_scene :: (using scene: *Scene, type: SceneType)
 {
-    envtex := load_texture_from_file("data/envmap/sunny_country_road_2k.hdr");
+    envtex := load_texture_from_file("data/envmap/citrus_orchard_road_puresky_2k.hdr");
 
     if #complete type ==
     {
@@ -952,22 +962,26 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
             light := create_emission_material(scene, create_constant_texture(.{40, 40, 40}));
 
-            environment        = create_constant_texture(.{1.0, 1.0, 1.0});
+            environment = envtex;
+            exposure    = 5;
 
             id, material        := create_material(scene);
-            //material.color       = texture_vector3(.{0.827, 0.686, 0.216});
-            material.color       = create_constant_texture(.{1, 1, 1});
+            //material.color       = create_constant_texture(.{0.827, 0.686, 0.216});
+            material.color       = create_constant_texture(.{0.699, 0.704, 0.671}); // Cobalt
+            //material.color       = create_constant_texture(.{1, 1, 1});
             //material.color       = create_constant_texture(.{1.000, 0.735, 0.353}); // Gold
-            material.metalness   = create_constant_texture(0.0);
+            material.metalness   = create_constant_texture(1.0);
             material.diffuse_roughness    = create_constant_texture(1.0);
             material.specular_weight      = create_constant_texture(1.0);
             //material.specular_color       = create_constant_texture(.{1, 1, 1});
-            material.specular_color       = create_constant_texture(.{0.993, 1.000, 1.000}); // Gold
-            material.specular_roughness   = create_constant_texture(0.25);
+            //material.specular_color       = create_constant_texture(.{0.993, 1.000, 1.000}); // Gold
+            material.specular_color       = create_constant_texture(.{0.727, 0.772, 0.823}); // Cobalt
+            material.specular_roughness   = create_constant_texture(0.1);
             material.specular_anisotropic = create_constant_texture(0.0);
 
+            white      := create_lambertian_material(scene, create_constant_texture(.{1, 1, 1}));
             red        := create_lambertian_material(scene, create_constant_texture(.{0.65, 0.05, 0.05}));
-            black      := create_lambertian_material(scene, create_constant_texture(.{0.01, 0.01, 0.01}));
+            black      := create_lambertian_material(scene, create_constant_texture(.{0.1, 0.1, 0.1}));
             checker    := create_lambertian_material(scene, create_checkerboard_texture(Vector3.{0.9, 0.9, 0.9}, .{0.1, 0.1, 0.1}, .{40, 40}));
 
             earth      := load_texture_from_file("data/misc/earth.png", 3);
@@ -976,18 +990,18 @@ load_scene :: (using scene: *Scene, type: SceneType)
             backdrop, backdrop_xform     := load_backdrop();
             internals, externals, shaderball_xform := load_shaderball();
 
-  //          add_box(scene, Matrix4_Identity, .{ -5, 10, -15 }, .{ -1, 10.01, -11 }, light);
-  //          add_box(scene, Matrix4_Identity, .{  1, 10, -15 }, .{  5, 10.01, -11 }, light);
+            add_box(scene, Matrix4_Identity, .{ -5, 10, -15 }, .{ -1, 10.01, -11 }, light);
+            add_box(scene, Matrix4_Identity, .{  1, 10, -15 }, .{  5, 10.01, -11 }, light);
 
-            add_sphere(scene, Vector3.{0, 2, 0}, 2, textured);
+            //add_sphere(scene, Vector3.{0, 2, 0}, 2, textured);
 
             add_mesh(scene, backdrop_xform, backdrop, checker);
             //add_sphere(scene, Vector3.{0, 2, 0}, 2, id);
-            //add_mesh(scene, shaderball_xform, internals, black);
-            //add_mesh(scene, shaderball_xform, externals, id);
+            add_mesh(scene, shaderball_xform, internals, black);
+            add_mesh(scene, shaderball_xform, externals, id);
 
         case .material_test;
-            camera.fov         = 45.0 / 360.0;
+            camera.fov         = 0.17;
             camera.position    = .{0, 0, -5};
             camera.orientation = .{};
             environment        = envtex;
@@ -1000,6 +1014,12 @@ load_scene :: (using scene: *Scene, type: SceneType)
             spacing := 2 * radius + 0.1;
             start_x := -3.0;
             start_y :=  1.0;
+
+            // Backdrop
+            {
+                checker := create_lambertian_material(scene, create_checkerboard_texture(Vector3.{0.9, 0.9, 0.9}, .{0.1, 0.1, 0.1}, .{20, 20}));
+                add_box(scene, Matrix4_Identity, .{-5, -5, 0.5}, .{5, 5, 0.6}, checker); // back
+            }
 
             // Diffuse (Roughness)
             {
@@ -1062,7 +1082,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
             }
 
         case .envmap_test;
-            camera.fov         = 60.0 / 360.0;
+            camera.fov         = 45.0 / 360.0;
             camera.position    = .{0, 0, -5};
             camera.orientation = .{};
             environment        = envtex;
@@ -1293,8 +1313,8 @@ init_scene :: (scene: *Scene, width: s32, height: s32, multisamples: u32 = 16, m
 
 prepare_for_rendering :: (scene: *Scene)
 {
-    aspect_ratio := scene.config.width.(float) / scene.config.height.(float);
-    calculate_camera_transform(*scene.camera, aspect_ratio);
+    scene.camera.aspect_ratio = scene.config.width.(float) / scene.config.height.(float);
+    UpdateCameraTransform(*scene.camera);
     build_bvh(scene);
 }
 
@@ -1328,61 +1348,36 @@ half_area :: (b: Box3) -> float
     return res;
 }
 
-perspective_projection :: (fov: float, aspect_ratio: float, z_near: float, z_far: float) -> Matrix4
-{
-    assert(z_near != z_far && fov > 0.0);
-
-    result := Matrix4_Identity;
-
-    tan_theta := tan(fov * PI);
-    cot_theta := 1 / tan_theta;
-
-    range := 1 / (z_far - z_near);
-
-    result._11 = cot_theta / aspect_ratio;
-    result._22 = cot_theta;
-    result._33 = z_far * range;
-    result._43 = 1;
-    result._34 = -z_far * z_near * range;
-    result._44 = 0;
-
-    return result;
-}
-
-calculate_camera_transform :: (using camera: *Camera, aspect_ratio: float)
+UpdateCameraTransform :: (camera: *Camera)
 {
     rotation := Matrix4_Identity;
-    set_rotation(*rotation, orientation);
-
-    xform.inv_view       = make_translation_matrix4(camera.position) * rotation;
-    xform.projection     = perspective_projection(camera.fov, aspect_ratio, 0.01, 1000.0);
-
-    inversed : bool;
-
-    inversed, xform.view = inverse(camera.xform.inv_view);
-    inversed, xform.inv_projection = inverse(camera.xform.projection);
+    set_rotation(*rotation, camera.orientation);
+    camera.xform = make_translation_matrix4(camera.position) * rotation;
+    h           := tan(camera.fov * PI);
+    camera.dxdu  = .{h * camera.aspect_ratio, 0, 0};
+    camera.dydv  = .{0, h, 0};
 }
 
-GenerateRay :: (query: Vector2, camera: CameraTransform, lens_focal_length: float, lens_radius: float) -> Ray
+GenerateRay :: (query: Vector2, camera: Camera) -> Ray
 {
     origin := Vector3.{0, 0, 0};
-    target := transform_point(camera.inv_projection, Vector3.{ query.x, query.y, 1.0 });
+    target := query.x * camera.dxdu + query.y * camera.dydv + Vector3.{0, 0, 1};
 
-    if lens_radius > 0.0
+    if camera.lens_radius > 0.0
     {
         u := random_get_zero_to_one_open();
         v := random_get_zero_to_one_open();
 
-        origin.xy = lens_radius * sample_uniform_disk_polar(Vector2.{u, v});
+        origin.xy = camera.lens_radius * sample_uniform_disk_polar(Vector2.{u, v});
 
-        dir   := normalize(target);
-        ft    := lens_focal_length / dir.z;
+        dir   := normalize(target - origin);
+        ft    := camera.lens_focal_length / dir.z;
         focus := ft * dir;
         target = focus;
     }
 
-    origin = transform_point(camera.inv_view, origin);
-    target = transform_point(camera.inv_view, target);
+    origin = transform_point(camera.xform, origin);
+    target = transform_point(camera.xform, target);
 
     ray: Ray = ---;
 
@@ -2067,14 +2062,14 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=200, max_depth=1);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=100, max_depth=5);
     load_scene(*scene, args.scene);
     prepare_for_rendering(*scene);
 
     wavefront: Wavefront;
 
     init(*wavefront, *scene, max_threads = args.num_threads.(s32));
-    start(*wavefront);
+    //start(*wavefront);
 
     Simp.prepare_window(wnd, wanted_msaa = MSAA);
 
@@ -2114,6 +2109,18 @@ main :: ()
                 if it.key_pressed && it.key_code == .ESCAPE
                 {
                     should_quit = true;
+                }
+
+                if it.key_pressed && it.key_code == #char "R"
+                {
+                    generate_new_random_test = true;
+                }
+                
+                if it.key_pressed && it.key_code == #char "T"
+                {
+                    info := type_info(Random_Method);
+                    random_test_method = ((random_test_method + 1).(int) % info.values.count).(Random_Method);
+                    generate_new_random_test = true;
                 }
 
                 if it.key_pressed && it.key_code == #char "H"
@@ -2331,6 +2338,126 @@ draw_bvh :: (root: int, nodes: []BVHNode, boxes: []Box3, indices: []u32, project
     }
 }
 
+Random_Method :: enum
+{
+    PCG;
+    STRATIFIED;
+}
+
+RANDOM_TEST_SIZE :: 800;
+RANDOM_TEST_STEP :: 50;
+
+random_values: [..]Vector2;
+generate_new_random_test := true;
+random_test_method := Random_Method.PCG;
+
+random_test_get_random :: (x: float, y: float) -> Vector2
+{
+    if #complete random_test_method == 
+    {
+        case .PCG;
+            u := random_get_zero_to_one();
+            v := random_get_zero_to_one();
+
+            px := u * RANDOM_TEST_SIZE;
+            py := v * RANDOM_TEST_SIZE;
+
+            return .{px, py};
+
+        case .STRATIFIED;
+            u := random_get_zero_to_one();
+            v := random_get_zero_to_one();
+
+            x += u * RANDOM_TEST_STEP;
+            y += v * RANDOM_TEST_STEP;
+
+            return Vector2.{x, y};
+    }
+}
+
+init_random_test_values :: ()
+{
+    array_reset(*random_values);
+
+    y := 0;
+    while y < RANDOM_TEST_SIZE
+    {
+        defer y += RANDOM_TEST_STEP;
+
+        x := 0;
+        while x < RANDOM_TEST_SIZE
+        {
+            defer x += RANDOM_TEST_STEP;
+
+            p := random_test_get_random(x.(float), y.(float));
+            array_add(*random_values, p);
+        }
+    }
+
+    generate_new_random_test = false;
+}
+
+draw_random_test :: ()
+{
+    if generate_new_random_test
+    {
+        init_random_test_values();
+    }
+
+    color := Vector4.{1, 1, 0, 1};
+    gray  := Vector4.{0.5, 0.5, 0.5, 1};
+
+    center: Vector2;
+    center.x = render_width.(float) / 2;
+    center.y = render_height.(float) / 2;
+
+    rect_size := 4.0;
+
+    w := Vector2.{rect_size / 2, 0};
+    h := Vector2.{0, rect_size / 2};
+
+    bw := w / 2;
+    bh := h / 2;
+
+    corner := center;
+    corner.x -= RANDOM_TEST_SIZE/2;
+    corner.y -= RANDOM_TEST_SIZE/2;
+    
+    y := 0;
+    while y <= RANDOM_TEST_SIZE
+    {
+        defer y += RANDOM_TEST_STEP;
+
+        x := 0;
+        while x <= RANDOM_TEST_SIZE
+        {
+            defer x += RANDOM_TEST_STEP;
+
+            px := x.(float);
+            py := y.(float);
+
+            p := Vector2.{px, py};
+
+            p0 := corner + p - bw - bh;
+            p1 := corner + p + bw - bh;
+            p2 := corner + p + bw + bh;
+            p3 := corner + p - bw + bh;
+
+            Simp.immediate_quad(p0, p1, p2, p3, gray, gray, gray, gray);
+        }
+    }
+
+    for random_values
+    {
+        p0 := corner + it - w - h;
+        p1 := corner + it + w - h;
+        p2 := corner + it + w + h;
+        p3 := corner + it - w + h;
+
+        Simp.immediate_quad(p0, p1, p2, p3, color, color, color, color);
+    }
+}
+
 draw_one_frame :: (wnd: Window_Type, map: *Simp.Texture, scene: Scene, num_threads: int)
 {
     time := seconds_since_init();
@@ -2364,6 +2491,10 @@ draw_one_frame :: (wnd: Window_Type, map: *Simp.Texture, scene: Scene, num_threa
 
     Simp.set_shader_for_color();
 
+    {
+        draw_random_test();
+    }
+
     if show_debug_bvh
     {
         //projection_view := scene.camera.xform.projection * scene.camera.xform.view * debug_mesh_xform;
@@ -2396,8 +2527,8 @@ draw_one_frame :: (wnd: Window_Type, map: *Simp.Texture, scene: Scene, num_threa
     }
     else
     {
-        text := tprint("Frame: %; Last frame render time: %ms; Threads: %; Runtime: %",
-                       frame_index, last_frame_render_time_ms, num_threads, total_runtime);
+        text := tprint("Frame: %; Last frame render time: %ms; Threads: %; Runtime: %; Random Test Method: %",
+                       frame_index, last_frame_render_time_ms, num_threads, total_runtime, random_test_method);
         Simp.draw_text(debug_font, 10, 10, text);
     }
 

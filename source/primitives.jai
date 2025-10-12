@@ -386,7 +386,8 @@ TransformPoint :: (m: Matrix4, v: Vector3) -> Vector3
     result.x = m._11 * v.x + m._12 * v.y + m._13 * v.z + m._14;
     result.y = m._21 * v.x + m._22 * v.y + m._23 * v.z + m._24;
     result.z = m._31 * v.x + m._32 * v.y + m._33 * v.z + m._34;
-    return result;
+    w       := m._41 * v.x + m._42 * v.y + m._43 * v.z + m._44;
+    return result / w;
 }
 
 TransformVector :: (m: Matrix4, v: Vector3) -> Vector3

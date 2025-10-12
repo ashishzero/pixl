@@ -125,12 +125,14 @@ Camera :: struct
     position           : Vector3;
     orientation        : Quaternion;
     fov                := 0.17;
-    z_near             := 0.001;
-    z_far              := 1000.0;
-    lens_focal_length  := 10.0;
+    aspect_ratio       := 1.0;
+    lens_focal_length  := 15.0;
     lens_radius        := 0.0;
 
-    xform              : CameraTransform;
+    // constructed from above parameters
+    xform              : Matrix4;
+    dxdu               : Vector3;
+    dydv               : Vector3;
 }
 
 CameraTransform :: struct
