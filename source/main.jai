@@ -379,8 +379,9 @@ RenderPixel :: (scene: Scene, x: u32, y: u32, spa: u32, frame: u32) -> Vector3
             seed    := Hash((index + frame * 4111).(u32));
             sampler := CreateSampler(index, seed);
 
-            uv     := SamplePixel(sampler);
-            sample := origin + uv;
+            uv       := SamplePixel(sampler);
+            subpixel := inv_spa * Vector2.{sx.(float), sy.(float)};
+            sample   := origin + subpixel;
 
             // To NDC
             pixel  := sample * scale + shift;
@@ -394,35 +395,6 @@ RenderPixel :: (scene: Scene, x: u32, y: u32, spa: u32, frame: u32) -> Vector3
     radiance *= (inv_spa * inv_spa);
     return radiance;
 }
-
-//trace_pixel :: (scene: Scene, x: s32, y: s32, num_samples: s32) -> Vector3
-//{
-//    inv_sqrt_samples := 1.0 / num_samples.(float);
-//    sampled := Vector3.{0, 0, 0};
-
-//    width  := scene.config.width;
-//    height := scene.config.height;
-
-//    assert(width > 1 && height > 1);
-
-//    scale  := Vector2.{ 2.0 / (width - 1).(float), 2.0 / (height - 1).(float) };
-//    shift  := Vector2.{ -1.0, -1.0 };
-
-//    for n_y:0..num_samples-1
-//    {
-//        for n_x:0..num_samples-1
-//        {
-//            offset := sample_stratified_square(n_x.(float), n_y.(float), inv_sqrt_samples);
-//            sample := Vector2.{ x.(float), y.(float) } + offset;
-//            query  := sample * scale + shift;
-//            ray    := GenerateRay(query, scene.camera);
-//            color  := TracePath(scene, ray, scene.config.max_depth);
-//            sampled += color;
-//        }
-//    }
-
-//    return sampled;
-//}
 
 LaneDescription :: struct
 {
@@ -1396,14 +1368,14 @@ UpdateCameraTransform :: (camera: *Camera)
     camera.dydv  = .{0, h, 0};
 }
 
-GenerateRay :: (query: Vector2, camera: Camera, lens_u: Vector2) -> Ray
+GenerateRay :: (pixel: Vector2, camera: Camera, lens_uv: Vector2) -> Ray
 {
     origin := Vector3.{0, 0, 0};
-    target := query.x * camera.dxdu + query.y * camera.dydv + Vector3.{0, 0, 1};
+    target := pixel.x * camera.dxdu + pixel.y * camera.dydv + Vector3.{0, 0, 1};
 
     if camera.lens_radius > 0.0
     {
-        origin.xy = camera.lens_radius * sample_uniform_disk_polar(lens_u);
+        origin.xy = camera.lens_radius * sample_uniform_disk_polar(lens_uv);
         dir   := normalize(target - origin);
         ft    := camera.lens_focal_length / dir.z;
         focus := ft * dir;
