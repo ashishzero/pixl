@@ -373,23 +373,39 @@ InverseTent :: inline (u: float, radius: float) -> float
     }
 }
 
-BlackmanHarris1D :: (k: float, radius: float) -> float
+BlackmanHarris1D :: (k: float, N: float) -> float
 {
     A0 :: 0.35875;
     A1 :: 0.48829;
     A2 :: 0.14128;
     A3 :: 0.01168;
 
-    x := k / radius;
+    x := k / N;
     y := 2 * PI * x;
     w := A0 - A1 * cos(y) + A2 * cos(2 * y) - A3 * cos(3 * y);
     return w;
 }
 
-BlackmanHarris2D :: (p: Vector2, radius: float) -> float
+//#run
+//{
+//    N :: 3.0;
+
+//    k := N/2;
+
+//    for 0..10
+//    {
+//        //k := -N/2 + N * it/10;
+//        k := N * it/10;
+//        w := BlackmanHarris1D(k, N);
+//        print("x = %, w = %\n", k, w);
+//    }
+
+//}
+
+BlackmanHarris2D :: (k: Vector2, N: float) -> float
 {
-    wx := BlackmanHarris1D(p.x, radius);
-    wy := BlackmanHarris1D(p.y, radius);
+    wx := BlackmanHarris1D(k.x, N);
+    wy := BlackmanHarris1D(k.y, N);
     w  := wx * wy;
     return w;
 }
@@ -428,7 +444,7 @@ RenderPixel :: (scene: Scene, x: u32, y: u32, spa: u32, frame: u32) -> Vector3
             uv         := SamplePixel(sampler);
             subpixel   := inv_spa * (uv + subcorner);
             sample     := origin + subpixel;
-            weight     := BlackmanHarris2D(subpixel - Vector2.{0.5, 0.5}, scene.camera.filter.radius);
+            weight     := BlackmanHarris2D(subpixel, 2 * scene.camera.filter.radius);
 
             // To NDC
             pixel      := sample * scale + shift;
