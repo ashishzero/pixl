@@ -120,9 +120,18 @@ BVHNode :: struct
     num_primitives           : u32;
 }
 
+FILTER_SIZE :: 1023;
+
+Filter_Type :: enum
+{
+    BOX;
+    BLACKMAN_HARRIS;
+}
+
 Filter :: struct
 {
-    radius := 1.5;
+    type  := Filter_Type.BLACKMAN_HARRIS;
+    width := 1.5;
 }
 
 Camera :: struct
@@ -139,6 +148,7 @@ Camera :: struct
     xform              : Matrix4;
     dxdu               : Vector3;
     dydv               : Vector3;
+    filter_lut         : [FILTER_SIZE]float;
 }
 
 CameraTransform :: struct

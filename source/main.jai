@@ -357,23 +357,8 @@ TracePath :: (scene: Scene, primary: Ray, depth: s32, sampler: *Sampler) -> Vect
     return Lo;
 }
 
-InverseTent :: inline (u: float, radius: float) -> float
-{
-    if (u < 0.5)
-    {
-        u  = 2 * u;
-        x := sqrt(u);
-        return -radius + radius * x;
-    }
-    else
-    {
-        u  = 2 * (u - 0.5);
-        x := 1.0 - sqrt(1.0 - u);
-        return radius * x;
-    }
-}
 
-BlackmanHarris1D :: (k: float, N: float) -> float
+BlackmanHarris :: (k: float, N: float) -> float
 {
     A0 :: 0.35875;
     A1 :: 0.48829;
@@ -386,34 +371,111 @@ BlackmanHarris1D :: (k: float, N: float) -> float
     return w;
 }
 
-//#run
-//{
-//    N :: 3.0;
-
-//    k := N/2;
-
-//    for 0..10
-//    {
-//        //k := -N/2 + N * it/10;
-//        k := N * it/10;
-//        w := BlackmanHarris1D(k, N);
-//        print("x = %, w = %\n", k, w);
-//    }
-
-//}
-
-BlackmanHarris2D :: (k: Vector2, N: float) -> float
+EvaluateFilter :: (type: Filter_Type, k: float, N: float) -> float
 {
-    wx := BlackmanHarris1D(k.x, N);
-    wy := BlackmanHarris1D(k.y, N);
-    w  := wx * wy;
-    return w;
+    if #complete type ==
+    {
+        case .BOX;
+            return 1.0;
+
+        case .BLACKMAN_HARRIS;
+            return BlackmanHarris(k, N);
+    }
 }
 
-SampleTentFilter :: (u: Vector2, radius: float) -> Vector2
+EvaluateFilterCDF :: (CDF: []float, a: float, b: float, type: Filter_Type, N: float)
 {
-    x := InverseTent(u.x, radius);
-    y := InverseTent(u.y, radius);
+    n_samples := CDF.count - 1;
+    scale     := 1.0 / n_samples.(float);
+    x_range   := b - a;
+    dx        := x_range * scale;
+
+    CDF[0] = 0.0;
+    for 0..n_samples-1
+    {
+        x := a + (it + 0.5) * dx;
+        y := EvaluateFilter(type, x, N);
+        CDF[it + 1] = abs(y) * dx + CDF[it];
+    }
+
+    // Normalize
+    inv_sum := 0.0;
+    if (CDF[n_samples] > 0.0)
+    {
+        inv_sum = 1.0 / CDF[n_samples];
+    }
+    for * CDF
+    {
+        it.* *= inv_sum;
+    }
+    CDF[n_samples] = 1.0;
+}
+
+UpperBound :: (arr: []$T, target: T) -> int
+{
+    lo := 0;
+    hi := arr.count - 1;
+    ub := arr.count;
+    while (lo <= hi)
+    {
+        mid := lo + (hi - lo) / 2;
+
+        if (arr[mid] > target)
+        {
+            ub = mid;
+            hi = mid - 1;
+        }
+        else
+        {
+            lo = mid + 1;
+        }
+    }
+    return ub;
+}
+
+InvertCDF :: (inv_CDF: []float, CDF: []float, a: float, b: float)
+{
+    assert(inv_CDF.count + 1 == CDF.count);
+    assert(CDF.count >= 2 && CDF[0] == 0.0 && CDF[CDF.count - 1] == 1.0);
+
+    x_range   := b - a;
+    n_samples := inv_CDF.count;
+    scale     := 1.0 / n_samples.(float);
+
+    for 0..n_samples-1
+    {
+        p     := (it + 0.5) * scale;
+        bin   := UpperBound(CDF, p) - 1;
+        t     := 0.0;
+
+        if (bin < CDF.count - 1)
+        {
+            denom := max(CDF[bin + 1] - CDF[bin], 1.0e-6);
+            t = (p - CDF[bin]) / denom;
+        }
+
+        inv_CDF[it] = a + x_range * (bin + t) * scale;
+    }
+}
+
+SampleInverseCDF :: (inv_CDF: []float, u: float) -> float
+{
+    up := u * inv_CDF.count.(float) - 0.5;
+
+    u0 := clamp(up.(int), 0, inv_CDF.count - 1);
+    u1 := min(u0 + 1, inv_CDF.count - 1);
+
+    uf := fract(up);
+
+    x  := (1.0 - uf) * inv_CDF[u0] + uf * inv_CDF[u1];
+
+    return x;
+}
+
+SampleInverseCDF :: (inv_CDF: []float, u: Vector2) -> Vector2
+{
+    x := SampleInverseCDF(inv_CDF, u.x);
+    y := SampleInverseCDF(inv_CDF, u.y);
     return .{x, y};
 }
 
@@ -430,7 +492,6 @@ RenderPixel :: (scene: Scene, x: u32, y: u32, spa: u32, frame: u32) -> Vector3
 
     pixel_id   := (y * width + x) * spa * spa;
     radiance   := Vector3.{0, 0, 0};
-    weight_sum := 0.0;
 
     for sy:0..spa-1
     {
@@ -440,24 +501,20 @@ RenderPixel :: (scene: Scene, x: u32, y: u32, spa: u32, frame: u32) -> Vector3
             seed       := Hash((index + frame * 4111).(u32));
             sampler    := CreateSampler(index, seed);
 
-            subcorner  := Vector2.{sx.(float), sy.(float)};
-            uv         := SamplePixel(sampler);
-            subpixel   := inv_spa * (uv + subcorner);
+            filter_uv  := SamplePixel(sampler);
+            subpixel   := SampleInverseCDF(scene.camera.filter_lut, filter_uv);
             sample     := origin + subpixel;
-            weight     := BlackmanHarris2D(subpixel, 2 * scene.camera.filter.radius);
 
             // To NDC
             pixel      := sample * scale + shift;
 
-            lens_u     := SampleLens(sampler);
-            ray        := GenerateRay(pixel, scene.camera, lens_u);
-            L          := TracePath(scene, ray, scene.config.max_depth, *sampler);
-            radiance   += weight * L;
-            weight_sum += weight;
+            lens_uv    := SampleLens(sampler);
+            ray        := GenerateRay(pixel, scene.camera, lens_uv);
+            radiance   += TracePath(scene, ray, scene.config.max_depth, *sampler);
         }
     }
 
-    radiance /= weight_sum;
+    radiance *= (inv_spa * inv_spa);
     return radiance;
 }
 
@@ -1389,7 +1446,7 @@ init_scene :: (scene: *Scene, width: s32, height: s32, multisamples: u32 = 16, m
 prepare_for_rendering :: (scene: *Scene)
 {
     scene.camera.aspect_ratio = scene.config.width.(float) / scene.config.height.(float);
-    UpdateCameraTransform(*scene.camera);
+    UpdateCameraParams(*scene.camera);
     build_bvh(scene);
 }
 
@@ -1423,7 +1480,7 @@ half_area :: (b: Box3) -> float
     return res;
 }
 
-UpdateCameraTransform :: (camera: *Camera)
+UpdateCameraParams :: (camera: *Camera)
 {
     rotation := Matrix4_Identity;
     set_rotation(*rotation, camera.orientation);
@@ -1431,6 +1488,17 @@ UpdateCameraTransform :: (camera: *Camera)
     h           := tan(camera.fov * PI);
     camera.dxdu  = .{h * camera.aspect_ratio, 0, 0};
     camera.dydv  = .{0, h, 0};
+
+    // generate filter
+    width := camera.filter.width;
+    if camera.filter.type == .BLACKMAN_HARRIS
+    {
+        width *= 2.0;
+    }
+
+    cdf: [FILTER_SIZE + 1]float;
+    EvaluateFilterCDF(cdf, 0.0, width * 0.5, camera.filter.type, width);
+    InvertCDF(camera.filter_lut, cdf, 0.0, width * 0.5);
 }
 
 GenerateRay :: (pixel: Vector2, camera: Camera, lens_uv: Vector2) -> Ray

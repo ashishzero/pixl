@@ -1,4 +1,9 @@
 
+//------------------------------------------------------------------------
+// @todo
+// https://psychopath.io/post/2021_01_30_building_a_better_lk_hash
+// https://psychopath.io/post/2022_07_24_owen_scrambling_based_dithered_blue_noise_sampling
+
 Sampler :: struct
 {
     index           : u32;
