@@ -168,7 +168,7 @@ Scene :: struct
     materials   : [..]Material;
     environment : Texture2D;
     flat_background_color := Vector3.{0.5, 0.5, 0.5};
-    exposure := 10.0; // @todo: to Camera?
+    exposure := 2.0; // @todo: to Camera?
 
     primitives : [..]Primitive;
 

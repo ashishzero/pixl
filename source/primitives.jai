@@ -123,7 +123,7 @@ IntersectBox :: (vmin: Vector3, vmax: Vector3, origin: Vector3, dir: Vector3, tm
 
         if t_lo > t_hi
         {
-            Swap(*t_lo, *t_hi);
+            swap(*t_lo, *t_hi);
         }
 
         if t_lo > t0
@@ -361,7 +361,7 @@ Hits :: (origin: Vector3, inv_dir: Vector3, box: Box3, t0: float, t1: float) -> 
         tmax := (box.vmax.component[it] - origin.component[it]) * inv_dir.component[it];
 
         if tmin > tmax
-            Swap(*tmin, *tmax);
+            swap(*tmin, *tmax);
 
         if tmin > t0
         {
@@ -464,7 +464,7 @@ SolveQuadratic :: inline (a: float, b: float, c: float) -> (bool, float, float)
     t1 := (c.(float64) / q).(float);
 
     if (t0 > t1)
-        Swap(*t0, *t1);
+        swap(*t0, *t1);
 
     return true, t0, t1;
 }

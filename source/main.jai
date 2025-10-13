@@ -262,7 +262,7 @@ Ray_Type :: enum
     SECONDARY;
 }
 
-IntegratePath :: (scene: Scene, primary: Ray, depth: s32) -> Vector3
+TracePath :: (scene: Scene, primary: Ray, depth: s32, sampler: *Sampler) -> Vector3
 {
     Lo       := Vector3.{0, 0, 0};
     Fr       := Vector3.{1, 1, 1};
@@ -299,10 +299,8 @@ IntegratePath :: (scene: Scene, primary: Ray, depth: s32) -> Vector3
             material := scene.materials[hit.material_id];
             surface  := SampleMaterialSurfaceProperties(material, hit);
 
-            u   : Vector2;
-            p   := random_get_zero_to_one_open();
-            u.x  = random_get_zero_to_one_open();
-            u.y  = random_get_zero_to_one_open();
+            p   := SampleLobe(sampler);
+            u   := SampleL(sampler);
 
             V      := ForwardTransform(inv_TBN, -ray.dir);
             sample := BSDFSample(V, surface, p, u);
@@ -352,39 +350,79 @@ IntegratePath :: (scene: Scene, primary: Ray, depth: s32) -> Vector3
             }
             break;
         }
+
+        NextBounce(sampler);
     }
 
     return Lo;
 }
 
-trace_pixel :: (scene: Scene, x: s32, y: s32, num_samples: s32) -> Vector3
+RenderPixel :: (scene: Scene, x: u32, y: u32, spa: u32, frame: u32) -> Vector3
 {
-    inv_sqrt_samples := 1.0 / num_samples.(float);
-    sampled := Vector3.{0, 0, 0};
+    inv_spa  := 1.0 / spa.(float);
 
-    width  := scene.config.width;
-    height := scene.config.height;
+    origin   := Vector2.{x.(float), y.(float)};
+    width    := scene.config.width;
+    height   := scene.config.height;
 
-    assert(width > 1 && height > 1);
+    scale    := Vector2.{ 2.0 / (width - 1).(float), 2.0 / (height - 1).(float) };
+    shift    := Vector2.{ -1.0, -1.0 };
 
-    scale  := Vector2.{ 2.0 / (width - 1).(float), 2.0 / (height - 1).(float) };
-    shift  := Vector2.{ -1.0, -1.0 };
+    radiance := Vector3.{0, 0, 0};
+    pixel_id := (y * width + x) * spa * spa;
 
-    for n_y:0..num_samples-1
+    for sy:0..spa-1
     {
-        for n_x:0..num_samples-1
+        for sx:0..spa-1
         {
-            offset := sample_stratified_square(n_x.(float), n_y.(float), inv_sqrt_samples);
-            sample := Vector2.{ x.(float), y.(float) } + offset;
-            query  := sample * scale + shift;
-            ray    := GenerateRay(query, scene.camera);
-            color  := IntegratePath(scene, ray, scene.config.max_depth);
-            sampled += color;
+            index   := (pixel_id + sy * spa + sx).(u32);
+            seed    := Hash((index + frame * 4111).(u32));
+            sampler := CreateSampler(index, seed);
+
+            uv     := SamplePixel(sampler);
+            sample := origin + uv;
+
+            // To NDC
+            pixel  := sample * scale + shift;
+
+            lens_u := SampleLens(sampler);
+            ray    := GenerateRay(pixel, scene.camera, lens_u);
+            radiance += TracePath(scene, ray, scene.config.max_depth, *sampler);
         }
     }
 
-    return sampled;
+    radiance *= (inv_spa * inv_spa);
+    return radiance;
 }
+
+//trace_pixel :: (scene: Scene, x: s32, y: s32, num_samples: s32) -> Vector3
+//{
+//    inv_sqrt_samples := 1.0 / num_samples.(float);
+//    sampled := Vector3.{0, 0, 0};
+
+//    width  := scene.config.width;
+//    height := scene.config.height;
+
+//    assert(width > 1 && height > 1);
+
+//    scale  := Vector2.{ 2.0 / (width - 1).(float), 2.0 / (height - 1).(float) };
+//    shift  := Vector2.{ -1.0, -1.0 };
+
+//    for n_y:0..num_samples-1
+//    {
+//        for n_x:0..num_samples-1
+//        {
+//            offset := sample_stratified_square(n_x.(float), n_y.(float), inv_sqrt_samples);
+//            sample := Vector2.{ x.(float), y.(float) } + offset;
+//            query  := sample * scale + shift;
+//            ray    := GenerateRay(query, scene.camera);
+//            color  := TracePath(scene, ray, scene.config.max_depth);
+//            sampled += color;
+//        }
+//    }
+
+//    return sampled;
+//}
 
 LaneDescription :: struct
 {
@@ -462,7 +500,7 @@ SpiralCoordinates :: (n: int) -> (x: int, y: int)
     return x, y;
 }
 
-render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared)
+render :: (scene: *Scene, weight: float, num_samples: u32, shared: *RenderShared)
 {
     width  := scene.config.width;
     height := scene.config.height;
@@ -478,8 +516,6 @@ render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared
     {
         atomic_write(*shared.tile_id, 0);
     }
-
-    inv_samples := 1.0 / (num_samples * num_samples).(float);
 
     lane_sync();
 
@@ -517,13 +553,15 @@ render :: (scene: *Scene, weight: float, num_samples: s32, shared: *RenderShared
         {
             for x:x0..x1
             {
-                color := trace_pixel(scene, x.(s32), y.(s32), num_samples);
+                color := RenderPixel(scene, x.(u32), y.(u32), num_samples, 0);
+
+                //color := trace_pixel(scene, x.(s32), y.(s32), num_samples);
 
                 index := y * width + x;
                 //index := offset;
                 //offset += 1;
 
-                color *= inv_samples;
+                //color *= inv_samples;
                 prev_color := scene.rgbx[index].xyz;
                 
                 render := lerp(prev_color, color, weight);
@@ -594,7 +632,7 @@ wavefront_raytrace_entry :: (thread: *Thread) -> s64
     width  := scene.config.width;
     height := scene.config.height;
 
-    num_samples := sqrt(scene.config.multisamples.(float32)).(s32);
+    num_samples := sqrt(scene.config.multisamples.(float32)).(u32);
 
     screenshot_index := 0;
 
@@ -963,7 +1001,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
             light := create_emission_material(scene, create_constant_texture(.{40, 40, 40}));
 
             environment = envtex;
-            exposure    = 5;
+            exposure    = 2;
 
             id, material        := create_material(scene);
             //material.color       = create_constant_texture(.{0.827, 0.686, 0.216});
@@ -1001,24 +1039,24 @@ load_scene :: (using scene: *Scene, type: SceneType)
             add_mesh(scene, shaderball_xform, externals, id);
 
         case .material_test;
-            camera.fov         = 0.17;
+            camera.fov         = 45.0 / 360.0;
             camera.position    = .{0, 0, -5};
             camera.orientation = .{};
-            environment        = envtex;
+            environment        = load_texture_from_file("data/envmap/golden_gate_hills_2k.hdr");
 
             config.flat_background = true;
 
-            NUM_TEST_SPHERES :: 11;
+            NUM_TEST_SPHERES :: 10;
 
-            radius  := 0.2;
+            radius  := 0.3;
             spacing := 2 * radius + 0.1;
-            start_x := -3.0;
+            start_x := -3.1;
             start_y :=  1.0;
 
             // Backdrop
             {
-                checker := create_lambertian_material(scene, create_checkerboard_texture(Vector3.{0.9, 0.9, 0.9}, .{0.1, 0.1, 0.1}, .{20, 20}));
-                add_box(scene, Matrix4_Identity, .{-5, -5, 0.5}, .{5, 5, 0.6}, checker); // back
+                checker := create_lambertian_material(scene, create_checkerboard_texture(Vector3.{0.9, 0.9, 0.9}, .{0.1, 0.1, 0.1}, .{10, 10}));
+                add_box(scene, Matrix4_Identity, .{-6, -6, 0.5}, .{6, 6, 0.6}, checker); // back
             }
 
             // Diffuse (Roughness)
@@ -1060,7 +1098,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
             // Metal (Anisotropic)
             {
-                roughness := 0.25;
+                roughness := 0.5;
                 center    := Vector3.{start_x, start_y, 0.0};
                 start_y   -= spacing;
 
@@ -1299,7 +1337,7 @@ init_scene :: (scene: *Scene, width: s32, height: s32, multisamples: u32 = 16, m
 {
     create_lambertian_material(scene, create_constant_texture(.{0, 0, 0}));
     Simp.bitmap_alloc(*scene.bitmap, width, height, .RGBA8);
-    scene.bitmap.flags |= .IS_SRGB;
+    //scene.bitmap.flags |= .IS_SRGB; // @todo: fix this flag!!!
 
     scene.config.width        = width.(u32);
     scene.config.height       = height.(u32);
@@ -1358,18 +1396,14 @@ UpdateCameraTransform :: (camera: *Camera)
     camera.dydv  = .{0, h, 0};
 }
 
-GenerateRay :: (query: Vector2, camera: Camera) -> Ray
+GenerateRay :: (query: Vector2, camera: Camera, lens_u: Vector2) -> Ray
 {
     origin := Vector3.{0, 0, 0};
     target := query.x * camera.dxdu + query.y * camera.dydv + Vector3.{0, 0, 1};
 
     if camera.lens_radius > 0.0
     {
-        u := random_get_zero_to_one_open();
-        v := random_get_zero_to_one_open();
-
-        origin.xy = camera.lens_radius * sample_uniform_disk_polar(Vector2.{u, v});
-
+        origin.xy = camera.lens_radius * sample_uniform_disk_polar(lens_u);
         dir   := normalize(target - origin);
         ft    := camera.lens_focal_length / dir.z;
         focus := ft * dir;
@@ -1681,7 +1715,7 @@ build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi:
                 break;
             }
 
-            Swap(*indices[j], *indices[i]);
+            swap(*indices[j], *indices[i]);
         }
     }
 
@@ -2020,6 +2054,8 @@ CommandLineArgs :: struct
     num_threads := 0;
 }
 
+#load "sampler.jai";
+
 main :: ()
 {
     init();
@@ -2062,14 +2098,14 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=100, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=256, max_depth=5);
     load_scene(*scene, args.scene);
     prepare_for_rendering(*scene);
 
     wavefront: Wavefront;
 
     init(*wavefront, *scene, max_threads = args.num_threads.(s32));
-    //start(*wavefront);
+    start(*wavefront);
 
     Simp.prepare_window(wnd, wanted_msaa = MSAA);
 
@@ -2338,20 +2374,29 @@ draw_bvh :: (root: int, nodes: []BVHNode, boxes: []Box3, indices: []u32, project
     }
 }
 
+//------------------------------------------------------------------------
+
 Random_Method :: enum
 {
     PCG;
     STRATIFIED;
+    SOBOL_SHUFFLED_SCRAMBLED;
+    SOBOL_SHUFFLED_SCRAMBLED_STRATIFIED;
 }
 
 RANDOM_TEST_SIZE :: 800;
-RANDOM_TEST_STEP :: 50;
+RANDOM_TEST_STEP :: 20;
 
 random_values: [..]Vector2;
 generate_new_random_test := true;
 random_test_method := Random_Method.PCG;
 
-random_test_get_random :: (x: float, y: float) -> Vector2
+HashCombine :: inline (seed: u32, v: u32) -> u32
+{
+    return seed ^ (v + (seed << 6) + (seed >> 2));
+}
+
+random_test_get_random :: (x: float, y: float, index: u32, seed: u32) -> Vector2
 {
     if #complete random_test_method == 
     {
@@ -2372,7 +2417,36 @@ random_test_get_random :: (x: float, y: float) -> Vector2
             y += v * RANDOM_TEST_STEP;
 
             return Vector2.{x, y};
+
+        case .SOBOL_SHUFFLED_SCRAMBLED;
+            u := SampleShuffledScrambledSobol(index, seed, 0);
+            v := SampleShuffledScrambledSobol(index, seed, 1);
+
+            px := u * RANDOM_TEST_SIZE;
+            py := v * RANDOM_TEST_SIZE;
+
+            return .{px, py};
+
+        case .SOBOL_SHUFFLED_SCRAMBLED_STRATIFIED;
+            u := SampleShuffledScrambledSobol(index, seed, 0);
+            v := SampleShuffledScrambledSobol(index, seed, 1);
+
+            x += u * RANDOM_TEST_STEP;
+            y += v * RANDOM_TEST_STEP;
+
+            return Vector2.{x, y};
     }
+}
+
+Hash :: (x: u32) -> u32
+{
+    // finalizer from murmurhash3
+    x ^= x >> 16;
+    x *= 0x85ebca6b;
+    x ^= x >> 13;
+    x *= 0xc2b2ae35;
+    x ^= x >> 16;
+    return x;
 }
 
 init_random_test_values :: ()
@@ -2389,8 +2463,14 @@ init_random_test_values :: ()
         {
             defer x += RANDOM_TEST_STEP;
 
-            p := random_test_get_random(x.(float), y.(float));
-            array_add(*random_values, p);
+            index := (y * RANDOM_TEST_SIZE + x).(u32);
+
+            for 0..1
+            {
+                seed  := Hash((index * 2 + it).(u32));
+                p := random_test_get_random(x.(float), y.(float), index, seed);
+                array_add(*random_values, p);
+            }
         }
     }
 
@@ -2492,7 +2572,7 @@ draw_one_frame :: (wnd: Window_Type, map: *Simp.Texture, scene: Scene, num_threa
     Simp.set_shader_for_color();
 
     {
-        draw_random_test();
+        //draw_random_test();
     }
 
     if show_debug_bvh
