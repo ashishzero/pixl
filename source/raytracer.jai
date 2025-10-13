@@ -120,6 +120,11 @@ BVHNode :: struct
     num_primitives           : u32;
 }
 
+Filter :: struct
+{
+    radius := 1.5;
+}
+
 Camera :: struct
 {
     position           : Vector3;
@@ -128,6 +133,7 @@ Camera :: struct
     aspect_ratio       := 1.0;
     lens_focal_length  := 15.0;
     lens_radius        := 0.0;
+    filter             : Filter;
 
     // constructed from above parameters
     xform              : Matrix4;

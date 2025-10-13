@@ -94,8 +94,8 @@ SampleTexture :: (texture: Texture2D, u: float, v: float) -> Vector3
 
     if (texture.data)
     {
-        xp := u * (texture.width - 1).(float) + 0.5;
-        yp := v * (texture.height - 1).(float) + 0.5;
+        xp := u * texture.width.(float) - 0.5;
+        yp := v * texture.height.(float) - 0.5;
 
         // Wrap Repeat
         x0 := xp.(int) % texture.width;
@@ -357,42 +357,91 @@ TracePath :: (scene: Scene, primary: Ray, depth: s32, sampler: *Sampler) -> Vect
     return Lo;
 }
 
+InverseTent :: inline (u: float, radius: float) -> float
+{
+    if (u < 0.5)
+    {
+        u  = 2 * u;
+        x := sqrt(u);
+        return -radius + radius * x;
+    }
+    else
+    {
+        u  = 2 * (u - 0.5);
+        x := 1.0 - sqrt(1.0 - u);
+        return radius * x;
+    }
+}
+
+BlackmanHarris1D :: (k: float, radius: float) -> float
+{
+    A0 :: 0.35875;
+    A1 :: 0.48829;
+    A2 :: 0.14128;
+    A3 :: 0.01168;
+
+    x := k / radius;
+    y := 2 * PI * x;
+    w := A0 - A1 * cos(y) + A2 * cos(2 * y) - A3 * cos(3 * y);
+    return w;
+}
+
+BlackmanHarris2D :: (p: Vector2, radius: float) -> float
+{
+    wx := BlackmanHarris1D(p.x, radius);
+    wy := BlackmanHarris1D(p.y, radius);
+    w  := wx * wy;
+    return w;
+}
+
+SampleTentFilter :: (u: Vector2, radius: float) -> Vector2
+{
+    x := InverseTent(u.x, radius);
+    y := InverseTent(u.y, radius);
+    return .{x, y};
+}
+
 RenderPixel :: (scene: Scene, x: u32, y: u32, spa: u32, frame: u32) -> Vector3
 {
     inv_spa  := 1.0 / spa.(float);
 
-    origin   := Vector2.{x.(float), y.(float)};
-    width    := scene.config.width;
-    height   := scene.config.height;
+    origin     := Vector2.{x.(float), y.(float)};
+    width      := scene.config.width;
+    height     := scene.config.height;
 
-    scale    := Vector2.{ 2.0 / (width - 1).(float), 2.0 / (height - 1).(float) };
-    shift    := Vector2.{ -1.0, -1.0 };
+    scale      := Vector2.{ 2.0 / (width - 1).(float), 2.0 / (height - 1).(float) };
+    shift      := Vector2.{ -1.0, -1.0 };
 
-    radiance := Vector3.{0, 0, 0};
-    pixel_id := (y * width + x) * spa * spa;
+    pixel_id   := (y * width + x) * spa * spa;
+    radiance   := Vector3.{0, 0, 0};
+    weight_sum := 0.0;
 
     for sy:0..spa-1
     {
         for sx:0..spa-1
         {
-            index   := (pixel_id + sy * spa + sx).(u32);
-            seed    := Hash((index + frame * 4111).(u32));
-            sampler := CreateSampler(index, seed);
+            index      := (pixel_id + sy * spa + sx).(u32);
+            seed       := Hash((index + frame * 4111).(u32));
+            sampler    := CreateSampler(index, seed);
 
-            uv       := SamplePixel(sampler);
-            subpixel := inv_spa * Vector2.{sx.(float), sy.(float)};
-            sample   := origin + subpixel;
+            subcorner  := Vector2.{sx.(float), sy.(float)};
+            uv         := SamplePixel(sampler);
+            subpixel   := inv_spa * (uv + subcorner);
+            sample     := origin + subpixel;
+            weight     := BlackmanHarris2D(subpixel - Vector2.{0.5, 0.5}, scene.camera.filter.radius);
 
             // To NDC
-            pixel  := sample * scale + shift;
+            pixel      := sample * scale + shift;
 
-            lens_u := SampleLens(sampler);
-            ray    := GenerateRay(pixel, scene.camera, lens_u);
-            radiance += TracePath(scene, ray, scene.config.max_depth, *sampler);
+            lens_u     := SampleLens(sampler);
+            ray        := GenerateRay(pixel, scene.camera, lens_u);
+            L          := TracePath(scene, ray, scene.config.max_depth, *sampler);
+            radiance   += weight * L;
+            weight_sum += weight;
         }
     }
 
-    radiance *= (inv_spa * inv_spa);
+    radiance /= weight_sum;
     return radiance;
 }
 
@@ -472,7 +521,7 @@ SpiralCoordinates :: (n: int) -> (x: int, y: int)
     return x, y;
 }
 
-render :: (scene: *Scene, weight: float, num_samples: u32, shared: *RenderShared)
+render :: (scene: *Scene, weight: float, num_samples: u32, frame: u32, shared: *RenderShared)
 {
     width  := scene.config.width;
     height := scene.config.height;
@@ -525,7 +574,7 @@ render :: (scene: *Scene, weight: float, num_samples: u32, shared: *RenderShared
         {
             for x:x0..x1
             {
-                color := RenderPixel(scene, x.(u32), y.(u32), num_samples, 0);
+                color := RenderPixel(scene, x.(u32), y.(u32), num_samples, frame);
 
                 //color := trace_pixel(scene, x.(s32), y.(s32), num_samples);
 
@@ -619,7 +668,7 @@ wavefront_raytrace_entry :: (thread: *Thread) -> s64
 
         t0 := current_time_monotonic();
 
-        render(scene, weight, num_samples, *context.lane.wavefront.shared);
+        render(scene, weight, num_samples, frame_index.(u32), *context.lane.wavefront.shared);
 
         t1 := current_time_monotonic();
 
@@ -1000,8 +1049,8 @@ load_scene :: (using scene: *Scene, type: SceneType)
             backdrop, backdrop_xform     := load_backdrop();
             internals, externals, shaderball_xform := load_shaderball();
 
-            add_box(scene, Matrix4_Identity, .{ -5, 10, -15 }, .{ -1, 10.01, -11 }, light);
-            add_box(scene, Matrix4_Identity, .{  1, 10, -15 }, .{  5, 10.01, -11 }, light);
+  //          add_box(scene, Matrix4_Identity, .{ -5, 10, -15 }, .{ -1, 10.01, -11 }, light);
+  //          add_box(scene, Matrix4_Identity, .{  1, 10, -15 }, .{  5, 10.01, -11 }, light);
 
             //add_sphere(scene, Vector3.{0, 2, 0}, 2, textured);
 
@@ -1305,7 +1354,7 @@ load_texture_from_file :: (path: string, desired_num_channels := 0) -> Texture2D
     }
 }
 
-init_scene :: (scene: *Scene, width: s32, height: s32, multisamples: u32 = 16, max_depth: s32 = 5)
+init_scene :: (scene: *Scene, width: s32, height: s32, multisamples: u32 = 16, max_depth: s32 = 5, filter := Filter.{})
 {
     create_lambertian_material(scene, create_constant_texture(.{0, 0, 0}));
     Simp.bitmap_alloc(*scene.bitmap, width, height, .RGBA8);
@@ -2023,6 +2072,7 @@ CommandLineArgs :: struct
     width       := 1920;
     height      := 1080;
     scene       := SceneType.material_test;
+    save_first  := false;
     num_threads := 0;
 }
 
@@ -2035,6 +2085,11 @@ main :: ()
     success, args := parse_arguments(CommandLineArgs);
 
     print("args = %\n", args);
+
+    if (args.save_first)
+    {
+        want_screenshot = true;
+    }
 
     // test code
   //  N :: 200000;
@@ -2070,7 +2125,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=256, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=64, max_depth=5);
     load_scene(*scene, args.scene);
     prepare_for_rendering(*scene);
 
