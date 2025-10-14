@@ -1,4 +1,4 @@
-#load "raytracer.jai";
+#load "intersect.jai";
 #load "bxdf.jai";
 
 RAYTRACE_BITMAP_WIDTH  :: 1920;
@@ -172,24 +172,6 @@ sample_uniform_disk_polar :: (u: Vector2) -> Vector2
     return sample;
 }
 
-ForwardTransform :: (xform: Matrix3, p: Vector3) -> Vector3
-{
-    r: Vector3 = ---;
-    r.x = xform._11 * p.x + xform._12 * p.y + xform._13 * p.z;
-    r.y = xform._21 * p.x + xform._22 * p.y + xform._23 * p.z;
-    r.z = xform._31 * p.x + xform._32 * p.y + xform._33 * p.z;
-    return r;
-}
-
-InverseTransform :: (xform: Matrix3, p: Vector3) -> Vector3
-{
-    r: Vector3 = ---;
-    r.x = xform._11 * p.x + xform._21 * p.y + xform._31 * p.z;
-    r.y = xform._12 * p.x + xform._22 * p.y + xform._32 * p.z;
-    r.z = xform._13 * p.x + xform._23 * p.y + xform._33 * p.z;
-    return r;
-}
-
 SampleMaterialSurfaceProperties :: (material: Material, hit: HitInfo) -> SurfaceProperties
 {
     surface: SurfaceProperties   = ---;
@@ -210,7 +192,7 @@ mix :: (x: $T, y: T, t: float) -> T
     return x * (1.0 - t) + y * t;
 }
 
-BSDFSample :: (V: Vector3, surface: SurfaceProperties, p: float, u: Vector2) -> BSDF_Sample
+BSDFSample :: (V: Vector3, surface: SurfaceProperties, p: float, u: Vector2) -> BxDF_Sample
 {
     P_m := surface.metalness;
     P_d := 1.0 - P_m;
@@ -231,14 +213,6 @@ BSDFSample :: (V: Vector3, surface: SurfaceProperties, p: float, u: Vector2) -> 
     }
 
     return .{};
-}
-
-Ray :: struct
-{
-    origin : Vector3;
-    tmin   : float;
-    dir    : Vector3;
-    tmax   : float;
 }
 
 EncodeSphericalUV :: (n: Vector3) -> Vector2
@@ -262,7 +236,26 @@ Ray_Type :: enum
     SECONDARY;
 }
 
-TracePath :: (scene: Scene, primary: Ray, depth: s32, sampler: *Sampler) -> Vector3
+// @todo: use Matrix4x3
+ForwardTransform :: (xform: Matrix3, p: Vector3) -> Vector3
+{
+    r: Vector3 = ---;
+    r.x = xform._11 * p.x + xform._12 * p.y + xform._13 * p.z;
+    r.y = xform._21 * p.x + xform._22 * p.y + xform._23 * p.z;
+    r.z = xform._31 * p.x + xform._32 * p.y + xform._33 * p.z;
+    return r;
+}
+
+InverseTransform :: (xform: Matrix3, p: Vector3) -> Vector3
+{
+    r: Vector3 = ---;
+    r.x = xform._11 * p.x + xform._21 * p.y + xform._31 * p.z;
+    r.y = xform._12 * p.x + xform._22 * p.y + xform._32 * p.z;
+    r.z = xform._13 * p.x + xform._23 * p.y + xform._33 * p.z;
+    return r;
+}
+
+TracePath :: (scene: Scene, primary: Ray, depth: s32, rng: Path_Random_State) -> Vector3
 {
     Lo       := Vector3.{0, 0, 0};
     Fr       := Vector3.{1, 1, 1};
@@ -299,8 +292,8 @@ TracePath :: (scene: Scene, primary: Ray, depth: s32, sampler: *Sampler) -> Vect
             material := scene.materials[hit.material_id];
             surface  := SampleMaterialSurfaceProperties(material, hit);
 
-            p   := SampleLobe(sampler);
-            u   := SampleL(sampler);
+            p   := GetRandom1D(rng, .LOBE);
+            u   := GetRandom2D(rng, .BxDF);
 
             V      := ForwardTransform(inv_TBN, -ray.dir);
             sample := BSDFSample(V, surface, p, u);
@@ -350,8 +343,6 @@ TracePath :: (scene: Scene, primary: Ray, depth: s32, sampler: *Sampler) -> Vect
             }
             break;
         }
-
-        NextBounce(sampler);
     }
 
     return Lo;
@@ -479,10 +470,23 @@ SampleInverseCDF :: (inv_CDF: []float, u: Vector2) -> Vector2
     return .{x, y};
 }
 
-RenderPixel :: (scene: Scene, x: u32, y: u32, spa: u32, frame: u32) -> Vector3
+// @todo: remove this
+HashTemp :: (x: u32, seed: u32) -> u32
 {
-    inv_spa  := 1.0 / spa.(float);
+    // Mix seed with x via rotate left
+    x ^= (seed << 23) | (seed >> 9);
 
+    // Finalizer from murmurhash3
+    x ^= x >> 16;
+    x *= 0x85ebca6b;
+    x ^= x >> 13;
+    x *= 0xc2b2ae35;
+    x ^= x >> 16;
+    return x;
+}
+
+RenderPixel :: (scene: Scene, x: u32, y: u32, spp: u32, frame: u32) -> Vector3
+{
     origin     := Vector2.{x.(float), y.(float)};
     width      := scene.config.width;
     height     := scene.config.height;
@@ -490,31 +494,27 @@ RenderPixel :: (scene: Scene, x: u32, y: u32, spa: u32, frame: u32) -> Vector3
     scale      := Vector2.{ 2.0 / (width - 1).(float), 2.0 / (height - 1).(float) };
     shift      := Vector2.{ -1.0, -1.0 };
 
-    pixel_id   := (y * width + x) * spa * spa;
     radiance   := Vector3.{0, 0, 0};
 
-    for sy:0..spa-1
+    seed       := HashTemp(frame, 7);
+
+    for 0..spp-1
     {
-        for sx:0..spa-1
-        {
-            index      := (pixel_id + sy * spa + sx).(u32);
-            seed       := Hash((index + frame * 4111).(u32));
-            sampler    := CreateSampler(index, seed);
+        rng        := CreatePathRandomState(x, y, it.(u32), spp, seed);
 
-            filter_uv  := SamplePixel(sampler);
-            subpixel   := SampleInverseCDF(scene.camera.filter_lut, filter_uv);
-            sample     := origin + subpixel;
+        filter_uv  := GetRandom2D(rng, .FILTER);
+        subpixel   := SampleInverseCDF(scene.camera.filter_lut, filter_uv);
+        sample     := origin + subpixel;
 
-            // To NDC
-            pixel      := sample * scale + shift;
+        // To NDC
+        pixel      := sample * scale + shift;
 
-            lens_uv    := SampleLens(sampler);
-            ray        := GenerateRay(pixel, scene.camera, lens_uv);
-            radiance   += TracePath(scene, ray, scene.config.max_depth, *sampler);
-        }
+        lens_uv    := GetRandom2D(rng, .LENS);
+        ray        := GenerateRay(pixel, scene.camera, lens_uv);
+        radiance   += TracePath(scene, ray, scene.config.max_depth, rng);
     }
 
-    radiance *= (inv_spa * inv_spa);
+    radiance /= spp.(float);
     return radiance;
 }
 
@@ -1657,7 +1657,7 @@ encode_morton3 :: (x: u32, y: u32, z: u32) -> u32
 
 SAHBuilder :: struct
 {
-    nodes     : []BVHNode;
+    nodes     : []BVH_Node;
     next_node : u32;
 }
 
@@ -1697,7 +1697,7 @@ build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi:
         }
     }
 
-    if max_delta <= EPSILON || half_area(node_bbox) <= EPSILON
+    if max_delta <= FLOAT_EPS || half_area(node_bbox) <= FLOAT_EPS
     {
         node.bbox                     = node_bbox;
         node.first_child_or_primitive = lo.(u32);
@@ -1837,7 +1837,7 @@ build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi:
     node.num_primitives           = 0;
 }
 
-build_bvh_binned_sah :: (nodes: []BVHNode, indices: []u32, bboxes: []Box3)
+build_bvh_binned_sah :: (nodes: []BVH_Node, indices: []u32, bboxes: []Box3)
 {
     assert(nodes.count == bboxes.count * 2 - 1 && indices.count == bboxes.count);
 
@@ -2027,7 +2027,7 @@ load_obj_model :: (path: string) -> PrimitiveMesh
     }
 
     map   : Table(AttrIndex, u32, given_hash_function=hash_attr_index, given_compare_function=compare_attr_index, REFILL_REMOVED=false);
-    attrs := NewArray(vertex_indices.count, Vertex3D ,,temp);
+    attrs := NewArray(vertex_indices.count, Vertex3 ,,temp);
 
     defer deinit(*map); // @todo: Use temporary memory
 
@@ -2160,7 +2160,7 @@ CommandLineArgs :: struct
     num_threads := 0;
 }
 
-#load "sampler.jai";
+#load "noise.jai";
 
 main :: ()
 {
@@ -2209,7 +2209,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=64, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=256, max_depth=5);
     load_scene(*scene, args.scene);
     prepare_for_rendering(*scene);
 
@@ -2258,16 +2258,19 @@ main :: ()
                     should_quit = true;
                 }
 
-                if it.key_pressed && it.key_code == #char "R"
-                {
-                    generate_new_random_test = true;
-                }
-                
                 if it.key_pressed && it.key_code == #char "T"
                 {
-                    info := type_info(Random_Method);
-                    random_test_method = ((random_test_method + 1).(int) % info.values.count).(Random_Method);
-                    generate_new_random_test = true;
+                    show_only_one = !show_only_one;
+                }
+
+                if it.key_pressed && it.key_code == #char "["
+                {
+                    sobol_prng_index = max(0, sobol_prng_index - 1);
+                }
+
+                if it.key_pressed && it.key_code == #char "]"
+                {
+                    sobol_prng_index = min(TEST_WIDTH * TEST_HEIGHT - 1, sobol_prng_index + 1);
                 }
 
                 if it.key_pressed && it.key_code == #char "H"
@@ -2367,7 +2370,7 @@ draw_line :: (a: Vector3, b: Vector3, color: Vector4, projection: Matrix4)
     Simp.immediate_quad(corners[0], corners[1], corners[2], corners[3], color, color, color, color);
 }
 
-draw_triangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, color: Vector4, pv: Matrix4, inv_transpose: Matrix4)
+draw_triangle :: (v0: Vertex3, v1: Vertex3, v2: Vertex3, color: Vector4, pv: Matrix4, inv_transpose: Matrix4)
 {
     light_dir := Vector3.{0, -1, 1};
 
@@ -2460,7 +2463,7 @@ draw_box :: (box: Box3, color: Vector4, projection: Matrix4)
     draw_line(box.vmin + dy + dz, box.vmin + dy + dz + dx, color, projection);
 }
 
-draw_bvh :: (root: int, nodes: []BVHNode, boxes: []Box3, indices: []u32, projection: Matrix4, depth: int)
+draw_bvh :: (root: int, nodes: []BVH_Node, boxes: []Box3, indices: []u32, projection: Matrix4, depth: int)
 {
     using node := nodes[root];
 
@@ -2487,165 +2490,102 @@ draw_bvh :: (root: int, nodes: []BVHNode, boxes: []Box3, indices: []u32, project
 
 //------------------------------------------------------------------------
 
-Random_Method :: enum
+SAMPLES_PER_AXIS   :: 8;
+SAMPLES_PER_PIXEL  :: SAMPLES_PER_AXIS * SAMPLES_PER_AXIS;
+TEST_WIDTH         :: 4;
+TEST_HEIGHT        :: 4;
+
+random_samples  : [TEST_WIDTH * TEST_HEIGHT][SAMPLES_PER_PIXEL]Vector2;
+initted_random_samples := false;
+show_only_one := true;
+
+sobol_prng_index        := 0;
+
+InitializeRandomSamples :: ()
 {
-    PCG;
-    STRATIFIED;
-    SOBOL_SHUFFLED_SCRAMBLED;
-    SOBOL_SHUFFLED_SCRAMBLED_STRATIFIED;
-}
+    seed : u32 = HashTemp(7777, 1); // @todo hash frame number
 
-RANDOM_TEST_SIZE :: 800;
-RANDOM_TEST_STEP :: 20;
+    spp := SAMPLES_PER_PIXEL;
 
-random_values: [..]Vector2;
-generate_new_random_test := true;
-random_test_method := Random_Method.PCG;
-
-HashCombine :: inline (seed: u32, v: u32) -> u32
-{
-    return seed ^ (v + (seed << 6) + (seed >> 2));
-}
-
-random_test_get_random :: (x: float, y: float, index: u32, seed: u32) -> Vector2
-{
-    if #complete random_test_method == 
+    for y:0..TEST_HEIGHT-1
     {
-        case .PCG;
-            u := random_get_zero_to_one();
-            v := random_get_zero_to_one();
-
-            px := u * RANDOM_TEST_SIZE;
-            py := v * RANDOM_TEST_SIZE;
-
-            return .{px, py};
-
-        case .STRATIFIED;
-            u := random_get_zero_to_one();
-            v := random_get_zero_to_one();
-
-            x += u * RANDOM_TEST_STEP;
-            y += v * RANDOM_TEST_STEP;
-
-            return Vector2.{x, y};
-
-        case .SOBOL_SHUFFLED_SCRAMBLED;
-            u := SampleShuffledScrambledSobol(index, seed, 0);
-            v := SampleShuffledScrambledSobol(index, seed, 1);
-
-            px := u * RANDOM_TEST_SIZE;
-            py := v * RANDOM_TEST_SIZE;
-
-            return .{px, py};
-
-        case .SOBOL_SHUFFLED_SCRAMBLED_STRATIFIED;
-            u := SampleShuffledScrambledSobol(index, seed, 0);
-            v := SampleShuffledScrambledSobol(index, seed, 1);
-
-            x += u * RANDOM_TEST_STEP;
-            y += v * RANDOM_TEST_STEP;
-
-            return Vector2.{x, y};
-    }
-}
-
-Hash :: (x: u32) -> u32
-{
-    // finalizer from murmurhash3
-    x ^= x >> 16;
-    x *= 0x85ebca6b;
-    x ^= x >> 13;
-    x *= 0xc2b2ae35;
-    x ^= x >> 16;
-    return x;
-}
-
-init_random_test_values :: ()
-{
-    array_reset(*random_values);
-
-    y := 0;
-    while y < RANDOM_TEST_SIZE
-    {
-        defer y += RANDOM_TEST_STEP;
-
-        x := 0;
-        while x < RANDOM_TEST_SIZE
+        for x:0..TEST_WIDTH-1
         {
-            defer x += RANDOM_TEST_STEP;
-
-            index := (y * RANDOM_TEST_SIZE + x).(u32);
-
-            for 0..1
+            for 0..spp-1
             {
-                seed  := Hash((index * 2 + it).(u32));
-                p := random_test_get_random(x.(float), y.(float), index, seed);
-                array_add(*random_values, p);
+                rng := CreatePathRandomState(x.(u32), y.(u32), it.(u32), spp.(u32), seed);
+                v   := GetRandom2D(rng, .FILTER);
+                random_samples[y * TEST_WIDTH + x][it] = v;
             }
         }
     }
-
-    generate_new_random_test = false;
 }
 
-draw_random_test :: ()
+DrawPixel :: (center: Vector2, color: Vector4)
 {
-    if generate_new_random_test
-    {
-        init_random_test_values();
-    }
-
-    color := Vector4.{1, 1, 0, 1};
-    gray  := Vector4.{0.5, 0.5, 0.5, 1};
-
-    center: Vector2;
-    center.x = render_width.(float) / 2;
-    center.y = render_height.(float) / 2;
-
     rect_size := 4.0;
 
     w := Vector2.{rect_size / 2, 0};
     h := Vector2.{0, rect_size / 2};
 
-    bw := w / 2;
-    bh := h / 2;
+    p0 := center - w - h;
+    p1 := center + w - h;
+    p2 := center + w + h;
+    p3 := center - w + h;
+    Simp.immediate_quad(p0, p1, p2, p3, color, color, color, color);
+}
 
-    corner := center;
-    corner.x -= RANDOM_TEST_SIZE/2;
-    corner.y -= RANDOM_TEST_SIZE/2;
-    
-    y := 0;
-    while y <= RANDOM_TEST_SIZE
+DrawGridRandom :: (samples: []Vector2, corner: Vector2, size: float, color: Vector4)
+{
+    for samples
     {
-        defer y += RANDOM_TEST_STEP;
+        DrawPixel(corner + it * size, color);
+    }
+}
 
-        x := 0;
-        while x <= RANDOM_TEST_SIZE
+draw_random_test :: ()
+{
+    if !initted_random_samples
+    {
+        InitializeRandomSamples();
+        initted_random_samples = false;
+    }
+
+    size := 800.0;
+
+    x    := 0.5 * (render_width.(float) - size);
+    y    := 0.5 * (render_height.(float) - size);
+
+    corner := Vector2.{x, y};
+    
+    n_grid   := (size / SAMPLES_PER_AXIS).(int);
+    grey     := Vector4.{0.5, 0.5, 0.5, 1};
+
+    for y:0..SAMPLES_PER_AXIS
+    {
+        for x:0..SAMPLES_PER_AXIS
         {
-            defer x += RANDOM_TEST_STEP;
-
-            px := x.(float);
-            py := y.(float);
-
-            p := Vector2.{px, py};
-
-            p0 := corner + p - bw - bh;
-            p1 := corner + p + bw - bh;
-            p2 := corner + p + bw + bh;
-            p3 := corner + p - bw + bh;
-
-            Simp.immediate_quad(p0, p1, p2, p3, gray, gray, gray, gray);
+            offset := Vector2.{y.(float) * n_grid, x.(float) * n_grid};
+            DrawPixel(corner + offset, grey);
         }
     }
 
-    for random_values
+    if (show_only_one)
     {
-        p0 := corner + it - w - h;
-        p1 := corner + it + w - h;
-        p2 := corner + it + w + h;
-        p3 := corner + it - w + h;
+        index := sobol_prng_index % (TEST_WIDTH * TEST_HEIGHT);
+        DrawGridRandom(random_samples[index], corner, size, Vector4.{1, 1, 0, 1});
+    }
+    else
+    {
+        color_a := Vector4.{1, 1, 0, 1};
+        color_b := Vector4.{0, 0, 0, 1};
 
-        Simp.immediate_quad(p0, p1, p2, p3, color, color, color, color);
+        for 0..(TEST_WIDTH * TEST_HEIGHT)-1
+        {
+            index := (sobol_prng_index + it) % (TEST_WIDTH * TEST_HEIGHT);
+            alpha := it.(float) / ((TEST_WIDTH * TEST_HEIGHT)-1);
+            DrawGridRandom(random_samples[index], corner, size, lerp(color_a, color_b, alpha));
+        }
     }
 }
 
@@ -2718,8 +2658,8 @@ draw_one_frame :: (wnd: Window_Type, map: *Simp.Texture, scene: Scene, num_threa
     }
     else
     {
-        text := tprint("Frame: %; Last frame render time: %ms; Threads: %; Runtime: %; Random Test Method: %",
-                       frame_index, last_frame_render_time_ms, num_threads, total_runtime, random_test_method);
+        text := tprint("Frame: %; Last frame render time: %ms; Threads: %; Runtime: %; Sobol Index: %",
+                       frame_index, last_frame_render_time_ms, num_threads, total_runtime, sobol_prng_index);
         Simp.draw_text(debug_font, 10, 10, text);
     }
 

@@ -1,5 +1,5 @@
 
-BSDF_Sample :: struct
+BxDF_Sample :: struct
 {
     Fr  : Vector3;
     L   : Vector3;
@@ -7,10 +7,6 @@ BSDF_Sample :: struct
 }
 
 #scope_file
-
-INV_PI    :: 1.0 / PI;
-PI_OVER_4 :: PI / 4;
-PI_OVER_2 :: PI / 2;
 
 //------------------------------------------------------------------------
 // Diffuse Model
@@ -133,7 +129,7 @@ DiffusePDF :: (V: Vector3, L: Vector3, roughness: float) -> float
     return P_u * pdf_u + P_c * pdf_c;
 }
 
-DiffuseSample :: (V: Vector3, color: Vector3, roughness: float, u1: float, u2: float) -> BSDF_Sample
+DiffuseSample :: (V: Vector3, color: Vector3, roughness: float, u1: float, u2: float) -> BxDF_Sample
 {
     NoV   := V.z;
     P_u   := pow(roughness, 0.1) * (0.162925 + NoV * (-0.372058 + (0.538233 - 0.290822 * NoV) * NoV));
@@ -341,7 +337,7 @@ MetalPDF :: (V: Vector3, L: Vector3, roughness: float, anisotropic: float) -> fl
     }
 }
 
-MetalSample :: (V: Vector3, Fo: Vector3, specular_color: Vector3, roughness: float, anisotropic: float, u1: float, u2: float) -> BSDF_Sample
+MetalSample :: (V: Vector3, Fo: Vector3, specular_color: Vector3, roughness: float, anisotropic: float, u1: float, u2: float) -> BxDF_Sample
 {
     if (roughness < 1.0e-3)
     {

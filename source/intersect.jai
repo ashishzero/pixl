@@ -1,14 +1,5 @@
 #load "primitives.jai";
 
-MaterialID  :: #type,distinct u32;
-PrimitiveID :: #type,distinct u32;
-
-Transform :: struct
-{
-    forward: Matrix4;
-    inverse: Matrix4;
-}
-
 PrimitiveSphere :: struct
 {
     radius: float;
@@ -28,7 +19,7 @@ PrimitiveBox :: struct
 PrimitiveMesh :: struct
 {
     indices: []u32;
-    vertices: []Vertex3D;
+    vertices: []Vertex3;
     blas: Acceleration_Structure;
 }
 
@@ -111,52 +102,6 @@ Material :: struct
     //sheen_tint      : Texture2D(float);
     //clearcoat       : Texture2D(float);
     //clearcoat_gloss : Texture2D(float);    
-}
-
-BVHNode :: struct
-{
-    bbox                     : Box3;
-    first_child_or_primitive : u32;
-    num_primitives           : u32;
-}
-
-FILTER_SIZE :: 1023;
-
-Filter_Type :: enum
-{
-    BOX;
-    BLACKMAN_HARRIS;
-}
-
-Filter :: struct
-{
-    type  := Filter_Type.BLACKMAN_HARRIS;
-    width := 1.5;
-}
-
-Camera :: struct
-{
-    position           : Vector3;
-    orientation        : Quaternion;
-    fov                := 0.17;
-    aspect_ratio       := 1.0;
-    lens_focal_length  := 15.0;
-    lens_radius        := 0.0;
-    filter             : Filter;
-
-    // constructed from above parameters
-    xform              : Matrix4;
-    dxdu               : Vector3;
-    dydv               : Vector3;
-    filter_lut         : [FILTER_SIZE]float;
-}
-
-CameraTransform :: struct
-{
-    view           : Matrix4;
-    inv_view       : Matrix4;
-    projection     : Matrix4;
-    inv_projection : Matrix4;
 }
 
 PathTracerConfig :: struct
@@ -268,7 +213,7 @@ IntersectPrimitive :: (primitive: Primitive, world_origin: Vector3, world_dir: V
 
 #scope_export
 
-IntersectBVH :: (nodes: []BVHNode, primitives: []Primitive, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> HitInfo, int
+IntersectBVH :: (nodes: []BVH_Node, primitives: []Primitive, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> HitInfo, int
 {
     visited := 0;
     info := HitInfo.{ t = -1 };

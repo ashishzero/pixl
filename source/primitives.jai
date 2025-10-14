@@ -1,16 +1,4 @@
-
-EPSILON :: 1.192092896e-07;
-
-Box3 :: struct
-{
-    vmin: Vector3;
-    vmax: Vector3;
-}
-
-Box3_Empty :: Box3.{
-    vmin = .{FLOAT32_INFINITY, FLOAT32_INFINITY, FLOAT32_INFINITY},
-    vmax = .{-FLOAT32_INFINITY, -FLOAT32_INFINITY, -FLOAT32_INFINITY}
-};
+#load "common.jai";
 
 // @todo: add support for plane
 Primitive_Type :: enum u32
@@ -19,23 +7,6 @@ Primitive_Type :: enum u32
     DISK   :: 2;
     BOX    :: 3;
     MESH   :: 4;
-}
-
-Vertex3D :: struct
-{
-    p  : Vector3;
-    uv : Vector2;
-    n  : Vector3;
-    t  : Vector3;
-    b  : Vector3;
-}
-
-Acceleration_Structure :: struct
-{
-    // @todo: Make these array view
-    nodes      : [..]BVHNode;
-    indices    : [..]u32;
-    bboxes     : [..]Box3; // @todo: Not needed remove!!
 }
 
 Intersect_Info :: struct
@@ -234,7 +205,7 @@ IntersectDisk :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, tma
     return info;
 }
 
-IntersectTriangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
+IntersectTriangle :: (v0: Vertex3, v1: Vertex3, v2: Vertex3, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
 {
     // https://www.graphics.cornell.edu/pubs/1997/MT97.pdf
 
@@ -246,7 +217,7 @@ IntersectTriangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3,
 
     det := dot(edge1, pvec);
 
-    if (abs(det) < EPSILON)
+    if (abs(det) < FLOAT_EPS)
         return info;
     inv_det := 1.0 / det;
 
@@ -285,7 +256,7 @@ IntersectTriangle :: (v0: Vertex3D, v1: Vertex3D, v2: Vertex3D, origin: Vector3,
 
 // @todo: cleanup/copynpaste from intersect_bvh
 
-IntersectBLAS :: (indices: []u32, vertices: []Vertex3D, blas: Acceleration_Structure, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
+IntersectBLAS :: (indices: []u32, vertices: []Vertex3, blas: Acceleration_Structure, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
 {
     info := Intersect_Info.{ t = -1 };
 
@@ -342,7 +313,7 @@ IntersectBLAS :: (indices: []u32, vertices: []Vertex3D, blas: Acceleration_Struc
     return info;
 }
 
-IntersectMesh :: (indices: []u32, vertices: []Vertex3D, blas: Acceleration_Structure, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
+IntersectMesh :: (indices: []u32, vertices: []Vertex3, blas: Acceleration_Structure, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
 {
     info := IntersectBLAS(indices, vertices, blas, origin, dir, tmin, tmax);
     return info;
