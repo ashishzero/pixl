@@ -1,4 +1,6 @@
 
+NOISE_PCG :: true;
+
 Path_Random_State :: struct
 {
     index : u32;
@@ -23,38 +25,73 @@ CreatePathRandomState :: (x: u32, y: u32, sample: u32, spp: u32, seed: u32) -> P
     return .{index.(u32), seed};
 }
 
-GetRandom1D :: (rng: Path_Random_State, dim: Path_Dimension) -> float
+#if NOISE_PCG
 {
-    seed := rng.seed ^ HashDimension(dim);
-    x := SampleScrambledSobol(rng.index, seed ^ 0xed5ad4bb, dim.(u32));
-    return x;
-}
+    GetRandom1D :: (rng: Path_Random_State, dim: Path_Dimension) -> float
+    {
+        x := random_get_zero_to_one_open();
+        return x;
+    }
 
-GetRandom2D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector2
-{
-    seed := rng.seed ^ HashDimension(dim);
-    x := SampleScrambledSobol(rng.index, seed ^ 0xac4c1b51, dim.(u32) + 0);
-    y := SampleScrambledSobol(rng.index, seed ^ 0x31848bab, dim.(u32) + 1);
-    return .{x, y};
-}
+    GetRandom2D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector2
+    {
+        x := random_get_zero_to_one_open();
+        y := random_get_zero_to_one_open();
+        return .{x, y};
+    }
 
-GetRandom3D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector3
-{
-    seed := rng.seed ^ HashDimension(dim);
-    x := SampleScrambledSobol(rng.index, seed ^ 0x846ca68b, dim.(u32) + 0);
-    y := SampleScrambledSobol(rng.index, seed ^ 0x1d69e2a5, dim.(u32) + 1);
-    z := SampleScrambledSobol(rng.index, seed ^ 0x43021123, dim.(u32) + 2);
-    return .{x, y, z};
-}
+    GetRandom3D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector3
+    {
+        x := random_get_zero_to_one_open();
+        y := random_get_zero_to_one_open();
+        z := random_get_zero_to_one_open();
+        return .{x, y, z};
+    }
 
-GetRandom4D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector4
+    GetRandom4D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector4
+    {
+        x := random_get_zero_to_one_open();
+        y := random_get_zero_to_one_open();
+        z := random_get_zero_to_one_open();
+        w := random_get_zero_to_one_open();
+        return .{x, y, z, w};
+    }
+}
+else
 {
-    seed := rng.seed ^ HashDimension(dim);
-    x := SampleScrambledSobol(rng.index, seed ^ 0x297a2d39, dim.(u32) + 0);
-    y := SampleScrambledSobol(rng.index, seed ^ 0x2c1b3c6d, dim.(u32) + 1);
-    z := SampleScrambledSobol(rng.index, seed ^ 0x1eca7d79, dim.(u32) + 2);
-    w := SampleScrambledSobol(rng.index, seed ^ 0x10afe4e7, dim.(u32) + 2);
-    return .{x, y, z, w};
+    GetRandom1D :: (rng: Path_Random_State, dim: Path_Dimension) -> float
+    {
+        seed := rng.seed ^ HashDimension(dim);
+        x := SampleScrambledSobol(rng.index, seed ^ 0xed5ad4bb, dim.(u32));
+        return x;
+    }
+
+    GetRandom2D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector2
+    {
+        seed := rng.seed ^ HashDimension(dim);
+        x := SampleScrambledSobol(rng.index, seed ^ 0xac4c1b51, dim.(u32) + 0);
+        y := SampleScrambledSobol(rng.index, seed ^ 0x31848bab, dim.(u32) + 1);
+        return .{x, y};
+    }
+
+    GetRandom3D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector3
+    {
+        seed := rng.seed ^ HashDimension(dim);
+        x := SampleScrambledSobol(rng.index, seed ^ 0x846ca68b, dim.(u32) + 0);
+        y := SampleScrambledSobol(rng.index, seed ^ 0x1d69e2a5, dim.(u32) + 1);
+        z := SampleScrambledSobol(rng.index, seed ^ 0x43021123, dim.(u32) + 2);
+        return .{x, y, z};
+    }
+
+    GetRandom4D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector4
+    {
+        seed := rng.seed ^ HashDimension(dim);
+        x := SampleScrambledSobol(rng.index, seed ^ 0x297a2d39, dim.(u32) + 0);
+        y := SampleScrambledSobol(rng.index, seed ^ 0x2c1b3c6d, dim.(u32) + 1);
+        z := SampleScrambledSobol(rng.index, seed ^ 0x1eca7d79, dim.(u32) + 2);
+        w := SampleScrambledSobol(rng.index, seed ^ 0x10afe4e7, dim.(u32) + 2);
+        return .{x, y, z, w};
+    }
 }
 
 #scope_file
