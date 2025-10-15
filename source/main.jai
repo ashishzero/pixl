@@ -485,7 +485,7 @@ HashTemp :: (x: u32, seed: u32) -> u32
     return x;
 }
 
-RenderPixel :: (scene: Scene, x: u32, y: u32, spp: u32, frame: u32) -> Vector3
+RenderPixel :: (scene: Scene, x: u32, y: u32, frame: u32) -> Vector3
 {
     origin     := Vector2.{x.(float), y.(float)};
     width      := scene.config.width;
@@ -495,6 +495,8 @@ RenderPixel :: (scene: Scene, x: u32, y: u32, spp: u32, frame: u32) -> Vector3
     shift      := Vector2.{ -1.0, -1.0 };
 
     radiance   := Vector3.{0, 0, 0};
+
+    spp        := scene.config.multisamples;
 
     seed       := HashTemp(frame, 7);
 
@@ -594,7 +596,7 @@ SpiralCoordinates :: (n: int) -> (x: int, y: int)
     return x, y;
 }
 
-render :: (scene: *Scene, weight: float, num_samples: u32, frame: u32, shared: *RenderShared)
+render :: (scene: *Scene, weight: float, frame: u32, shared: *RenderShared)
 {
     width  := scene.config.width;
     height := scene.config.height;
@@ -647,7 +649,7 @@ render :: (scene: *Scene, weight: float, num_samples: u32, frame: u32, shared: *
         {
             for x:x0..x1
             {
-                color := RenderPixel(scene, x.(u32), y.(u32), num_samples, frame);
+                color := RenderPixel(scene, x.(u32), y.(u32), frame);
 
                 //color := trace_pixel(scene, x.(s32), y.(s32), num_samples);
 
@@ -726,8 +728,6 @@ wavefront_raytrace_entry :: (thread: *Thread) -> s64
     width  := scene.config.width;
     height := scene.config.height;
 
-    num_samples := sqrt(scene.config.multisamples.(float32)).(u32);
-
     screenshot_index := 0;
 
     if context.lane.index == 0
@@ -741,7 +741,7 @@ wavefront_raytrace_entry :: (thread: *Thread) -> s64
 
         t0 := current_time_monotonic();
 
-        render(scene, weight, num_samples, frame_index.(u32), *context.lane.wavefront.shared);
+        render(scene, weight, frame_index.(u32), *context.lane.wavefront.shared);
 
         t1 := current_time_monotonic();
 
@@ -1095,7 +1095,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
             light := create_emission_material(scene, create_constant_texture(.{40, 40, 40}));
 
             environment = envtex;
-            exposure    = 2;
+            exposure    = 1;
 
             id, material        := create_material(scene);
             //material.color       = create_constant_texture(.{0.827, 0.686, 0.216});
@@ -2209,7 +2209,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=256, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=8, max_depth=5);
     load_scene(*scene, args.scene);
     prepare_for_rendering(*scene);
 
