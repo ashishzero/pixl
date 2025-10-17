@@ -255,7 +255,7 @@ InverseTransform :: (xform: Matrix3, p: Vector3) -> Vector3
     return r;
 }
 
-TracePath :: (scene: Scene, primary: Ray, depth: s32, rng: Path_Random_State) -> Vector3
+TracePath :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State) -> Vector3
 {
     Lo       := Vector3.{0, 0, 0};
     Fr       := Vector3.{1, 1, 1};
@@ -291,6 +291,8 @@ TracePath :: (scene: Scene, primary: Ray, depth: s32, rng: Path_Random_State) ->
             // Sample
             material := scene.materials[hit.material_id];
             surface  := SampleMaterialSurfaceProperties(material, hit);
+
+            NextBounce(rng);
 
             p   := GetRandom1D(rng, .LOBE);
             u   := GetRandom2D(rng, .BxDF);
@@ -513,7 +515,7 @@ RenderPixel :: (scene: Scene, x: u32, y: u32, frame: u32) -> Vector3
 
         lens_uv    := GetRandom2D(rng, .LENS);
         ray        := GenerateRay(pixel, scene.camera, lens_uv);
-        radiance   += TracePath(scene, ray, scene.config.max_depth, rng);
+        radiance   += TracePath(scene, ray, scene.config.max_depth, *rng);
     }
 
     radiance /= spp.(float);
@@ -1122,8 +1124,8 @@ load_scene :: (using scene: *Scene, type: SceneType)
             backdrop, backdrop_xform     := load_backdrop();
             internals, externals, shaderball_xform := load_shaderball();
 
-  //          add_box(scene, Matrix4_Identity, .{ -5, 10, -15 }, .{ -1, 10.01, -11 }, light);
-  //          add_box(scene, Matrix4_Identity, .{  1, 10, -15 }, .{  5, 10.01, -11 }, light);
+            add_box(scene, Matrix4_Identity, .{ -5, 10, -15 }, .{ -1, 10.01, -11 }, light);
+            add_box(scene, Matrix4_Identity, .{  1, 10, -15 }, .{  5, 10.01, -11 }, light);
 
             //add_sphere(scene, Vector3.{0, 2, 0}, 2, textured);
 
@@ -2216,7 +2218,7 @@ main :: ()
     wavefront: Wavefront;
 
     init(*wavefront, *scene, max_threads = args.num_threads.(s32));
-    start(*wavefront);
+    //start(*wavefront);
 
     Simp.prepare_window(wnd, wanted_msaa = MSAA);
 
@@ -2256,21 +2258,6 @@ main :: ()
                 if it.key_pressed && it.key_code == .ESCAPE
                 {
                     should_quit = true;
-                }
-
-                if it.key_pressed && it.key_code == #char "T"
-                {
-                    show_only_one = !show_only_one;
-                }
-
-                if it.key_pressed && it.key_code == #char "["
-                {
-                    sobol_prng_index = max(0, sobol_prng_index - 1);
-                }
-
-                if it.key_pressed && it.key_code == #char "]"
-                {
-                    sobol_prng_index = min(TEST_WIDTH * TEST_HEIGHT - 1, sobol_prng_index + 1);
                 }
 
                 if it.key_pressed && it.key_code == #char "H"
@@ -2490,44 +2477,48 @@ draw_bvh :: (root: int, nodes: []BVH_Node, boxes: []Box3, indices: []u32, projec
 
 //------------------------------------------------------------------------
 
-SAMPLES_PER_AXIS   :: 8;
-SAMPLES_PER_PIXEL  :: SAMPLES_PER_AXIS * SAMPLES_PER_AXIS;
-TEST_WIDTH         :: 4;
-TEST_HEIGHT        :: 4;
+SAMPLES_PER_AXIS   :: 128;
+NUM_RANDOM_SAMPLES :: SAMPLES_PER_AXIS * SAMPLES_PER_AXIS;
 
-random_samples  : [TEST_WIDTH * TEST_HEIGHT][SAMPLES_PER_PIXEL]Vector2;
+pcg_random_samples:      [NUM_RANDOM_SAMPLES]Vector2;
+sobol_random_samples:    [NUM_RANDOM_SAMPLES]Vector2;
+sobol_ss_random_samples: [NUM_RANDOM_SAMPLES]Vector2;
+
 initted_random_samples := false;
-show_only_one := true;
-
-sobol_prng_index        := 0;
 
 InitializeRandomSamples :: ()
 {
-    seed : u32 = HashTemp(7777, 1); // @todo hash frame number
-
-    spp := SAMPLES_PER_PIXEL;
-
-    for y:0..TEST_HEIGHT-1
+    for * pcg_random_samples
     {
-        for x:0..TEST_WIDTH-1
-        {
-            for 0..spp-1
-            {
-                rng := CreatePathRandomState(x.(u32), y.(u32), it.(u32), spp.(u32), seed);
-                v   := GetRandom2D(rng, .FILTER);
-                random_samples[y * TEST_WIDTH + x][it] = v;
-            }
-        }
+        x := random_get_zero_to_one_open();
+        y := random_get_zero_to_one_open();
+        it.* = .{x, y};
+    }
+
+    seed : u32 = Hash(7777);
+
+    for * sobol_random_samples
+    {
+        x := SampleScrambledSobol(it_index.(u32), seed, 0);
+        y := SampleScrambledSobol(it_index.(u32), seed, 1);
+        it.* = .{x, y};
+    }
+
+    for * sobol_ss_random_samples
+    {
+        x   := it_index % SAMPLES_PER_AXIS;
+        y   := it_index / SAMPLES_PER_AXIS;
+        rng := CreatePathRandomState(x.(u32), y.(u32), 0, 1, seed);
+        p   := GetRandom2D(rng, .FILTER);
+        it.* = p;
     }
 }
 
-DrawPixel :: (center: Vector2, color: Vector4)
+DrawRect :: (corner: Vector2, width: float, height: float, color: Vector4)
 {
-    rect_size := 4.0;
-
-    w := Vector2.{rect_size / 2, 0};
-    h := Vector2.{0, rect_size / 2};
-
+    w  := Vector2.{width / 2, 0};
+    h  := Vector2.{0, height / 2};
+    center := corner + w + h;
     p0 := center - w - h;
     p1 := center + w - h;
     p2 := center + w + h;
@@ -2535,58 +2526,77 @@ DrawPixel :: (center: Vector2, color: Vector4)
     Simp.immediate_quad(p0, p1, p2, p3, color, color, color, color);
 }
 
-DrawGridRandom :: (samples: []Vector2, corner: Vector2, size: float, color: Vector4)
-{
-    for samples
-    {
-        DrawPixel(corner + it * size, color);
-    }
-}
-
 draw_random_test :: ()
 {
     if !initted_random_samples
     {
         InitializeRandomSamples();
-        initted_random_samples = false;
+        initted_random_samples = true;
     }
 
-    size := 800.0;
+    size := 600.0;
+    gap  := 50.0;
 
-    x    := 0.5 * (render_width.(float) - size);
+    x    := 0.5 * (render_width.(float) - size * 3 - 2 * gap);
     y    := 0.5 * (render_height.(float) - size);
 
     corner := Vector2.{x, y};
-    
-    n_grid   := (size / SAMPLES_PER_AXIS).(int);
-    grey     := Vector4.{0.5, 0.5, 0.5, 1};
 
-    for y:0..SAMPLES_PER_AXIS
+    DrawRect(corner, size, size, .{1, 1, 1, 1});
+
+    for pcg_random_samples
     {
-        for x:0..SAMPLES_PER_AXIS
-        {
-            offset := Vector2.{y.(float) * n_grid, x.(float) * n_grid};
-            DrawPixel(corner + offset, grey);
-        }
+        p := corner + it * size;
+        DrawRect(p, 2, 2, .{0, 0, 0, 1});
     }
 
-    if (show_only_one)
-    {
-        index := sobol_prng_index % (TEST_WIDTH * TEST_HEIGHT);
-        DrawGridRandom(random_samples[index], corner, size, Vector4.{1, 1, 0, 1});
-    }
-    else
-    {
-        color_a := Vector4.{1, 1, 0, 1};
-        color_b := Vector4.{0, 0, 0, 1};
+    corner.x += size + gap;
+    DrawRect(corner, size, size, .{1, 1, 1, 1});
 
-        for 0..(TEST_WIDTH * TEST_HEIGHT)-1
-        {
-            index := (sobol_prng_index + it) % (TEST_WIDTH * TEST_HEIGHT);
-            alpha := it.(float) / ((TEST_WIDTH * TEST_HEIGHT)-1);
-            DrawGridRandom(random_samples[index], corner, size, lerp(color_a, color_b, alpha));
-        }
+    for sobol_random_samples
+    {
+        p := corner + it * size;
+        DrawRect(p, 2, 2, .{0, 0, 0, 1});
     }
+
+    corner.x += size + gap;
+    DrawRect(corner, size, size, .{1, 1, 1, 1});
+
+    for sobol_ss_random_samples
+    {
+        p := corner + it * size;
+        DrawRect(p, 2, 2, .{0, 0, 0, 1});
+    }
+
+  //  n_grid   := (size / SAMPLES_PER_AXIS).(int);
+  //  grey     := Vector4.{0.5, 0.5, 0.5, 1};
+
+  //  for y:0..SAMPLES_PER_AXIS
+  //  {
+  //      for x:0..SAMPLES_PER_AXIS
+  //      {
+  //          offset := Vector2.{y.(float) * n_grid, x.(float) * n_grid};
+  //          DrawPixel(corner + offset, grey);
+  //      }
+  //  }
+
+  //  if (show_only_one)
+  //  {
+  //      index := sobol_prng_index % (TEST_WIDTH * TEST_HEIGHT);
+  //      DrawGridRandom(random_samples[index], corner, size, Vector4.{1, 1, 0, 1});
+  //  }
+  //  else
+  //  {
+  //      color_a := Vector4.{1, 1, 0, 1};
+  //      color_b := Vector4.{0, 0, 0, 1};
+
+  //      for 0..(TEST_WIDTH * TEST_HEIGHT)-1
+  //      {
+  //          index := (sobol_prng_index + it) % (TEST_WIDTH * TEST_HEIGHT);
+  //          alpha := it.(float) / ((TEST_WIDTH * TEST_HEIGHT)-1);
+  //          DrawGridRandom(random_samples[index], corner, size, lerp(color_a, color_b, alpha));
+  //      }
+  //  }
 }
 
 draw_one_frame :: (wnd: Window_Type, map: *Simp.Texture, scene: Scene, num_threads: int)
@@ -2623,7 +2633,7 @@ draw_one_frame :: (wnd: Window_Type, map: *Simp.Texture, scene: Scene, num_threa
     Simp.set_shader_for_color();
 
     {
-        //draw_random_test();
+        draw_random_test();
     }
 
     if show_debug_bvh
@@ -2658,8 +2668,8 @@ draw_one_frame :: (wnd: Window_Type, map: *Simp.Texture, scene: Scene, num_threa
     }
     else
     {
-        text := tprint("Frame: %; Last frame render time: %ms; Threads: %; Runtime: %; Sobol Index: %",
-                       frame_index, last_frame_render_time_ms, num_threads, total_runtime, sobol_prng_index);
+        text := tprint("Frame: %; Last frame render time: %ms; Threads: %; Runtime: %;",
+                       frame_index, last_frame_render_time_ms, num_threads, total_runtime);
         Simp.draw_text(debug_font, 10, 10, text);
     }
 
