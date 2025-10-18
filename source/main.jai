@@ -487,6 +487,24 @@ HashTemp :: (x: u32, seed: u32) -> u32
     return x;
 }
 
+IsPower2 :: (v: u32) -> bool
+{
+    return v && !(v & (v - 1));
+}
+
+NextPowerOf2 :: (n: u32) -> u32
+{
+    if (IsPower2(n))
+        return n;
+    count : u32 = 0;
+    while (n != 0)
+    {
+        n >>= 1;
+        count += 1;
+    }
+    return (1 << count).(u32);
+}
+
 RenderPixel :: (scene: Scene, x: u32, y: u32, frame: u32) -> Vector3
 {
     origin     := Vector2.{x.(float), y.(float)};
@@ -498,7 +516,7 @@ RenderPixel :: (scene: Scene, x: u32, y: u32, frame: u32) -> Vector3
 
     radiance   := Vector3.{0, 0, 0};
 
-    spp        := scene.config.multisamples;
+    spp        := NextPowerOf2(scene.config.multisamples);
 
     seed       := HashTemp(frame, 7);
 
@@ -2211,14 +2229,14 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=8, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=32, max_depth=5);
     load_scene(*scene, args.scene);
     prepare_for_rendering(*scene);
 
     wavefront: Wavefront;
 
     init(*wavefront, *scene, max_threads = args.num_threads.(s32));
-    //start(*wavefront);
+    start(*wavefront);
 
     Simp.prepare_window(wnd, wanted_msaa = MSAA);
 
@@ -2495,12 +2513,12 @@ InitializeRandomSamples :: ()
         it.* = .{x, y};
     }
 
-    seed : u32 = Hash(7777);
+    seed : u32 = 7777;
 
     for * sobol_random_samples
     {
-        x := SampleScrambledSobol(it_index.(u32), seed, 0);
-        y := SampleScrambledSobol(it_index.(u32), seed, 1);
+        x := SampleSobol(it_index.(u32), 0);
+        y := SampleSobol(it_index.(u32), 1);
         it.* = .{x, y};
     }
 
@@ -2633,7 +2651,7 @@ draw_one_frame :: (wnd: Window_Type, map: *Simp.Texture, scene: Scene, num_threa
     Simp.set_shader_for_color();
 
     {
-        draw_random_test();
+        //draw_random_test();
     }
 
     if show_debug_bvh
