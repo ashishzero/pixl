@@ -192,22 +192,23 @@ mix :: (x: $T, y: T, t: float) -> T
     return x * (1.0 - t) + y * t;
 }
 
-BSDFSample :: (V: Vector3, surface: SurfaceProperties, p: float, u: Vector2) -> BxDF_Sample
+BSDFSample :: (V: Vector3, surface: SurfaceProperties, rng: *Path_Random_State, stats: *Path_Statistics) -> BxDF_Sample
 {
+    p   := GetRandom1D(rng, .LOBE);
     P_m := surface.metalness;
     P_d := 1.0 - P_m;
 
     if (p < P_d)
     {
-        sample := DiffuseSample(V, surface.color, surface.diffuse_roughness, u.x, u.y);
-        pdf_m  := MetalPDF(V, sample.L, surface.specular_roughness, surface.specular_anisotropic);
+        sample := DiffuseSample(V, surface, rng, stats);
+        pdf_m  := MetalPDF(V, sample.L, surface);
         pdf    := P_m * pdf_m + P_d * sample.pdf;
         return .{sample.Fr, sample.L, pdf};
     }
     else
     {
-        sample := MetalSample(V, surface.color, surface.specular_color, surface.specular_roughness, surface.specular_anisotropic, u.x, u.y);
-        pdf_d  := DiffusePDF(V, sample.L, surface.diffuse_roughness);
+        sample := MetalSample(V, surface, rng, stats);
+        pdf_d  := DiffusePDF(V, sample.L, surface);
         pdf    := P_m * sample.pdf + P_d * pdf_d;
         return .{sample.Fr, sample.L, pdf};
     }
@@ -255,7 +256,7 @@ InverseTransform :: (xform: Matrix3, p: Vector3) -> Vector3
     return r;
 }
 
-TracePath :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State) -> Vector3
+TracePath :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, stats: *Path_Statistics) -> Vector3
 {
     Lo       := Vector3.{0, 0, 0};
     Fr       := Vector3.{1, 1, 1};
@@ -265,12 +266,14 @@ TracePath :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State) -
     for 0..depth
     {
         hit         := HitInfo.{ t = -1 };
-        num_visited := 0;
+        num_visited : u32 = 0;
 
         if (!scene.config.flat_background || ray_type == .PRIMARY)
         {
             hit, num_visited = IntersectScene(scene, ray.origin, ray.dir, ray.tmin, ray.tmax);
         }
+
+        stats.n_bvh_visits += num_visited;
 
         if hit.t >= 0.0
         {
@@ -293,12 +296,10 @@ TracePath :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State) -
             surface  := SampleMaterialSurfaceProperties(material, hit);
 
             NextBounce(rng);
-
-            p   := GetRandom1D(rng, .LOBE);
-            u   := GetRandom2D(rng, .BxDF);
+            stats.n_bounces += 1;
 
             V      := ForwardTransform(inv_TBN, -ray.dir);
-            sample := BSDFSample(V, surface, p, u);
+            sample := BSDFSample(V, surface, rng, stats);
 
             // @todo: return emission from BSDFSample as well
             Le     := surface.emission_strength * surface.emission;
@@ -505,7 +506,7 @@ NextPowerOf2 :: (n: u32) -> u32
     return (1 << count).(u32);
 }
 
-RenderPixel :: (scene: Scene, x: u32, y: u32, frame: u32) -> Vector3
+RenderPixel :: (scene: Scene, x: u32, y: u32, frame: u32, stats: *Path_Statistics) -> Vector3
 {
     origin     := Vector2.{x.(float), y.(float)};
     width      := scene.config.width;
@@ -533,7 +534,7 @@ RenderPixel :: (scene: Scene, x: u32, y: u32, frame: u32) -> Vector3
 
         lens_uv    := GetRandom2D(rng, .LENS);
         ray        := GenerateRay(pixel, scene.camera, lens_uv);
-        radiance   += TracePath(scene, ray, scene.config.max_depth, *rng);
+        radiance   += TracePath(scene, ray, scene.config.max_depth, *rng, stats);
     }
 
     radiance /= spp.(float);
@@ -669,7 +670,8 @@ render :: (scene: *Scene, weight: float, frame: u32, shared: *RenderShared)
         {
             for x:x0..x1
             {
-                color := RenderPixel(scene, x.(u32), y.(u32), frame);
+                stats := *scene.statistics[y * width + x];
+                color := RenderPixel(scene, x.(u32), y.(u32), frame, stats);
 
                 //color := trace_pixel(scene, x.(s32), y.(s32), num_samples);
 
@@ -691,16 +693,16 @@ render :: (scene: *Scene, weight: float, frame: u32, shared: *RenderShared)
 
                 if (white_furnace_test_enabled)
                 {
-                    render.x = pow(abs(render.x - 1), 0.5);
-                    render.y = pow(abs(render.y - 1), 0.5);
-                    render.z = pow(abs(render.z - 1), 0.5);
+                    render.x = pow(abs(render.x), 0.5);
+                    render.y = pow(abs(render.y), 0.5);
+                    render.z = pow(abs(render.z), 0.5);
                 }
 
                 Clamp(*render.x, 0.0, 1.0);
                 Clamp(*render.y, 0.0, 1.0);
                 Clamp(*render.z, 0.0, 1.0);
 
-                write_color(*scene.bitmap, x, y, render);
+                write_color(scene.bitmap, x, y, render);
             }
         }
     }
@@ -708,11 +710,18 @@ render :: (scene: *Scene, weight: float, frame: u32, shared: *RenderShared)
     lane_sync();
 }
 
-write_color :: (bitmap: *Bitmap, x: int, y: int, linear: Vector3)
+write_color :: (bitmap: Bitmap, x: int, y: int, linear: Vector3, $srgb: bool = true)
 {
     index := (bitmap.height - y - 1) * bitmap.stride + x * 4;
 
-    color := linear_to_srgb(linear);
+    #if srgb
+    {
+        color := linear_to_srgb(linear);
+    }
+    else
+    {
+        color := linear;
+    }
 
     r := (color.x * 255).(u8);
     g := (color.y * 255).(u8);
@@ -783,17 +792,36 @@ wavefront_raytrace_entry :: (thread: *Thread) -> s64
                 bias      := 0.0;
                 for scene.rgbx
                 {
-                    err_r := it.x - 1.0;
-                    err_g := it.y - 1.0;
-                    err_b := it.z - 1.0;
-                    error += abs(err_r) + abs(err_g) + abs(err_b);
-                    bias  += (err_r + err_g + err_b);
-                    max_error = max(max_error, max(abs(err_r), max(abs(err_g), abs(err_b))));
+                    e := it.x * it.x + it.y * it.y + it.z * it.z;
+                    error += abs(e - 3);
+                    bias  += (e - 3);
+                    max_error = max(max_error, abs(e - 3));
                 }
                 white_furnace_test_error     = error / (scene.rgbx.count);
                 white_furnace_test_bias      = bias / (scene.rgbx.count);
                 white_furnace_test_max_error = max_error;
                 print("White Furnace Test dE = %\%, bias = %\%, max error = %\n", white_furnace_test_error * 100, white_furnace_test_bias * 100, white_furnace_test_max_error);
+            }
+
+            // heatmap
+
+            max_bounces := 1; // prevent division by zero
+            max_bvh_visits := 1;
+
+            for scene.statistics
+            {
+                max_bounces = max(max_bounces, it.n_bounces);
+                max_bvh_visits = max(max_bvh_visits, it.n_bvh_visits);
+            }
+
+            for y:0..height-1
+            {
+                for x:0..width-1
+                {
+                    stats := *scene.statistics[y * width + x];
+                    WriteHeatMap(scene.bounces_heatmap, x, y, stats.n_bounces.(float) / max_bounces.(float));
+                    WriteHeatMap(scene.bvh_visits_heatmap, x, y, stats.n_bvh_visits.(float) / max_bvh_visits.(float));
+                }
             }
         }
 
@@ -801,6 +829,22 @@ wavefront_raytrace_entry :: (thread: *Thread) -> s64
     }
 
     return 0;
+}
+
+WriteHeatMap :: (bitmap: Bitmap, x: int, y: int, alpha: float)
+{
+    // Visible Spectrum: https://learn.microsoft.com/en-us/bingmaps/v8-web-control/map-control-concepts/heat-map-module-examples/heat-map-color-gradients
+
+    HEAT_COLORS :: Vector3.[.{1, 0, 1}, .{0, 0, 1}, .{0, 1, 0}, .{1, 1, 0}, .{1, 0, 0}];
+
+    segment_count := HEAT_COLORS.count - 1;
+    scaled_alpha  := clamp(alpha, 0.0, 1.0) * segment_count;
+    index         := scaled_alpha.(int);
+    local_t       := scaled_alpha - index;
+
+    color := lerp(HEAT_COLORS[index], HEAT_COLORS[index + 1], local_t);
+
+    write_color(bitmap, x, y, color, false);
 }
 
 init :: (wavefront: *Wavefront, scene: *Scene, max_threads: s32 = 0)
@@ -1010,6 +1054,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
             red   := create_lambertian_material(scene, create_constant_texture(.{0.65, 0.05, 0.05}));
             white := create_lambertian_material(scene, create_constant_texture(.{0.73, 0.73, 0.73}));
+            metal := create_metal_material(scene, roughness=0.3, specular_tint=.{1.000, 0.735, 0.353}, base_color=.{0.993, 1.000, 1.000});
             green := create_lambertian_material(scene, create_constant_texture(.{0.12, 0.45, 0.15}));
             light := create_emission_material(scene, create_constant_texture(.{15, 15, 15}));
 
@@ -1032,7 +1077,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
             xform2 := rotation_matrix(Matrix4, rot2);
 
             add_translated_box(scene, xform1, .{260, 0,  65}, .{425, 165, 225}, white);
-            add_translated_box(scene, xform2, .{130, 0, 295}, .{290, 330, 455}, white);
+            add_translated_box(scene, xform2, .{130, 0, 295}, .{290, 330, 455}, metal);
 
         case .cornell_dragon;
             camera.fov           = 40.0 / 360.0;
@@ -1091,7 +1136,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
             camera.position    = .{0, 0, -5};
             camera.orientation = .{};
             environment        = create_constant_texture(.{1, 1, 1});
-            
+            exposure           = 1.0;
 
             center  := Vector3.{0.0, 0.0, 0.0};
             radius  := 1.0;
@@ -1099,8 +1144,8 @@ load_scene :: (using scene: *Scene, type: SceneType)
             id, material        := create_material(scene);
             material.color       = create_constant_texture(.{1, 1, 1});
             material.metalness   = create_constant_texture(0.0);
-            material.diffuse_roughness    = create_constant_texture(1.0);
-            material.specular_weight      = create_constant_texture(1.0);
+            material.diffuse_roughness    = create_constant_texture(0.7);
+            material.specular_weight      = create_constant_texture(0.7);
             material.specular_color       = create_constant_texture(.{1, 1, 1});
             material.specular_roughness   = create_constant_texture(0.2);
             material.specular_anisotropic = create_constant_texture(0.0);
@@ -1361,11 +1406,13 @@ create_lambertian_material :: (scene: *Scene, color: Texture2D, roughness := 0.0
     return id;
 }
 
-create_metal_material :: (scene: *Scene, roughness := 0.0) -> MaterialID
+create_metal_material :: (scene: *Scene, roughness := 0.0, specular_tint := Vector3.{1, 1, 1}, base_color := Vector3.{1, 1, 1}) -> MaterialID
 {
     id, material := create_material(scene);
     material.metalness = create_constant_texture(1.0);
     material.specular_roughness = create_constant_texture(roughness);
+    material.color = create_constant_texture(base_color);
+    material.specular_color = create_constant_texture(specular_tint);
     return id;
 }
 
@@ -1451,6 +1498,8 @@ init_scene :: (scene: *Scene, width: s32, height: s32, multisamples: u32 = 16, m
 {
     create_lambertian_material(scene, create_constant_texture(.{0, 0, 0}));
     Simp.bitmap_alloc(*scene.bitmap, width, height, .RGBA8);
+    Simp.bitmap_alloc(*scene.bounces_heatmap, width, height, .RGBA8);
+    Simp.bitmap_alloc(*scene.bvh_visits_heatmap, width, height, .RGBA8);
     //scene.bitmap.flags |= .IS_SRGB; // @todo: fix this flag!!!
 
     scene.config.width        = width.(u32);
@@ -1461,6 +1510,7 @@ init_scene :: (scene: *Scene, width: s32, height: s32, multisamples: u32 = 16, m
     CACHE_LINE_SIZE :: 64; // mac?
 
     scene.rgbx, scene.rgbx_mem = NewArray(scene.config.width * scene.config.height, Vector4, alignment=CACHE_LINE_SIZE);
+    scene.statistics, scene.statistics_mem = NewArray(scene.config.width * scene.config.height, Path_Statistics, alignment=CACHE_LINE_SIZE);
 }
 
 prepare_for_rendering :: (scene: *Scene)
@@ -2182,6 +2232,13 @@ CommandLineArgs :: struct
 
 #load "noise.jai";
 
+Display_Type :: enum
+{
+    RENDER;
+    BOUNCE_HEATMAP;
+    BVH_VISIT_HEATMAP;
+}
+
 main :: ()
 {
     init();
@@ -2229,7 +2286,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=32, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=64, max_depth=5);
     load_scene(*scene, args.scene);
     prepare_for_rendering(*scene);
 
@@ -2278,9 +2335,31 @@ main :: ()
                     should_quit = true;
                 }
 
+                if it.key_pressed && it.key_code == #char "Z"
+                {
+                    info := type_info(Display_Type);
+                    display_type = ((display_type + 1).(u32) % info.values.count).(Display_Type);
+                }
+
                 if it.key_pressed && it.key_code == #char "H"
                 {
                     show_debug_bvh = !show_debug_bvh;
+                }
+
+                if it.key_pressed && it.key_code == .TAB
+                {
+                    show_random_test = !show_random_test;
+                }
+
+                
+                if it.key_pressed && it.key_code == .ARROW_RIGHT
+                {
+                    num_samples_to_display = (num_samples_to_display + 1) % NUM_RANDOM_SAMPLES;
+                }
+
+                if it.key_pressed && it.key_code == .ARROW_LEFT
+                {
+                    num_samples_to_display = (num_samples_to_display - 1 + NUM_RANDOM_SAMPLES) % NUM_RANDOM_SAMPLES;
                 }
 
                 if it.key_pressed && it.key_code == #char " "
@@ -2304,7 +2383,20 @@ main :: ()
             }
         }
 
-        Simp.texture_load_from_bitmap(*raytrace_map, *scene.bitmap);
+        display_bitmap := *scene.bitmap;
+
+        if (!white_furnace_test_enabled)
+        {
+            if display_type == 
+            {
+                case .BOUNCE_HEATMAP;
+                    display_bitmap = *scene.bounces_heatmap;
+                case .BVH_VISIT_HEATMAP;
+                    display_bitmap = *scene.bvh_visits_heatmap;
+            }
+        }
+
+        Simp.texture_load_from_bitmap(*raytrace_map, display_bitmap);
         draw_one_frame(wnd, *raytrace_map, scene, wavefront.threads.count);
 
         sleep_milliseconds(10);
@@ -2498,11 +2590,14 @@ draw_bvh :: (root: int, nodes: []BVH_Node, boxes: []Box3, indices: []u32, projec
 SAMPLES_PER_AXIS   :: 128;
 NUM_RANDOM_SAMPLES :: SAMPLES_PER_AXIS * SAMPLES_PER_AXIS;
 
+num_samples_to_display := NUM_RANDOM_SAMPLES - 1;
+
 pcg_random_samples:      [NUM_RANDOM_SAMPLES]Vector2;
 sobol_random_samples:    [NUM_RANDOM_SAMPLES]Vector2;
 sobol_ss_random_samples: [NUM_RANDOM_SAMPLES]Vector2;
 
 initted_random_samples := false;
+show_random_test := false;
 
 InitializeRandomSamples :: ()
 {
@@ -2562,59 +2657,32 @@ draw_random_test :: ()
 
     DrawRect(corner, size, size, .{1, 1, 1, 1});
 
-    for pcg_random_samples
+    for 0..num_samples_to_display
     {
-        p := corner + it * size;
+        r := pcg_random_samples[it];
+        p := corner + r * size;
         DrawRect(p, 2, 2, .{0, 0, 0, 1});
     }
 
     corner.x += size + gap;
     DrawRect(corner, size, size, .{1, 1, 1, 1});
 
-    for sobol_random_samples
+    for 0..num_samples_to_display
     {
-        p := corner + it * size;
+        r := sobol_random_samples[it];
+        p := corner + r * size;
         DrawRect(p, 2, 2, .{0, 0, 0, 1});
     }
 
     corner.x += size + gap;
     DrawRect(corner, size, size, .{1, 1, 1, 1});
 
-    for sobol_ss_random_samples
+    for 0..num_samples_to_display
     {
-        p := corner + it * size;
+        r := sobol_ss_random_samples[it];
+        p := corner + r * size;
         DrawRect(p, 2, 2, .{0, 0, 0, 1});
     }
-
-  //  n_grid   := (size / SAMPLES_PER_AXIS).(int);
-  //  grey     := Vector4.{0.5, 0.5, 0.5, 1};
-
-  //  for y:0..SAMPLES_PER_AXIS
-  //  {
-  //      for x:0..SAMPLES_PER_AXIS
-  //      {
-  //          offset := Vector2.{y.(float) * n_grid, x.(float) * n_grid};
-  //          DrawPixel(corner + offset, grey);
-  //      }
-  //  }
-
-  //  if (show_only_one)
-  //  {
-  //      index := sobol_prng_index % (TEST_WIDTH * TEST_HEIGHT);
-  //      DrawGridRandom(random_samples[index], corner, size, Vector4.{1, 1, 0, 1});
-  //  }
-  //  else
-  //  {
-  //      color_a := Vector4.{1, 1, 0, 1};
-  //      color_b := Vector4.{0, 0, 0, 1};
-
-  //      for 0..(TEST_WIDTH * TEST_HEIGHT)-1
-  //      {
-  //          index := (sobol_prng_index + it) % (TEST_WIDTH * TEST_HEIGHT);
-  //          alpha := it.(float) / ((TEST_WIDTH * TEST_HEIGHT)-1);
-  //          DrawGridRandom(random_samples[index], corner, size, lerp(color_a, color_b, alpha));
-  //      }
-  //  }
 }
 
 draw_one_frame :: (wnd: Window_Type, map: *Simp.Texture, scene: Scene, num_threads: int)
@@ -2650,8 +2718,9 @@ draw_one_frame :: (wnd: Window_Type, map: *Simp.Texture, scene: Scene, num_threa
 
     Simp.set_shader_for_color();
 
+    if (show_random_test)
     {
-        //draw_random_test();
+        draw_random_test();
     }
 
     if show_debug_bvh
@@ -2686,8 +2755,8 @@ draw_one_frame :: (wnd: Window_Type, map: *Simp.Texture, scene: Scene, num_threa
     }
     else
     {
-        text := tprint("Frame: %; Last frame render time: %ms; Threads: %; Runtime: %;",
-                       frame_index, last_frame_render_time_ms, num_threads, total_runtime);
+        text := tprint("Frame: %; Last frame render time: %ms; Threads: %; Runtime: %; Bitmap: %",
+                       frame_index, last_frame_render_time_ms, num_threads, total_runtime, display_type);
         Simp.draw_text(debug_font, 10, 10, text);
     }
 
@@ -2704,6 +2773,7 @@ render_height := 0;
 
 frame_index := 0;
 last_frame_render_time_ms := 0;
+display_type := Display_Type.RENDER;
 
 debug_font: *Simp.Dynamic_Font;
 

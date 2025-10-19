@@ -1,6 +1,6 @@
 #load "common.jai";
 
-// @todo: add support for plane
+// @todo: add support for plane/quads and bilinear patch...and bezier curves -- maybe?
 Primitive_Type :: enum u32
 {
     SPHERE :: 1;
@@ -130,6 +130,9 @@ IntersectBox :: (vmin: Vector3, vmax: Vector3, origin: Vector3, dir: Vector3, tm
     p    := hit_p - vmin;
     diag := vmax - vmin;
 
+    // @todo: dpdu/dpdv are likely incorrect...
+    // validate these values
+
     if (t_axis == 0)
     {
         info.u = p.z / diag.z;
@@ -197,6 +200,8 @@ IntersectDisk :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, tma
     info.v = v;
 
     hit_factor := radius / sqrt(hit_p.x * hit_p.x + hit_p.y * hit_p.y);
+
+    // @todo: intersectdisk itself is not validated + dpdu/dpdv values too
 
     info.n    = normal;
     info.dpdu = Vector3.{2 * PI * hit_p.y, 2 * PI * hit_p.x, 0.0};

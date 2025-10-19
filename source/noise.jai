@@ -13,8 +13,8 @@ Path_Dimension :: enum u32
     FILTER :: 0;
     LENS   :: 1;
 
-    LOBE   :: 2;
-    BxDF   :: 3;
+    LOBE   :: 0;
+    BxDF   :: 1;
 }
 
 MAX_BOUNCE :: 16;

@@ -1,4 +1,25 @@
 
+SurfaceProperties :: struct
+{
+    color                : Vector3;
+    metalness            : float;
+    diffuse_roughness    : float;
+    specular_weight      : float;
+    specular_color       : Vector3;
+    specular_roughness   : float;
+    specular_anisotropic : float;
+
+    emission_strength    : float;
+    emission             : Vector3;
+
+    //specular        : float;
+    //subsurface      : float;
+    //sheen           : float;
+    //sheen_tint      : float;
+    //clearcoat       : float;
+    //clearcoat_gloss : float;
+}
+
 BxDF_Sample :: struct
 {
     Fr  : Vector3;
@@ -101,56 +122,62 @@ SampleUniformLobe :: (u1: float, u2: float) -> Vector3
 
 #scope_export
 
-DiffuseFr :: (V: Vector3, L: Vector3, color: Vector3, roughness: float) -> Vector3
+DiffuseFr :: (V: Vector3, L: Vector3, surface: SurfaceProperties) -> Vector3
 {
-    NoV      := saturate(V.z);
-    NoL      := saturate(L.z);
-    VoL      := saturate(dot(V, L));
-    s        := VoL - NoL * NoV;
-    s_over_t := ifx (s > 0.0) then (s / max(max(NoL, NoV), 1.0e-6)) else s; // FON s/t
-    AF       := 1.0 / (1.0 + FON1 * roughness);                             // FON A coeff
-    f_ss     := (color * INV_PI) * AF * (1.0 + roughness * s_over_t);       // single-scatter
-    EFo      := E_FON_Approx(NoV, roughness);                               // FON V albedo
-    EFi      := E_FON_Approx(NoL, roughness);                               // FON L albedo
-    avgEF    := AF * (1.0 + FON2 * roughness);                              // average albedo
-    rho_ms   := (color * color) * avgEF / (Vector3.{1, 1, 1} - color * (1.0 - avgEF));
-    eps      := 1.0e-6;
-    f_ms     := (rho_ms * INV_PI) * max(eps, 1.0 - EFo) * max(eps, 1.0 - EFi) / max(eps, 1.0 - avgEF); // multi-scatterlobe
+    color     := surface.color;
+    roughness := surface.diffuse_roughness;
+    NoV       := saturate(V.z);
+    NoL       := saturate(L.z);
+    VoL       := saturate(dot(V, L));
+    s         := VoL - NoL * NoV;
+    s_over_t  := ifx (s > 0.0) then (s / max(max(NoL, NoV), 1.0e-6)) else s; // FON s/t
+    AF        := 1.0 / (1.0 + FON1 * roughness);                             // FON A coeff
+    f_ss      := (color * INV_PI) * AF * (1.0 + roughness * s_over_t);       // single-scatter
+    EFo       := E_FON_Approx(NoV, roughness);                               // FON V albedo
+    EFi       := E_FON_Approx(NoL, roughness);                               // FON L albedo
+    avgEF     := AF * (1.0 + FON2 * roughness);                              // average albedo
+    rho_ms    := (color * color) * avgEF / (Vector3.{1, 1, 1} - color * (1.0 - avgEF));
+    eps       := 1.0e-6;
+    f_ms      := (rho_ms * INV_PI) * max(eps, 1.0 - EFo) * max(eps, 1.0 - EFi) / max(eps, 1.0 - avgEF); // multi-scatterlobe
     return f_ss + f_ms;
 }
 
-DiffusePDF :: (V: Vector3, L: Vector3, roughness: float) -> float
+DiffusePDF :: (V: Vector3, L: Vector3, surface: SurfaceProperties) -> float
 {
-    NoV   := saturate(V.z);
-    P_u   := pow(roughness, 0.1) * (0.162925 + NoV * (-0.372058 + (0.538233 - 0.290822 * NoV) * NoV));
-    P_c   := 1.0 - P_u;
-    pdf_c := CLTC_PDF(V, L, roughness);
-    pdf_u := 1.0 / (2.0 * PI);
+    roughness := surface.diffuse_roughness;
+    NoV       := saturate(V.z);
+    P_u       := pow(roughness, 0.1) * (0.162925 + NoV * (-0.372058 + (0.538233 - 0.290822 * NoV) * NoV));
+    P_c       := 1.0 - P_u;
+    pdf_c     := CLTC_PDF(V, L, roughness);
+    pdf_u     := 1.0 / (2.0 * PI);
     return P_u * pdf_u + P_c * pdf_c;
 }
 
-DiffuseSample :: (V: Vector3, color: Vector3, roughness: float, u1: float, u2: float) -> BxDF_Sample
+DiffuseSample :: (V: Vector3, surface: SurfaceProperties, rng: *Path_Random_State, stats: *Path_Statistics) -> BxDF_Sample
 {
-    NoV   := V.z;
-    P_u   := pow(roughness, 0.1) * (0.162925 + NoV * (-0.372058 + (0.538233 - 0.290822 * NoV) * NoV));
-    P_c   := 1.0 - P_u; // probability of CLTC sample
+    roughness := surface.diffuse_roughness;
 
-    L     : Vector3 = ---;
-    pdf_c : float   = ---;
+    NoV       := V.z;
+    P_u       := pow(roughness, 0.1) * (0.162925 + NoV * (-0.372058 + (0.538233 - 0.290822 * NoV) * NoV));
+    P_c       := 1.0 - P_u; // probability of CLTC sample
 
-    if (u1 < P_u)
+    L         : Vector3 = ---;
+    pdf_c     : float   = ---;
+    u         := GetRandom2D(rng, .BxDF);
+
+    if (u.x < P_u)
     {
-        u1    = u1 / P_u;
-        L     = SampleUniformLobe(u1, u2); // sample L from uniform lobe
+        u.x   = u.x / P_u;
+        L     = SampleUniformLobe(u.x, u.y); // sample L from uniform lobe
         pdf_c = CLTC_PDF(V, L, roughness); // evaluate CLTC PDF at L
     }
     else
     {
-        u1       = (u1 - P_u) / P_c;
-        L, pdf_c = CLTC_Sample(V, roughness, u1, u2); // sample L from CLTC lobe
+        u.x      = (u.x - P_u) / P_c;
+        L, pdf_c = CLTC_Sample(V, roughness, u.x, u.y); // sample L from CLTC lobe
     }
 
-    Fr    := DiffuseFr(V, L, color, roughness);
+    Fr    := DiffuseFr(V, L, surface);
     pdf_u := 1.0 / (2.0 * PI);
     pdf   := P_u * pdf_u + P_c * pdf_c; // MIS PDF of L
     return .{Fr, L, pdf};
@@ -158,8 +185,7 @@ DiffuseSample :: (V: Vector3, color: Vector3, roughness: float, u1: float, u2: f
 
 //------------------------------------------------------------------------
 // Microfacet Model
-// Trowbridge–Reitz (GGX) model + Multiple Scattering Compensation
-// https://blog.selfshadow.com/publications/turquin/ms_comp_final.pdf
+// Trowbridge–Reitz (GGX) model
 
 #scope_export
 
@@ -295,6 +321,9 @@ F82Tint :: (mu: float, Fo: Vector3, specular_color: Vector3) -> Vector3
 
 #scope_export
 
+//------------------------------------------------------------------------
+// Single scatter
+
 MetalFr :: (V: Vector3, L: Vector3, Fo: Vector3, specular_color: Vector3, roughness: float, anisotropic: float) -> Vector3
 {
     if (roughness < 1.0e-3)
@@ -317,8 +346,11 @@ MetalFr :: (V: Vector3, L: Vector3, Fo: Vector3, specular_color: Vector3, roughn
     }
 }
 
-MetalPDF :: (V: Vector3, L: Vector3, roughness: float, anisotropic: float) -> float
+MetalPDF :: (V: Vector3, L: Vector3, surface: SurfaceProperties) -> float
 {
+    roughness   := surface.specular_roughness;
+    anisotropic := surface.specular_anisotropic;
+
     if (roughness < 1.0e-3)
     {
         return 0.0;
@@ -337,8 +369,13 @@ MetalPDF :: (V: Vector3, L: Vector3, roughness: float, anisotropic: float) -> fl
     }
 }
 
-MetalSample :: (V: Vector3, Fo: Vector3, specular_color: Vector3, roughness: float, anisotropic: float, u1: float, u2: float) -> BxDF_Sample
+MetalSample :: (V: Vector3, surface: SurfaceProperties, rng: *Path_Random_State, stats: *Path_Statistics) -> BxDF_Sample
 {
+    Fo             := surface.color;
+    specular_color := surface.specular_color;
+    roughness      := surface.specular_roughness;
+    anisotropic    := surface.specular_anisotropic;
+
     if (roughness < 1.0e-3)
     {
         L   := Vector3.{-V.x, -V.y, V.z};
@@ -349,8 +386,9 @@ MetalSample :: (V: Vector3, Fo: Vector3, specular_color: Vector3, roughness: flo
     }
     else
     {
+        u      := GetRandom2D(rng, .BxDF);
         alpha  := MicrofacetAnisotropicAlpha(roughness, anisotropic);
-        H      := MicrofacetSample(V, alpha, u1, u2);
+        H      := MicrofacetSample(V, alpha, u.x, u.y);
         L      := Reflect(V, H);
         NoV    := V.z;
         NoL    := L.z;
@@ -367,3 +405,6 @@ MetalSample :: (V: Vector3, Fo: Vector3, specular_color: Vector3, roughness: flo
 }
 
 //------------------------------------------------------------------------
+// Multiscatter
+
+

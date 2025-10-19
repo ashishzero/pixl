@@ -61,27 +61,6 @@ Texture2D :: struct
     data      : *u8;
 }
 
-SurfaceProperties :: struct
-{
-    color                : Vector3;
-    metalness            : float;
-    diffuse_roughness    : float;
-    specular_weight      : float;
-    specular_color       : Vector3;
-    specular_roughness   : float;
-    specular_anisotropic : float;
-
-    emission_strength    : float;
-    emission             : Vector3;
-
-    //specular        : float;
-    //subsurface      : float;
-    //sheen           : float;
-    //sheen_tint      : float;
-    //clearcoat       : float;
-    //clearcoat_gloss : float;
-}
-
 Material :: struct
 {
     color                : Texture2D;
@@ -95,13 +74,13 @@ Material :: struct
     emission             : Texture2D;
     emission_strength    : Texture2D;
 
-    //specular        : Texture2D(float);    
+    //specular        : Texture2D(float);
     //ior             : Texture2D(float);
-    //subsurface      : Texture2D(float);    
+    //subsurface      : Texture2D(float);
     //sheen           : Texture2D(float);
     //sheen_tint      : Texture2D(float);
     //clearcoat       : Texture2D(float);
-    //clearcoat_gloss : Texture2D(float);    
+    //clearcoat_gloss : Texture2D(float);\
 }
 
 PathTracerConfig :: struct
@@ -119,12 +98,21 @@ Tone_Map_Type :: enum u32
     REINHARD;
 }
 
+Path_Statistics :: struct
+{
+    n_bounces : u32 #align 64;
+    n_bvh_visits : u32;
+}
+
 Scene :: struct
 {
     camera:  Camera;
     config:  PathTracerConfig;
     tonemap: Tone_Map_Type = .REINHARD;
+
     bitmap:  Bitmap;
+    bounces_heatmap:  Bitmap;
+    bvh_visits_heatmap: Bitmap;
 
     materials   : [..]Material;
     environment : Texture2D;
@@ -138,6 +126,9 @@ Scene :: struct
 
     rgbx_mem   : *void;
     rgbx       : []Vector4;
+
+    statistics_mem : *void;
+    statistics : []Path_Statistics;
 }
 
 HitFace :: enum u32
@@ -213,9 +204,9 @@ IntersectPrimitive :: (primitive: Primitive, world_origin: Vector3, world_dir: V
 
 #scope_export
 
-IntersectBVH :: (nodes: []BVH_Node, primitives: []Primitive, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> HitInfo, int
+IntersectBVH :: (nodes: []BVH_Node, primitives: []Primitive, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> HitInfo, u32
 {
-    visited := 0;
+    visited : u32 = 0;
     info := HitInfo.{ t = -1 };
 
     if nodes.count
@@ -262,7 +253,7 @@ IntersectBVH :: (nodes: []BVH_Node, primitives: []Primitive, origin: Vector3, di
     return info, visited;
 }
 
-IntersectScene :: (scene: Scene, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> HitInfo, int
+IntersectScene :: (scene: Scene, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> HitInfo, u32
 {
     hit, num_visited := IntersectBVH(scene.tlas.nodes, scene.mapped, origin, dir, tmin, tmax);
     return hit, num_visited;
