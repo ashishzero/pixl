@@ -801,9 +801,10 @@ WriteHeatMap :: (bitmap: Bitmap, x: int, y: int, alpha: float)
     index         := scaled_alpha.(int);
     local_t       := scaled_alpha - index;
 
-    color := lerp(HEAT_COLORS[index], HEAT_COLORS[index + 1], local_t);
+    // @todo: fix indexing
+  //  color := lerp(HEAT_COLORS[index], HEAT_COLORS[index + 1], local_t);
 
-    write_color(bitmap, x, y, color, false);
+  //  write_color(bitmap, x, y, color, false);
 }
 
 load_bunny :: () -> PrimitiveMesh, Matrix4
@@ -1073,7 +1074,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
             //material.specular_color       = create_constant_texture(.{1, 1, 1});
             //material.specular_color       = create_constant_texture(.{0.993, 1.000, 1.000}); // Gold
             material.specular_color       = create_constant_texture(.{0.727, 0.772, 0.823}); // Cobalt
-            material.specular_roughness   = create_constant_texture(0.1);
+            material.specular_roughness   = create_constant_texture(0.25);
             material.specular_anisotropic = create_constant_texture(0.0);
 
             white      := create_lambertian_material(scene, create_constant_texture(.{1, 1, 1}));
@@ -2178,7 +2179,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=128, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=64, max_depth=5);
     load_scene(*scene, args.scene);
     prepare_for_rendering(*scene);
 

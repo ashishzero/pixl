@@ -242,11 +242,11 @@ f_ms_avg_metallic :: (Fo: Spectrum, E_avg: float) -> Spectrum
 
 f_ms_metallic :: (Fo: Spectrum, NoL: float, NoV: float, roughness: float, alpha: Vector2) -> Spectrum
 {
-    ErL       := read_lookup_table3D(Er_metallic, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, NoL, alpha.x, alpha.y);
-    ErV       := read_lookup_table3D(Er_metallic, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, NoV, alpha.x, alpha.y);
-    E_avg     := E_avg_metallic(roughness);
-    f_avg     := f_ms_avg_metallic(Fo, E_avg);
-    f_ms      := f_avg * ErL * ErV * INV_PI / (1.0 - E_avg);
+    ErL   := read_lookup_table3D(Er_metallic, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, NoL, alpha.x, alpha.y);
+    ErV   := read_lookup_table3D(Er_metallic, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, NoV, alpha.x, alpha.y);
+    E_avg := E_avg_metallic(roughness);
+    f_avg := f_ms_avg_metallic(Fo, E_avg);
+    f_ms  := f_avg * ErL * ErV * INV_PI / (1.0 - E_avg);
     return f_ms;
 }
 
@@ -320,9 +320,27 @@ sample_metallic :: (V: Vector3, surface: Surface, u: Vector2) -> BxDF_Sample
     }
     else
     {
+        H, L: Vector3 = ---;
+
         alpha  := microfacet_alpha(roughness, anisotropic);
-        H      := microfacet_sample(V, alpha, u.x, u.y);
-        L      := reflect(V, H);
+        P_ms   := 0.5;
+        P_ss   := 1.0 - P_ms;
+        u1     := u.x;
+        u2     := u.y;
+
+        if (u1 < P_ss)
+        {
+            u1 = u1 / P_ss;
+            H  = microfacet_sample(V, alpha, u1, u2);
+            L  = reflect(V, H);
+        }
+        else
+        {
+            u1 = (u1 - P_ss) / P_ms;
+            L  = sample_uniform_lobe(u1, u2);
+            H  = normalize(L + V);
+        }
+
         NoV    := V.z;
         NoL    := L.z;
         NoH    := H.z;
@@ -333,7 +351,9 @@ sample_metallic :: (V: Vector3, surface: Surface, u: Vector2) -> BxDF_Sample
         Fss    := f82_tint(VoH, Fo, specular_color);
         fr     := (D * G * Fss) / max(4 * NoL * NoV, 1.0e-6);
         fr     += f_ms_metallic(Fo, NoL, NoV, roughness, alpha);
-        pdf    := (D * G1) / max(4 * NoV, 1.0e-6);
+        pdf_ss := (D * G1) / max(4 * NoV, 1.0e-6); // @todo: may be bug??
+        pdf_ms := 1.0 / (2.0 * PI);
+        pdf    := P_ss * pdf_ss + P_ms * pdf_ms;
         return .{fr, L, pdf};
     }
 }
