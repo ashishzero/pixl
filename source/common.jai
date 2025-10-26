@@ -78,8 +78,15 @@ Filter :: struct
     width := 1.5;
 }
 
+//------------------------------------------------------------------------
+// Coordinate System (Right Handedness)
+// Right   : +X
+// Up      : +Y
+// Forward : +Z
+
 Camera :: struct
 {
+    // @todo: add orthographic/spherical camera?
     position           : Vector3;
     orientation        : Quaternion;
     fov                := 0.17;
@@ -93,14 +100,39 @@ Camera :: struct
     xform              : Matrix4;
     dxdu               : Vector3;
     dydv               : Vector3;
+
+    // @todo: move somewhere else??
     filter_lut         : [FILTER_SIZE]float;
+}
+
+Spectrum :: #type,isa Vector3;
+
+Spectrum_One  :: Spectrum.{1, 1, 1};
+Spectrum_Zero :: Spectrum.{0, 0, 0};
+
+//------------------------------------------------------------------------
+// Hash
+
+hash_combine :: inline (seed: u32, v: u32) -> u32
+{
+    return seed ^ (v + (seed << 6) + (seed >> 2));
+}
+
+murmur_finalize32 :: inline (x: u32) -> u32
+{
+    x ^= x >> 16;
+    x *= 0x85ebca6b;
+    x ^= x >> 13;
+    x *= 0xc2b2ae35;
+    x ^= x >> 16;
+    return x;
 }
 
 //------------------------------------------------------------------------
 // Morton codes
 // Based on: https://fgiesen.wordpress.com/2009/12/13/decoding-morton-codes/
 
-Split2 :: (x: u32) -> u32
+split2 :: (x: u32) -> u32
 {
     x &= 0X0000FFFF;
     x = (x ^ (x <<  8)) & 0X00FF00FF;
@@ -110,12 +142,108 @@ Split2 :: (x: u32) -> u32
     return x;
 }
 
-Morton2 :: (x: u32, y: u32) -> u32
+morton2 :: (x: u32, y: u32) -> u32
 {
-    x_split := Split2(x);
-    y_split := Split2(y);
+    x_split := split2(x);
+    y_split := split2(y);
     code    := (x_split << 1) | y_split;
     return code;
+}
+
+//------------------------------------------------------------------------
+
+transform_box :: (t: Matrix4, box: Box3) -> Box3
+{
+    center := 0.5 * (box.vmin + box.vmax);
+    extent := 0.5 * (box.vmax - box.vmin);
+
+    rcenter := transform_point(t, center);
+    half    := Vector3.{0, 0, 0};
+
+    half.x       = abs(extent.x * t.floats[0 + 0]) + abs(extent.y * t.floats[0 + 1]) + abs(extent.z * t.floats[0 + 2]);
+    half.y       = abs(extent.x * t.floats[4 + 0]) + abs(extent.y * t.floats[4 + 1]) + abs(extent.z * t.floats[4 + 2]);
+    half.z       = abs(extent.x * t.floats[8 + 0]) + abs(extent.y * t.floats[8 + 1]) + abs(extent.z * t.floats[8 + 2]);
+
+    return Box3.{rcenter - half, rcenter + half};
+}
+
+box_union :: (b: Box3, p: Vector3) -> Box3
+{
+    ret: Box3;
+    ret.vmin = min(b.vmin, p);
+    ret.vmax = max(b.vmax, p);
+    return ret;
+}
+
+box_union :: (b1: Box3, b2: Box3) -> Box3
+{
+    ret: Box3;
+    ret.vmin = min(b1.vmin, b2.vmin);
+    ret.vmax = max(b1.vmax, b2.vmax);
+    return ret;
+}
+
+fract :: inline (x: float) -> float { return x - floor(x); }
+
+reflect :: inline (d: Vector3, n: Vector3) -> Vector3
+{
+    return -d + 2 * dot(d, n) * n;
+}
+
+mix :: (x: $T, y: T, t: float) -> T
+{
+    return x * (1.0 - t) + y * t;
+}
+
+//------------------------------------------------------------------------
+
+read_lookup_table1D :: (lookup: []$T, w: int, u: float) -> T
+{
+    up := u * w - 0.5;
+    u0 := clamp(up.(int), 0, w - 1);
+    u1 := min(u0 + 1, w - 1);
+    uf := fract(up);
+    x  := lerp(lookup[u0], lookup[u1], uf);
+    return x;
+}
+
+read_lookup_table2D :: (lookup: []$T, w: int, h: int, u: float, v: float) -> T
+{
+    up := u * w.(float) - 0.5;
+    vp := v * h.(float) - 0.5;
+    u0 := clamp(up.(int), 0, w - 1);
+    v0 := clamp(vp.(int), 0, h - 1);
+    u1 := min(u0 + 1, w - 1);
+    v1 := min(v0 + 1, h - 1);
+    uf := fract(up);
+    vf := fract(vp);
+    y0 := lerp(lookup[v0 * w + u0], lookup[v0 * w + u1], uf);
+    y1 := lerp(lookup[v1 * w + u0], lookup[v1 * w + u1], uf);
+    x  := lerp(y0, y1, vf);
+    return x;
+}
+
+read_lookup_table3D :: (lookup: []$T, width: int, height: int, depth: int, u: float, v: float, w: float) -> T
+{
+    up   := u * width.(float)  - 0.5;
+    vp   := v * height.(float) - 0.5;
+    wp   := w * depth.(float)  - 0.5;
+    u0   := clamp(up.(int), 0, width  - 1);
+    v0   := clamp(vp.(int), 0, height - 1);
+    w0   := clamp(wp.(int), 0, depth  - 1);
+    u1   := min(u0 + 1, width  - 1);
+    v1   := min(v0 + 1, height - 1);
+    w1   := min(w0 + 1, depth  - 1);
+    uf   := fract(up);
+    vf   := fract(vp);
+    wf   := fract(wp);
+    z0y0 := lerp(lookup[w0 * width * height + v0 * width + u0], lookup[w0 * width * height + v0 * width + u1], uf);
+    z0y1 := lerp(lookup[w0 * width * height + v1 * width + u0], lookup[w0 * width * height + v1 * width + u1], uf);
+    z1y0 := lerp(lookup[w1 * width * height + v0 * width + u0], lookup[w1 * width * height + v0 * width + u1], uf);
+    z1y1 := lerp(lookup[w1 * width * height + v1 * width + u0], lookup[w1 * width * height + v1 * width + u1], uf);
+    z0   := lerp(z0y0, z0y1, vf);
+    z1   := lerp(z1y0, z1y1, vf);
+    return lerp(z0, z1, wf);
 }
 
 #import "Math";

@@ -1,5 +1,6 @@
 #load "intersect.jai";
 #load "bxdf.jai";
+#load "async.jai";
 
 RAYTRACE_BITMAP_WIDTH  :: 1920;
 RAYTRACE_BITMAP_HEIGHT :: 1080;
@@ -9,11 +10,6 @@ RAYTRACE_BITMAP_HEIGHT :: 1080;
 
 want_screenshot := false;
 
-reflect :: inline (d: Vector3, n: Vector3) -> Vector3
-{
-    return -d + 2 * dot(d, n) * n;
-}
-
 refract :: inline (uv: Vector3, n: Vector3, factor: float) -> Vector3
 {
     cos_theta    := min(dot(-uv, n), 1.0);
@@ -21,8 +17,6 @@ refract :: inline (uv: Vector3, n: Vector3, factor: float) -> Vector3
     out_parallel := -sqrt(abs(1.0 - length_squared(out_perp))) * n;
     return out_perp + out_parallel;
 }
-
-fract :: inline (x: float) -> float { return x - floor(x); }
 
 smoothstep :: inline (a: float, b: float, v: float) -> float
 {
@@ -172,45 +166,45 @@ sample_uniform_disk_polar :: (u: Vector2) -> Vector2
     return sample;
 }
 
-SampleMaterialSurfaceProperties :: (material: Material, hit: HitInfo) -> SurfaceProperties
+SampleTextureSpectrum :: (texture: Texture2D, u: float, v: float) -> Spectrum
 {
-    surface: SurfaceProperties   = ---;
-    surface.color                = SampleTexture(material.color, hit.u, hit.v);
+    color := SampleTexture(texture, u, v);
+    return Spectrum.{color.x, color.y, color.z};
+}
+
+SampleMaterialSurfaceProperties :: (material: Material, hit: HitInfo) -> Surface
+{
+    surface: Surface = ---;
+    surface.color                = SampleTextureSpectrum(material.color, hit.u, hit.v);
     surface.metalness            = SampleAlpha(material.metalness, hit.u, hit.v);
     surface.diffuse_roughness    = SampleAlpha(material.diffuse_roughness, hit.u, hit.v);
     surface.specular_weight      = SampleAlpha(material.specular_weight, hit.u, hit.v);
-    surface.specular_color       = SampleTexture(material.specular_color, hit.u, hit.v);
+    surface.specular_color       = SampleTextureSpectrum(material.specular_color, hit.u, hit.v);
     surface.specular_roughness   = SampleAlpha(material.specular_roughness, hit.u, hit.v);
     surface.specular_anisotropic = SampleAlpha(material.specular_anisotropic, hit.u, hit.v);
-    surface.emission             = SampleTexture(material.emission, hit.u, hit.v);
+    surface.emission             = SampleTextureSpectrum(material.emission, hit.u, hit.v);
     surface.emission_strength    = SampleAlpha(material.emission_strength, hit.u, hit.v);
     return surface;
 }
 
-mix :: (x: $T, y: T, t: float) -> T
+BxDFSample :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> BxDF_Sample
 {
-    return x * (1.0 - t) + y * t;
-}
-
-BSDFSample :: (V: Vector3, surface: SurfaceProperties, rng: *Path_Random_State, stats: *Path_Statistics) -> BxDF_Sample
-{
-    p   := GetRandom1D(rng, .LOBE);
     P_m := surface.metalness;
     P_d := 1.0 - P_m;
 
     if (p < P_d)
     {
-        sample := DiffuseSample(V, surface, rng, stats);
-        pdf_m  := MetalPDF(V, sample.L, surface);
+        sample := sample_diffuse(V, surface, u);
+        pdf_m  := pdf_metallic(V, sample.L, surface);
         pdf    := P_m * pdf_m + P_d * sample.pdf;
-        return .{sample.Fr, sample.L, pdf};
+        return .{sample.fr, sample.L, pdf};
     }
     else
     {
-        sample := MetalSample(V, surface, rng, stats);
-        pdf_d  := DiffusePDF(V, sample.L, surface);
+        sample := sample_metallic(V, surface, u);
+        pdf_d  := pdf_diffuse(V, sample.L, surface);
         pdf    := P_m * sample.pdf + P_d * pdf_d;
-        return .{sample.Fr, sample.L, pdf};
+        return .{sample.fr, sample.L, pdf};
     }
 
     return .{};
@@ -256,10 +250,10 @@ InverseTransform :: (xform: Matrix3, p: Vector3) -> Vector3
     return r;
 }
 
-TracePath :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, stats: *Path_Statistics) -> Vector3
+trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, stats: *Path_Statistics) -> Vector3
 {
-    Lo       := Vector3.{0, 0, 0};
-    Fr       := Vector3.{1, 1, 1};
+    radiance := Spectrum.{0, 0, 0};
+    fr       := Spectrum.{1, 1, 1};
     ray      := primary;
     ray_type := Ray_Type.PRIMARY;
 
@@ -270,7 +264,7 @@ TracePath :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, s
 
         if (!scene.config.flat_background || ray_type == .PRIMARY)
         {
-            hit, num_visited = IntersectScene(scene, ray.origin, ray.dir, ray.tmin, ray.tmax);
+            hit, num_visited = intersect_scene(scene, ray.origin, ray.dir, ray.tmin, ray.tmax);
         }
 
         stats.n_bvh_visits += num_visited;
@@ -298,12 +292,15 @@ TracePath :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, s
             NextBounce(rng);
             stats.n_bounces += 1;
 
+            p      := random_sample_1D(rng, .LOBE);
+            u      := random_sample_2D(rng, .BxDF);
+
             V      := ForwardTransform(inv_TBN, -ray.dir);
-            sample := BSDFSample(V, surface, rng, stats);
+            sample := BxDFSample(V, surface, p, u);
 
             // @todo: return emission from BSDFSample as well
-            Le     := surface.emission_strength * surface.emission;
-            Lo += Fr * Le;
+            emittance := surface.emission_strength * surface.emission;
+            radiance += fr * emittance;
 
             if (sample.pdf < 1.e-6)
             {
@@ -311,7 +308,7 @@ TracePath :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, s
             }
 
             cosine := saturate(sample.L.z);
-            Fr *= cosine * sample.Fr / sample.pdf;
+            fr *= cosine * sample.fr / sample.pdf;
 
             //print("Fr = %\n", cosine * sample.Fr / sample.pdf);
 
@@ -338,17 +335,17 @@ TracePath :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, s
   //              env.y = clamp(env.y, 0.0, 1.0);
   //              env.z = clamp(env.z, 0.0, 1.0);
 
-                Lo += Fr * env;
+                radiance += fr * env;
             }
             else
             {
-                Lo = scene.flat_background_color;
+                radiance = scene.flat_background_color;
             }
             break;
         }
     }
 
-    return Lo;
+    return radiance;
 }
 
 
@@ -452,24 +449,10 @@ InvertCDF :: (inv_CDF: []float, CDF: []float, a: float, b: float)
     }
 }
 
-SampleInverseCDF :: (inv_CDF: []float, u: float) -> float
+SampleCameraFilter :: inline (camera: Camera, u: Vector2) -> Vector2
 {
-    up := u * inv_CDF.count.(float) - 0.5;
-
-    u0 := clamp(up.(int), 0, inv_CDF.count - 1);
-    u1 := min(u0 + 1, inv_CDF.count - 1);
-
-    uf := fract(up);
-
-    x  := (1.0 - uf) * inv_CDF[u0] + uf * inv_CDF[u1];
-
-    return x;
-}
-
-SampleInverseCDF :: (inv_CDF: []float, u: Vector2) -> Vector2
-{
-    x := SampleInverseCDF(inv_CDF, u.x);
-    y := SampleInverseCDF(inv_CDF, u.y);
+    x := read_lookup_table1D(camera.filter_lut, FILTER_SIZE, u.x);
+    y := read_lookup_table1D(camera.filter_lut, FILTER_SIZE, u.y);
     return .{x, y};
 }
 
@@ -523,40 +506,23 @@ RenderPixel :: (scene: Scene, x: u32, y: u32, frame: u32, stats: *Path_Statistic
 
     for 0..spp-1
     {
-        rng        := CreatePathRandomState(x, y, it.(u32), spp, seed);
+        rng        := path_random_state(x, y, it.(u32), spp, seed);
 
-        filter_uv  := GetRandom2D(rng, .FILTER);
-        subpixel   := SampleInverseCDF(scene.camera.filter_lut, filter_uv);
+        filter_uv  := random_sample_2D(rng, .FILTER);
+        subpixel   := SampleCameraFilter(scene.camera, filter_uv);
         sample     := origin + subpixel;
 
         // To NDC
         pixel      := sample * scale + shift;
 
-        lens_uv    := GetRandom2D(rng, .LENS);
-        ray        := GenerateRay(pixel, scene.camera, lens_uv);
-        radiance   += TracePath(scene, ray, scene.config.max_depth, *rng, stats);
+        lens_uv    := random_sample_2D(rng, .LENS);
+        ray        := generate_ray(pixel, scene.camera, lens_uv);
+        radiance   += trace_path(scene, ray, scene.config.max_depth, *rng, stats);
     }
 
     radiance /= spp.(float);
     return radiance;
 }
-
-LaneDescription :: struct
-{
-    index    :  int;
-    count    :  int;
-    wavefront: *Wavefront;
-}
-
-Wavefront :: struct
-{
-    started := false; // @todo: cleanup
-    shared  : RenderShared;
-    barrier : SyncBarrier;
-    threads : [..]Thread;
-}
-
-#add_context lane: LaneDescription;
 
 RAY_TRACE_TILE_SIZE : s32 : 16;
 
@@ -691,13 +657,6 @@ render :: (scene: *Scene, weight: float, frame: u32, shared: *RenderShared)
                 // @todo: use exposure!!
                 render = ApplyToneMapping(scene.tonemap, render);
 
-                if (white_furnace_test_enabled)
-                {
-                    render.x = pow(abs(render.x), 0.5);
-                    render.y = pow(abs(render.y), 0.5);
-                    render.z = pow(abs(render.z), 0.5);
-                }
-
                 Clamp(*render.x, 0.0, 1.0);
                 Clamp(*render.y, 0.0, 1.0);
                 Clamp(*render.z, 0.0, 1.0);
@@ -770,7 +729,7 @@ wavefront_raytrace_entry :: (thread: *Thread) -> s64
 
         t0 := current_time_monotonic();
 
-        render(scene, weight, frame_index.(u32), *context.lane.wavefront.shared);
+        render(scene, weight, frame_index.(u32), thread.data.(*RenderShared));
 
         t1 := current_time_monotonic();
 
@@ -845,64 +804,6 @@ WriteHeatMap :: (bitmap: Bitmap, x: int, y: int, alpha: float)
     color := lerp(HEAT_COLORS[index], HEAT_COLORS[index + 1], local_t);
 
     write_color(bitmap, x, y, color, false);
-}
-
-init :: (wavefront: *Wavefront, scene: *Scene, max_threads: s32 = 0)
-{
-    num_cpus := get_number_of_processors();
-
-    assert(num_cpus >= 1);
-    if num_cpus > 200  num_cpus = 200;
-
-    num_cpus = max(num_cpus - 4, 2);
-
-    if max_threads > 0 && num_cpus > max_threads
-    {
-        num_cpus = max_threads;
-    }
-
-    init_sync_barrier(*wavefront.barrier, num_cpus);
-
-    array_resize(*wavefront.threads, num_cpus);
-
-    for * wavefront.threads
-    {
-        thread_init(it, wavefront_raytrace_entry);
-        it.data = scene;
-
-        it.starting_context.lane.index = it_index;
-        it.starting_context.lane.count = num_cpus;
-        it.starting_context.lane.wavefront = wavefront;
-
-        seed: Some_Big_Time_Value;
-        apollo := current_time_consensus();
-        seed.high = apollo.high;
-        seed.low  = apollo.low;
-        seed.low += it.(u64);
-        random_seed(*it.starting_context.random_state, seed);
-    }
-}
-
-start :: (using wavefront: *Wavefront)
-{
-    for * threads
-    {
-        thread_start(it);
-    }
-    wavefront.started = true;
-}
-
-join :: (using wavefront: *Wavefront)
-{
-    if !wavefront.started return;
-
-    for * threads
-    {
-        thread_is_done(it, -1);
-        thread_deinit(it);
-    }
-    deinit_sync_barrier(*wavefront.barrier);
-    array_free(threads);
 }
 
 load_bunny :: () -> PrimitiveMesh, Matrix4
@@ -1131,7 +1032,6 @@ load_scene :: (using scene: *Scene, type: SceneType)
         case .white_furnace_test;
             white_furnace_test_enabled = true;
 
-            tonemap            = .LINEAR;
             camera.fov         = 45.0 / 360.0;
             camera.position    = .{0, 0, -5};
             camera.orientation = .{};
@@ -1343,7 +1243,7 @@ add_box :: (scene: *Scene, xform: Matrix4, min: Vector3, max: Vector3, material_
     primitive.shape.box.vmax = max;
     primitive.xform.forward = xform;
     primitive.xform.inverse = inv;
-    bbox := TransformBox(xform, Box3.{min, max});
+    bbox := transform_box(xform, Box3.{min, max});
     array_add(*scene.tlas.bboxes, bbox);
     primitive.material_id = material_id;
 }
@@ -1383,8 +1283,8 @@ add_mesh :: (scene: *Scene, xform: Matrix4, mesh: PrimitiveMesh, material_id: Ma
 
     for v: mesh.vertices
     {
-        p := TransformPoint(xform, v.p);
-        bbox = Union(bbox, p);
+        p := transform_point(xform, v.p);
+        bbox = box_union(bbox, p);
     }
 
     array_add(*scene.tlas.bboxes, bbox);
@@ -1571,7 +1471,7 @@ UpdateCameraParams :: (camera: *Camera)
     InvertCDF(camera.filter_lut, cdf, 0.0, width * 0.5);
 }
 
-GenerateRay :: (pixel: Vector2, camera: Camera, lens_uv: Vector2) -> Ray
+generate_ray :: (pixel: Vector2, camera: Camera, lens_uv: Vector2) -> Ray
 {
     origin := Vector3.{0, 0, 0};
     target := pixel.x * camera.dxdu + pixel.y * camera.dydv + Vector3.{0, 0, 1};
@@ -1680,23 +1580,13 @@ radix_sort :: (K: []u32, K_temp: []u32, V: []$T, V_temp: []T, n: s64)
 triangle_bbox :: (p: Vector3, q: Vector3, r: Vector3) -> Box3
 {
     bbox := Box3_Empty;
-    bbox = Union(bbox, p);
-    bbox = Union(bbox, q);
-    bbox = Union(bbox, r);
+    bbox = box_union(bbox, p);
+    bbox = box_union(bbox, q);
+    bbox = box_union(bbox, r);
     return bbox;
 }
 
 // https://fgiesen.wordpress.com/2009/12/13/decoding-morton-codes/
-
-split2 :: (x: u32) -> u32
-{
-    x &= 0X0000FFFF;
-    x = (x ^ (x <<  8)) & 0X00FF00FF;
-    x = (x ^ (x <<  4)) & 0X0F0F0F0F;
-    x = (x ^ (x <<  2)) & 0X33333333;
-    x = (x ^ (x <<  1)) & 0X55555555;
-    return x;
-}
 
 encode_morton2 :: (x: u32, y: u32) -> u32
 {
@@ -1750,8 +1640,8 @@ build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi:
 
     for lo..hi
     {
-        node_bbox     = Union(node_bbox, bboxes[indices[it]]);
-        centriod_bbox = Union(centriod_bbox, centriods[indices[it]]);
+        node_bbox     = box_union(node_bbox, bboxes[indices[it]]);
+        centriod_bbox = box_union(centriod_bbox, centriods[indices[it]]);
     }
 
     split_axis := 0;
@@ -1807,7 +1697,7 @@ build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi:
     {
         bin_index := find_bin_index(centriods[indices[it]]);
         bins[bin_index].count += 1;
-        bins[bin_index].bbox = Union(bins[bin_index].bbox, bboxes[indices[it]]);
+        bins[bin_index].bbox = box_union(bins[bin_index].bbox, bboxes[indices[it]]);
     }
 
     split_costs: [SPLIT_COUNT]float;
@@ -1817,7 +1707,7 @@ build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi:
 
     for 0..SPLIT_COUNT-1
     {
-        prev_box = Union(prev_box, bins[it].bbox);
+        prev_box = box_union(prev_box, bins[it].bbox);
         prev_count += bins[it].count;
         split_costs[it] += prev_count * half_area(prev_box);
     }
@@ -1827,7 +1717,7 @@ build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi:
 
     for #v2 < 1..SPLIT_COUNT
     {
-        prev_box = Union(prev_box, bins[it].bbox);
+        prev_box = box_union(prev_box, bins[it].bbox);
         prev_count += bins[it].count;
         split_costs[it - 1] += prev_count * half_area(prev_box);
     }
@@ -1902,7 +1792,7 @@ build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi:
     build_bvh_sah_binned_recursive(builder, next + 0, lo, mid, indices, bboxes, centriods);
     build_bvh_sah_binned_recursive(builder, next + 1, mid + 1, hi, indices, bboxes, centriods);
 
-    node.bbox                     = Union(builder.nodes[next + 0].bbox, builder.nodes[next + 1].bbox);
+    node.bbox                     = box_union(builder.nodes[next + 0].bbox, builder.nodes[next + 1].bbox);
     node.first_child_or_primitive = next;
     node.num_primitives           = 0;
 }
@@ -2241,6 +2131,8 @@ Display_Type :: enum
 
 main :: ()
 {
+    //compute_metallic_lookup_tables(true);
+
     init();
 
     success, args := parse_arguments(CommandLineArgs);
@@ -2286,14 +2178,12 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=64, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=128, max_depth=5);
     load_scene(*scene, args.scene);
     prepare_for_rendering(*scene);
 
-    wavefront: Wavefront;
-
-    init(*wavefront, *scene, max_threads = args.num_threads.(s32));
-    start(*wavefront);
+    wave: Thread_Wave;
+    thread_wave_start(*wave, wavefront_raytrace_entry, shared = *scene, used_threads = 4);
 
     Simp.prepare_window(wnd, wanted_msaa = MSAA);
 
@@ -2397,14 +2287,14 @@ main :: ()
         }
 
         Simp.texture_load_from_bitmap(*raytrace_map, display_bitmap);
-        draw_one_frame(wnd, *raytrace_map, scene, wavefront.threads.count);
+        draw_one_frame(wnd, *raytrace_map, scene, wave.threads.count);
 
         sleep_milliseconds(10);
 
         reset_temporary_storage();
     }
 
-    join(*wavefront);
+    thread_wave_join(*wave);
 }
 
 save_screenshot :: (bitmap: Bitmap, screenshot_index: *int)
@@ -2612,8 +2502,8 @@ InitializeRandomSamples :: ()
 
     for * sobol_random_samples
     {
-        x := SampleSobol(it_index.(u32), 0);
-        y := SampleSobol(it_index.(u32), 1);
+        x := sample_sobol(it_index.(u32), 0);
+        y := sample_sobol(it_index.(u32), 1);
         it.* = .{x, y};
     }
 
@@ -2621,8 +2511,8 @@ InitializeRandomSamples :: ()
     {
         x   := it_index % SAMPLES_PER_AXIS;
         y   := it_index / SAMPLES_PER_AXIS;
-        rng := CreatePathRandomState(x.(u32), y.(u32), 0, 1, seed);
-        p   := GetRandom2D(rng, .FILTER);
+        rng := path_random_state(x.(u32), y.(u32), 0, 1, seed);
+        p   := random_sample_2D(rng, .FILTER);
         it.* = p;
     }
 }
@@ -2820,18 +2710,6 @@ init :: ()
     }
 }
 
-lane_divide :: (count: int) -> int, int
-{
-    beg := (context.lane.index * count) / context.lane.count;
-    end := ((context.lane.index + 1) * count) / context.lane.count;
-    return beg, end;
-}
-
-lane_sync :: ()
-{
-    wait_sync_barrier(*context.lane.wavefront.barrier);
-}
-
 #import "Basic"()(MEMORY_DEBUGGER=true);
 #import "File";
 #import "File_Utilities";
@@ -2847,48 +2725,9 @@ lane_sync :: ()
 #import "Hash";
 #import "Command_Line";
 #import "stb_image";
+#import "Random";
 
 Simp :: #import "Simp";
 
 #import "Arena";
 #import "Raddbg"()(ENABLED=ENABLE_RAD_DEBUGGER);
-
-Windows :: #import "Windows";
-
-ULONG_PTR :: u64; // x64 only
-LONG :: s32;
-
-SYNCHRONIZATION_BARRIER  :: struct
-{
-    Reserved1: Windows.DWORD;
-    Reserved2: Windows.DWORD;
-    Reserved3: [2]ULONG_PTR;
-    Reserved4: Windows.DWORD;
-    Reserved5: Windows.DWORD;
-}
-
-SyncBarrier :: struct
-{
-    platform_specific: SYNCHRONIZATION_BARRIER;
-}
-
-kernel32 :: #library,system "kernel32";
-
-InitializeSynchronizationBarrier :: (lpBarrier: *SYNCHRONIZATION_BARRIER, lTotalThreads: LONG, lSpinCount: LONG) -> Windows.BOOL #foreign kernel32;
-DeleteSynchronizationBarrier :: (lpBarrier: *SYNCHRONIZATION_BARRIER) -> Windows.BOOL #foreign kernel32;
-EnterSynchronizationBarrier :: (lpBarrier: *SYNCHRONIZATION_BARRIER, dwFlags: Windows.DWORD) -> Windows.BOOL #foreign kernel32;
-
-init_sync_barrier :: (barrier: *SyncBarrier, num_threads: int)
-{
-    InitializeSynchronizationBarrier(*barrier.platform_specific, xx num_threads, -1);
-}
-
-deinit_sync_barrier :: (barrier: *SyncBarrier)
-{
-    DeleteSynchronizationBarrier(*barrier.platform_specific);
-}
-
-wait_sync_barrier :: (barrier: *SyncBarrier)
-{
-    EnterSynchronizationBarrier(*barrier.platform_specific, 0);
-}

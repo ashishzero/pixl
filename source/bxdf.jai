@@ -1,16 +1,16 @@
 
-SurfaceProperties :: struct
+Surface :: struct
 {
-    color                : Vector3;
+    color                : Spectrum;
     metalness            : float;
     diffuse_roughness    : float;
     specular_weight      : float;
-    specular_color       : Vector3;
+    specular_color       : Spectrum;
     specular_roughness   : float;
     specular_anisotropic : float;
 
     emission_strength    : float;
-    emission             : Vector3;
+    emission             : Spectrum;
 
     //specular        : float;
     //subsurface      : float;
@@ -22,7 +22,7 @@ SurfaceProperties :: struct
 
 BxDF_Sample :: struct
 {
-    Fr  : Vector3;
+    fr  : Spectrum;
     L   : Vector3;
     pdf : float;
 }
@@ -39,7 +39,7 @@ BxDF_Sample :: struct
 FON1 :: 0.5 - 2.0 / (3.0 * PI);
 FON2 :: 2.0 / 3.0 - 28.0 / (15.0 * PI);
 
-E_FON_Approx :: (mu: float, roughness: float) -> float
+e_fon_approx :: (mu: float, roughness: float) -> float
 {
     G1      :: 0.057108529;
     G2      :: 0.49188187;
@@ -50,7 +50,7 @@ E_FON_Approx :: (mu: float, roughness: float) -> float
     return (1.0 + roughness * goverpi) / (1.0 + FON1 * roughness);
 }
 
-LTC_Coeffs :: (mu: float, roughness: float) -> float, float, float, float
+ltc_coeffs :: (mu: float, roughness: float) -> float, float, float, float
 {
     r := roughness;
     a := 1.0 + r * (0.303392 + (-0.518982 + 0.111709 * mu) * mu + (-0.276266 + 0.335918 * mu) * r);
@@ -60,7 +60,7 @@ LTC_Coeffs :: (mu: float, roughness: float) -> float, float, float, float
     return a, b, c, d;
 }
 
-LTC_OrthonormalBasis :: (w: Vector3) -> Matrix3
+ltc_orthonormal_basis :: (w: Vector3) -> Matrix3
 {
     lensq := dot(w.xy, w.xy);
     X     := ifx (lensq > 0.0) then (Vector3.{w.x, w.y, 0.0} / sqrt(lensq)) else Vector3.{1, 0, 0};
@@ -74,9 +74,9 @@ LTC_OrthonormalBasis :: (w: Vector3) -> Matrix3
     return LTC;
 }
 
-CLTC_Sample :: (V: Vector3, roughness: float, u1: float, u2: float) -> Vector3, float
+sample_cltc :: (V: Vector3, roughness: float, u1: float, u2: float) -> Vector3, float
 {
-    a, b, c, d := LTC_Coeffs(V.z, roughness);         // coeffs of LTC M
+    a, b, c, d := ltc_coeffs(V.z, roughness);         // coeffs of LTC M
     radius     := sqrt(u1);                           // CLTC sampling
     phi        := 2.0 * PI * u2;                      // CLTC sampling
     x          := radius * cos(phi);                  // CLTC sampling factors
@@ -90,16 +90,16 @@ CLTC_Sample :: (V: Vector3, roughness: float, u1: float, u2: float) -> Vector3, 
     len        := length(L);                          // ∥M H∥=1/∥inv(M) H∥
     detM       := c * (a - b * d);                    // |M|
     pdf_L      := pdf_H * len * len * len / detM;     // L sample PDF
-    from_LTC   := LTC_OrthonormalBasis(V);            // L -> local space
+    from_LTC   := ltc_orthonormal_basis(V);            // L -> local space
     L           = normalize(from_LTC * L);            // L -> local space
     return L, pdf_L;
 }
 
-CLTC_PDF :: (V_local: Vector3, L_local: Vector3, roughness: float) -> float
+pdf_cltc :: (V_local: Vector3, L_local: Vector3, roughness: float) -> float
 {
-    to_LTC     := transpose(LTC_OrthonormalBasis(V_local));  // V -> LTC space
+    to_LTC     := transpose(ltc_orthonormal_basis(V_local));  // V -> LTC space
     L          := to_LTC * L_local;                          // V -> LTC space
-    a, b, c, d := LTC_Coeffs(abs(V_local.z), roughness);     // coeffs of LTC M
+    a, b, c, d := ltc_coeffs(abs(V_local.z), roughness);     // coeffs of LTC M
     detM       := c * (a - b * d);                           // |M|
     H          := Vector3.{c * (L.x - b * L.z), (a - b * d) * L.y, -c * (d * L.x - a * L.z)}; // adj(M)L
     lensq      := dot(H, H);                                 // |M|∥inv(M) H∥
@@ -109,7 +109,7 @@ CLTC_PDF :: (V_local: Vector3, L_local: Vector3, roughness: float) -> float
     return pdf;
 }
 
-SampleUniformLobe :: (u1: float, u2: float) -> Vector3
+sample_uniform_lobe :: (u1: float, u2: float) -> Vector3
 {
     sintheta := sqrt(1.0 - u1 * u1);
     phi      := 2.0 * PI * u2;
@@ -122,7 +122,7 @@ SampleUniformLobe :: (u1: float, u2: float) -> Vector3
 
 #scope_export
 
-DiffuseFr :: (V: Vector3, L: Vector3, surface: SurfaceProperties) -> Vector3
+f_diffuse :: (V: Vector3, L: Vector3, surface: Surface) -> Spectrum
 {
     color     := surface.color;
     roughness := surface.diffuse_roughness;
@@ -133,8 +133,8 @@ DiffuseFr :: (V: Vector3, L: Vector3, surface: SurfaceProperties) -> Vector3
     s_over_t  := ifx (s > 0.0) then (s / max(max(NoL, NoV), 1.0e-6)) else s; // FON s/t
     AF        := 1.0 / (1.0 + FON1 * roughness);                             // FON A coeff
     f_ss      := (color * INV_PI) * AF * (1.0 + roughness * s_over_t);       // single-scatter
-    EFo       := E_FON_Approx(NoV, roughness);                               // FON V albedo
-    EFi       := E_FON_Approx(NoL, roughness);                               // FON L albedo
+    EFo       := e_fon_approx(NoV, roughness);                               // FON V albedo
+    EFi       := e_fon_approx(NoL, roughness);                               // FON L albedo
     avgEF     := AF * (1.0 + FON2 * roughness);                              // average albedo
     rho_ms    := (color * color) * avgEF / (Vector3.{1, 1, 1} - color * (1.0 - avgEF));
     eps       := 1.0e-6;
@@ -142,18 +142,18 @@ DiffuseFr :: (V: Vector3, L: Vector3, surface: SurfaceProperties) -> Vector3
     return f_ss + f_ms;
 }
 
-DiffusePDF :: (V: Vector3, L: Vector3, surface: SurfaceProperties) -> float
+pdf_diffuse :: (V: Vector3, L: Vector3, surface: Surface) -> float
 {
     roughness := surface.diffuse_roughness;
     NoV       := saturate(V.z);
     P_u       := pow(roughness, 0.1) * (0.162925 + NoV * (-0.372058 + (0.538233 - 0.290822 * NoV) * NoV));
     P_c       := 1.0 - P_u;
-    pdf_c     := CLTC_PDF(V, L, roughness);
+    pdf_c     := pdf_cltc(V, L, roughness);
     pdf_u     := 1.0 / (2.0 * PI);
     return P_u * pdf_u + P_c * pdf_c;
 }
 
-DiffuseSample :: (V: Vector3, surface: SurfaceProperties, rng: *Path_Random_State, stats: *Path_Statistics) -> BxDF_Sample
+sample_diffuse :: (V: Vector3, surface: Surface, u: Vector2) -> BxDF_Sample
 {
     roughness := surface.diffuse_roughness;
 
@@ -163,120 +163,26 @@ DiffuseSample :: (V: Vector3, surface: SurfaceProperties, rng: *Path_Random_Stat
 
     L         : Vector3 = ---;
     pdf_c     : float   = ---;
-    u         := GetRandom2D(rng, .BxDF);
 
-    if (u.x < P_u)
+    u1        := u.x;
+    u2        := u.y;
+
+    if (u1 < P_u)
     {
-        u.x   = u.x / P_u;
-        L     = SampleUniformLobe(u.x, u.y); // sample L from uniform lobe
-        pdf_c = CLTC_PDF(V, L, roughness); // evaluate CLTC PDF at L
+        u1    = u1 / P_u;
+        L     = sample_uniform_lobe(u1, u2); // sample L from uniform lobe
+        pdf_c = pdf_cltc(V, L, roughness); // evaluate CLTC PDF at L
     }
     else
     {
-        u.x      = (u.x - P_u) / P_c;
-        L, pdf_c = CLTC_Sample(V, roughness, u.x, u.y); // sample L from CLTC lobe
+        u1       = (u1 - P_u) / P_c;
+        L, pdf_c = sample_cltc(V, roughness, u1, u2); // sample L from CLTC lobe
     }
 
-    Fr    := DiffuseFr(V, L, surface);
+    fr    := f_diffuse(V, L, surface);
     pdf_u := 1.0 / (2.0 * PI);
     pdf   := P_u * pdf_u + P_c * pdf_c; // MIS PDF of L
-    return .{Fr, L, pdf};
-}
-
-//------------------------------------------------------------------------
-// Microfacet Model
-// Trowbridge–Reitz (GGX) model
-
-#scope_export
-
-MicrofacetAnisotropicDistribution :: (NoH: float, alpha: Vector2) -> float
-{
-    alpha_x  := max(alpha.x, 1.0e-3);
-    alpha_y  := max(alpha.y, 1.0e-3);
-    alpha_x2 := alpha_x * alpha_x;
-    alpha_y2 := alpha_y * alpha_y;
-    cos2     := max(NoH * NoH, 1.0e-6);
-    sin2     := 1 - cos2;
-    tan2     := sin2 / cos2;
-    cos4     := cos2 * cos2;
-    f        := 1.0 + tan2 * (cos2 / alpha_x2 + sin2 / alpha_y2);
-    inv_D    := PI * alpha_x * alpha_y * cos4 * f * f;
-    D        := 1.0 / max(1.0e-6, inv_D);
-    return D;
-}
-
-MicrofacetMask :: (mu: float, alpha: Vector2) -> float
-{
-    cos_mu    := saturate(mu);
-    cos2      := max(cos_mu * cos_mu, 1.0e-6);
-    sin2      := 1.0 - cos2;
-    sin_mu    := sqrt(sin2);
-    alpha2    := square(alpha.x * cos_mu) + square(alpha.y * sin_mu);
-    lambda    := 0.5 * (sqrt(1.0 + alpha2 * sin2 / cos2) - 1.0);
-    G         := 1.0 / (1.0 + lambda);
-    return G;
-}
-
-MicrofacetMaskShadow :: (NoV: float, NoL: float, alpha: Vector2) -> float
-{
-    cosV      := saturate(NoV);
-    cosL      := saturate(NoL);
-    cosV2     := max(cosV * cosV, 1.0e-6);
-    cosL2     := max(cosL * cosL, 1.0e-6);
-    sinV2     := 1.0 - cosV2;
-    sinL2     := 1.0 - cosL2;
-    sinV      := sqrt(sinV2);
-    sinL      := sqrt(sinL2);
-    alphaV2   := square(alpha.x * cosV) + square(alpha.y * sinV);
-    alphaL2   := square(alpha.x * cosL) + square(alpha.y * sinL);
-    GV        := 0.5 * (sqrt(1.0 + alphaV2 * sinV2 / cosV2) - 1.0);
-    GL        := 0.5 * (sqrt(1.0 + alphaL2 * sinL2 / cosL2) - 1.0);
-    G         := 1.0 / (1.0 + GL + GV);
-    return G;
-}
-
-MicrofacetSample :: (V: Vector3, alpha: Vector2, u1: float, u2: float) -> Vector3
-{
-    N := normalize(Vector3.{alpha.x * V.x, alpha.y * V.y, V.z});
-
-    lensq := N.x * N.x + N.y * N.y;
-
-    X := ifx (lensq > 0.0)
-    {
-        inv_len := 1.0 / sqrt(lensq);
-        Vector3.{-N.y * inv_len, N.x * inv_len, 0.0};
-    }
-    else
-    {
-        Vector3.{1.0, 0.0, 0.0};
-    };
-
-    Y   := cross(N, X);
-
-    r   := sqrt(u1);
-    phi := 2.0 * PI * u2;
-    x   := r * cos(phi);
-    y   := r * sin(phi);
-    s   := 0.5 * (1.0 + N.z);
-    y    = (1.0 - s) * sqrt(max(0.0, 1.0 - x * x)) + s * y;
-    
-    H   := x * X + y * Y + sqrt(max(0.0, 1.0 - x * x - y * y)) * N;
-    H.x *= alpha.x;
-    H.y *= alpha.y;
-    H.z  = max(1.0e-6, H.z);
-    H    = normalize(H);
-    return H;
-}
-
-MicrofacetAnisotropicAlpha :: (roughness: float, anisotropic: float) -> Vector2
-{
-    r       := clamp(roughness, 1.0e-3, 1.0);
-    r2      := r * r;
-    aspect  := sqrt(1.0 - 0.9 * anisotropic);
-    alpha_x := r2 / aspect;
-    alpha_y := r2 * aspect;
-    alpha   := Vector2.{alpha_x, alpha_y};
-    return alpha;
+    return .{fr, L, pdf};
 }
 
 //------------------------------------------------------------------------
@@ -285,21 +191,16 @@ MicrofacetAnisotropicAlpha :: (roughness: float, anisotropic: float) -> Vector2
 
 #scope_file
 
-Reflect :: inline (d: Vector3, n: Vector3) -> Vector3
-{
-    return -d + 2 * dot(d, n) * n;
-}
-
-F_Schlick :: (Fo: Vector3, mu: float) -> Vector3
+f_schlick :: (Fo: Spectrum, mu: float) -> Spectrum
 {
     w1 := 1.0 - mu;
     w2 := w1 * w1;
     w5 := w2 * w2 * w1; // pow(1 - mu, 5)
-    F := Fo + (Vector3.{1, 1, 1} - Fo) * w5;
+    F := Fo + (Spectrum_One - Fo) * w5;
     return F;
 }
 
-Power6 :: inline (x: float) -> float
+power6 :: inline (x: float) -> float
 {
     x2 := x * x;
     x3 := x2 * x;
@@ -307,51 +208,79 @@ Power6 :: inline (x: float) -> float
     return x6;
 }
 
-F82Tint :: (mu: float, Fo: Vector3, specular_color: Vector3) -> Vector3
+f82_tint :: (mu: float, Fo: Spectrum, specular_color: Spectrum) -> Spectrum
 {
     mu82   := 1.0 / 7.0;
-    f_mu   := F_Schlick(Fo, mu);
-    f_82   := F_Schlick(Fo, mu82);
-    r_mu   := mu * Power6(1.0 - mu);
-    r_82   := mu82 * Power6(1.0 - mu82);
-    f_spec := r_mu * f_82 * (Vector3.{1, 1, 1} - specular_color) / r_82;
+    f_mu   := f_schlick(Fo, mu);
+    f_82   := f_schlick(Fo, mu82);
+    r_mu   := mu * power6(1.0 - mu);
+    r_82   := mu82 * power6(1.0 - mu82);
+    f_spec := r_mu * f_82 * (Spectrum_One - specular_color) / r_82;
     tinted := max(f_mu - f_spec, Vector3.{0, 0, 0});
     return tinted;
 }
 
+// Multiscatter energy preservation: https://blog.selfshadow.com/2019/03/30/multi-faceted-part-4/
+// which is an approximation of https://eheitzresearch.wordpress.com/240-2/
+
+E_avg_metallic :: (roughness: float) -> float
+{
+    x := roughness;
+    a := 0.935594 + x * (-0.214381 - 0.0739448 * x);
+    b := 0.935594 + x * (-0.213352 + x * (-0.144444 + x));
+    return saturate(a / b);
+}
+
+f_ms_avg_metallic :: (Fo: Spectrum, E_avg: float) -> Spectrum
+{
+    W1 :: 20.0 / 21.0;
+    W2 :: 1.0 / 21.0;
+    Favg  := W1 * Fo + Spectrum.{W2, W2, W2};
+    f_avg := Favg * Favg * E_avg / (Spectrum_One - Favg * (1.0 - E_avg));
+    return f_avg;
+}
+
 #scope_export
 
-//------------------------------------------------------------------------
-// Single scatter
-
-MetalFr :: (V: Vector3, L: Vector3, Fo: Vector3, specular_color: Vector3, roughness: float, anisotropic: float) -> Vector3
+f_ms_metallic :: (Fo: Spectrum, NoL: float, NoV: float, roughness: float, alpha: Vector2) -> Spectrum
 {
-    if (roughness < 1.0e-3)
+    ErL       := read_lookup_table3D(Er_metallic, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, NoL, alpha.x, alpha.y);
+    ErV       := read_lookup_table3D(Er_metallic, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, NoV, alpha.x, alpha.y);
+    E_avg     := E_avg_metallic(roughness);
+    f_avg     := f_ms_avg_metallic(Fo, E_avg);
+    f_ms      := f_avg * ErL * ErV * INV_PI / (1.0 - E_avg);
+    return f_ms;
+}
+
+f_metallic :: (V: Vector3, L: Vector3, Fo: Spectrum, specular_color: Spectrum, roughness: float, anisotropic: float) -> Vector3
+{
+    if (roughness < 1.0e-4)
     {
         return .{0, 0, 0};
     }
     else
     {
-        alpha  := MicrofacetAnisotropicAlpha(roughness, anisotropic);
+        alpha  := microfacet_alpha(roughness, anisotropic);
         H      := normalize(V + L);
         NoV    := saturate(V.z);
         NoL    := saturate(L.z);
         NoH    := saturate(H.z);
         VoH    := saturate(dot(V, H));
-        D      := MicrofacetAnisotropicDistribution(NoH, alpha);
-        G      := MicrofacetMaskShadow(NoV, NoL, alpha);
-        Fm     := F82Tint(VoH, Fo, specular_color);
-        Fr     := D * G * Fm / max(4 * NoL * NoV, 1.0e-6);
-        return Fr;
+        D      := microfacet_distribution(NoH, alpha);
+        G      := microfacet_mask_shadow(NoV, NoL, alpha);
+        Fss    := f82_tint(VoH, Fo, specular_color);
+        fr     := D * G * Fss / max(4 * NoL * NoV, 1.0e-6);
+        fr     += f_ms_metallic(Fo, NoL, NoV, roughness, alpha);
+        return fr;
     }
 }
 
-MetalPDF :: (V: Vector3, L: Vector3, surface: SurfaceProperties) -> float
+pdf_metallic :: (V: Vector3, L: Vector3, surface: Surface) -> float
 {
     roughness   := surface.specular_roughness;
     anisotropic := surface.specular_anisotropic;
 
-    if (roughness < 1.0e-3)
+    if (roughness < 1.0e-4)
     {
         return 0.0;
     }
@@ -361,50 +290,48 @@ MetalPDF :: (V: Vector3, L: Vector3, surface: SurfaceProperties) -> float
         VoH   := saturate(dot(V, H));
         NoH   := saturate(H.z);
         NoV   := saturate(V.z);
-        alpha := MicrofacetAnisotropicAlpha(roughness, anisotropic);
-        D     := MicrofacetAnisotropicDistribution(NoH, alpha);
-        G1    := MicrofacetMask(NoV, alpha);
+        alpha := microfacet_alpha(roughness, anisotropic);
+        D     := microfacet_distribution(NoH, alpha);
+        G1    := microfacet_mask(NoV, alpha);
         pdf   := (D * G1) / max(4 * NoV, 1.0e-6);
         return pdf;
     }
 }
 
-MetalSample :: (V: Vector3, surface: SurfaceProperties, rng: *Path_Random_State, stats: *Path_Statistics) -> BxDF_Sample
+sample_metallic :: (V: Vector3, surface: Surface, u: Vector2) -> BxDF_Sample
 {
     Fo             := surface.color;
     specular_color := surface.specular_color;
     roughness      := surface.specular_roughness;
     anisotropic    := surface.specular_anisotropic;
 
-    if (roughness < 1.0e-3)
+    if (roughness < 1.0e-4)
     {
         L   := Vector3.{-V.x, -V.y, V.z};
         pdf := 1.0;
         mu  := L.z;
-        Fr  := F82Tint(mu, Fo, specular_color) / max(mu, 1.0e-6);
-        return .{Fr, L, pdf};
+        fr  := f82_tint(mu, Fo, specular_color) / max(mu, 1.0e-6);
+        return .{fr, L, pdf};
     }
     else
     {
-        u      := GetRandom2D(rng, .BxDF);
-        alpha  := MicrofacetAnisotropicAlpha(roughness, anisotropic);
-        H      := MicrofacetSample(V, alpha, u.x, u.y);
-        L      := Reflect(V, H);
+        alpha  := microfacet_alpha(roughness, anisotropic);
+        H      := microfacet_sample(V, alpha, u.x, u.y);
+        L      := reflect(V, H);
         NoV    := V.z;
         NoL    := L.z;
         NoH    := H.z;
         VoH    := dot(V, H);
-        D      := MicrofacetAnisotropicDistribution(NoH, alpha);
-        G      := MicrofacetMaskShadow(NoV, NoL, alpha);
-        G1     := MicrofacetMask(NoV, alpha);
-        Fm     := F82Tint(VoH, Fo, specular_color);
-        Fr     := (D * G * Fm) / max(4 * NoL * NoV, 1.0e-6);
+        D      := microfacet_distribution(NoH, alpha);
+        G      := microfacet_mask_shadow(NoV, NoL, alpha);
+        G1     := microfacet_mask(NoV, alpha);
+        Fss    := f82_tint(VoH, Fo, specular_color);
+        fr     := (D * G * Fss) / max(4 * NoL * NoV, 1.0e-6);
+        fr     += f_ms_metallic(Fo, NoL, NoV, roughness, alpha);
         pdf    := (D * G1) / max(4 * NoV, 1.0e-6);
-        return .{Fr, L, pdf};
+        return .{fr, L, pdf};
     }
 }
 
-//------------------------------------------------------------------------
-// Multiscatter
-
-
+#load "microfacet.jai";
+#load "bxdf_lookup.jai";

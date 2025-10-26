@@ -116,7 +116,7 @@ Scene :: struct
 
     materials   : [..]Material;
     environment : Texture2D;
-    flat_background_color := Vector3.{0.5, 0.5, 0.5};
+    flat_background_color := Spectrum.{0.5, 0.5, 0.5};
     exposure := 2.0; // @todo: to Camera?
 
     primitives : [..]Primitive;
@@ -152,26 +152,26 @@ HitInfo :: struct
 
 #scope_file
 
-IntersectPrimitive :: (primitive: Primitive, world_origin: Vector3, world_dir: Vector3, tmin: float, tmax: float) -> HitInfo
+intersect_primitive :: (primitive: Primitive, world_origin: Vector3, world_dir: Vector3, tmin: float, tmax: float) -> HitInfo
 {
-    origin := TransformPoint(primitive.xform.inverse, world_origin);
-    dir    := TransformVector(primitive.xform.inverse, world_dir);
+    origin := transform_point(primitive.xform.inverse, world_origin);
+    dir    := transform_vector(primitive.xform.inverse, world_dir);
 
     intersect: Intersect_Info = ---;
 
     if #complete primitive.type ==
     {
         case .SPHERE;
-            intersect = IntersectSphere(primitive.shape.sphere.radius, origin, dir, tmin, tmax);
+            intersect = intersect_sphere(primitive.shape.sphere.radius, origin, dir, tmin, tmax);
 
         case .DISK;
-            intersect = IntersectDisk(primitive.shape.disk.radius, origin, dir, tmin, tmax);
+            intersect = intersect_disk(primitive.shape.disk.radius, origin, dir, tmin, tmax);
 
         case .BOX;
-            intersect = IntersectBox(primitive.shape.box.vmin, primitive.shape.box.vmax, origin, dir, tmin, tmax);
+            intersect = intersect_box(primitive.shape.box.vmin, primitive.shape.box.vmax, origin, dir, tmin, tmax);
 
         case .MESH;
-            intersect = IntersectMesh(primitive.shape.mesh.indices, primitive.shape.mesh.vertices, primitive.shape.mesh.blas, origin, dir, tmin, tmax);
+            intersect = intersect_mesh(primitive.shape.mesh.indices, primitive.shape.mesh.vertices, primitive.shape.mesh.blas, origin, dir, tmin, tmax);
     }
 
     info := HitInfo.{ t = -1 };
@@ -179,10 +179,10 @@ IntersectPrimitive :: (primitive: Primitive, world_origin: Vector3, world_dir: V
     if (intersect.t >= 0.0)
     {
         // @todo: May be transform the minimum hit only??
-        info.p            = TransformPoint(primitive.xform.forward, intersect.p);
-        info.n            = TransformVector(transpose(primitive.xform.inverse), intersect.n);
-        info.dpdu         = TransformVector(primitive.xform.forward, intersect.dpdu);
-        info.dpdv         = TransformVector(primitive.xform.forward, intersect.dpdv);
+        info.p            = transform_point(primitive.xform.forward, intersect.p);
+        info.n            = transform_vector(transpose(primitive.xform.inverse), intersect.n);
+        info.dpdu         = transform_vector(primitive.xform.forward, intersect.dpdu);
+        info.dpdv         = transform_vector(primitive.xform.forward, intersect.dpdv);
         info.n            = normalize(info.n);
         info.dpdu         = normalize(info.dpdu); // @todo: are these necessary to normalize?
         info.dpdv         = normalize(info.dpdv);
@@ -204,7 +204,7 @@ IntersectPrimitive :: (primitive: Primitive, world_origin: Vector3, world_dir: V
 
 #scope_export
 
-IntersectBVH :: (nodes: []BVH_Node, primitives: []Primitive, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> HitInfo, u32
+intersect_tlas :: (nodes: []BVH_Node, primitives: []Primitive, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> HitInfo, u32
 {
     visited : u32 = 0;
     info := HitInfo.{ t = -1 };
@@ -224,14 +224,14 @@ IntersectBVH :: (nodes: []BVH_Node, primitives: []Primitive, origin: Vector3, di
 
             visited += 1;
 
-            if (Hits(origin, inv_dir, node.bbox, tmin, tmax))
+            if (hits(origin, inv_dir, node.bbox, tmin, tmax))
             {
                 if (node.num_primitives)
                 {
                     for 0..node.num_primitives-1
                     {
                         primitive := primitives[node.first_child_or_primitive + it];
-                        current   := IntersectPrimitive(primitive, origin, dir, tmin, tmax);
+                        current   := intersect_primitive(primitive, origin, dir, tmin, tmax);
                         if (current.t >= 0.0)
                         {
                             tmax = current.t;
@@ -253,10 +253,8 @@ IntersectBVH :: (nodes: []BVH_Node, primitives: []Primitive, origin: Vector3, di
     return info, visited;
 }
 
-IntersectScene :: (scene: Scene, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> HitInfo, u32
+intersect_scene :: (scene: Scene, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> HitInfo, u32
 {
-    hit, num_visited := IntersectBVH(scene.tlas.nodes, scene.mapped, origin, dir, tmin, tmax);
+    hit, num_visited := intersect_tlas(scene.tlas.nodes, scene.mapped, origin, dir, tmin, tmax);
     return hit, num_visited;
 }
-
-#import "Random";

@@ -20,10 +20,10 @@ Path_Dimension :: enum u32
 MAX_BOUNCE :: 16;
 
 // Based on: https://psychopath.io/post/2022_07_24_owen_scrambling_based_dithered_blue_noise_sampling
-CreatePathRandomState :: (x: u32, y: u32, sample: u32, spp: u32, seed: u32) -> Path_Random_State
+path_random_state :: (x: u32, y: u32, sample: u32, spp: u32, seed: u32) -> Path_Random_State
 {
-    morton_index := Morton2(x, y);
-    sample_index := FastOwenScramble4(morton_index, seed) * spp.(u64);
+    morton_index := morton2(x, y);
+    sample_index := fast_owen_scramble4(morton_index, seed) * spp.(u64);
     index        := (sample_index + sample).(u32, no_check);
     rng          := Path_Random_State.{index=index.(u32), bounce=0, seed=seed};
     return rng;
@@ -31,20 +31,20 @@ CreatePathRandomState :: (x: u32, y: u32, sample: u32, spp: u32, seed: u32) -> P
 
 #if NOISE_PCG
 {
-    GetRandom1D :: (rng: Path_Random_State, dim: Path_Dimension) -> float
+    random_sample_1D :: (rng: Path_Random_State, dim: Path_Dimension) -> float
     {
         x := random_get_zero_to_one_open();
         return x;
     }
 
-    GetRandom2D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector2
+    random_sample_2D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector2
     {
         x := random_get_zero_to_one_open();
         y := random_get_zero_to_one_open();
         return .{x, y};
     }
 
-    GetRandom3D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector3
+    random_sample_3D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector3
     {
         x := random_get_zero_to_one_open();
         y := random_get_zero_to_one_open();
@@ -52,7 +52,7 @@ CreatePathRandomState :: (x: u32, y: u32, sample: u32, spp: u32, seed: u32) -> P
         return .{x, y, z};
     }
 
-    GetRandom4D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector4
+    random_sample_4D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector4
     {
         x := random_get_zero_to_one_open();
         y := random_get_zero_to_one_open();
@@ -63,37 +63,37 @@ CreatePathRandomState :: (x: u32, y: u32, sample: u32, spp: u32, seed: u32) -> P
 }
 else
 {
-    GetRandom1D :: (rng: Path_Random_State, dim: Path_Dimension) -> float
+    random_sample_1D :: (rng: Path_Random_State, dim: Path_Dimension) -> float
     {
-        seed := HashDimension(rng, dim);
-        x    := SampleScrambledSobol(rng.index, seed, 0);
+        seed := hash_dimension(rng, dim);
+        x    := sample_scrambled_sobol(rng.index, seed, 0);
         return x;
     }
 
-    GetRandom2D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector2
+    random_sample_2D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector2
     {
-        seed := HashDimension(rng, dim);
-        x    := SampleScrambledSobol(rng.index, seed, 0);
-        y    := SampleScrambledSobol(rng.index, seed, 1);
+        seed := hash_dimension(rng, dim);
+        x    := sample_scrambled_sobol(rng.index, seed, 0);
+        y    := sample_scrambled_sobol(rng.index, seed, 1);
         return .{x, y};
     }
 
-    GetRandom3D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector3
+    random_sample_3D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector3
     {
-        seed := HashDimension(rng, dim);
-        x    := SampleScrambledSobol(rng.index, seed, 0);
-        y    := SampleScrambledSobol(rng.index, seed, 1);
-        z    := SampleScrambledSobol(rng.index, seed, 2);
+        seed := hash_dimension(rng, dim);
+        x    := sample_scrambled_sobol(rng.index, seed, 0);
+        y    := sample_scrambled_sobol(rng.index, seed, 1);
+        z    := sample_scrambled_sobol(rng.index, seed, 2);
         return .{x, y, z};
     }
 
-    GetRandom4D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector4
+    random_sample_4D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector4
     {
-        seed := HashDimension(rng, dim);
-        x    := SampleScrambledSobol(rng.index, seed, 0);
-        y    := SampleScrambledSobol(rng.index, seed, 1);
-        z    := SampleScrambledSobol(rng.index, seed, 2);
-        w    := SampleScrambledSobol(rng.index, seed, 3);
+        seed := hash_dimension(rng, dim);
+        x    := sample_scrambled_sobol(rng.index, seed, 0);
+        y    := sample_scrambled_sobol(rng.index, seed, 1);
+        z    := sample_scrambled_sobol(rng.index, seed, 2);
+        w    := sample_scrambled_sobol(rng.index, seed, 3);
         return .{x, y, z, w};
     }
 }
@@ -110,29 +110,29 @@ NextBounce :: (rng: *Path_Random_State)
 
 SOBOL_MATRIX_DIMENSION :: 4;
 
-SampleScrambledSobol :: (index: u32, seed: u32, dim: u32) -> float
+sample_scrambled_sobol :: inline (index: u32, seed: u32, dim: u32) -> float
 {
-    v := ScrambledSobol(index, seed, dim);
+    v := scrambled_sobol(index, seed, dim);
     return min(v.(float) * SOBOL_INV_RESOLUTION, 1.0 - FLOAT_EPS);
 }
 
-SampleSobol :: (index: u32, dim: u32) -> float
+sample_sobol :: inline (index: u32, dim: u32) -> float
 {
-    v := Sobol(index, dim);
+    v := sobol(index, dim);
     return min(v.(float) * SOBOL_INV_RESOLUTION, 1.0 - FLOAT_EPS);
 }
 
 #scope_file
 
-ScrambledSobol :: inline (index: u32, seed: u32, dim: u32) -> u32
+scrambled_sobol :: inline (index: u32, seed: u32, dim: u32) -> u32
 {
-    index  = FastOwenScramble2(index, seed ^ 0x79c68e4a);
-    v     := Sobol(index, dim);
-    v      = FastOwenScramble2(v, HashCombine(seed, dim));
+    index  = fast_owen_scramble2(index, seed ^ 0x79c68e4a);
+    v     := sobol(index, dim);
+    v      = fast_owen_scramble2(v, hash_combine(seed, dim));
     return v;
 }
 
-Sobol :: inline (index: u32, dim: u32) -> u32
+sobol :: inline (index: u32, dim: u32) -> u32
 {
     v : u32 = 0;
     i := dim * SOBOL_MATRIX_SIZE;
@@ -149,9 +149,9 @@ Sobol :: inline (index: u32, dim: u32) -> u32
 }
 
 // Based on: https://psychopath.io/post/2022_08_14_a_fast_hash_for_base_4_owen_scrambling
-FastOwenScramble4 :: (n: u32, seed: u32) -> u32
+fast_owen_scramble4 :: (n: u32, seed: u32) -> u32
 {
-    n = ReverseBits(n);
+    n = reverse_bits(n);
     n ^= n * 0x3d20adea;
     n ^= (n >> 1) & (n << 1) & 0x55555555;
     n += seed;
@@ -159,28 +159,23 @@ FastOwenScramble4 :: (n: u32, seed: u32) -> u32
     n ^= (n >> 1) & (n << 1) & 0x55555555;
     n ^= n * 0x05526c56;
     n ^= n * 0x53a22864;
-    n = ReverseBits(n);
+    n = reverse_bits(n);
     return n;
 }
 
 // Based on: https://psychopath.io/post/2021_01_30_building_a_better_lk_hash
-FastOwenScramble2 :: inline (v: u32, seed: u32) -> u32
+fast_owen_scramble2 :: inline (v: u32, seed: u32) -> u32
 {
-    v = ReverseBits(v);
+    v = reverse_bits(v);
     v ^= v * 0x3d20adea;
     v += seed;
     v *= (seed >> 16) | 1;
     v ^= v * 0x05526c56;
     v ^= v * 0x53a22864;
-    return ReverseBits(v);
+    return reverse_bits(v);
 }
 
-HashCombine :: inline (seed: u32, v: u32) -> u32
-{
-    return seed ^ (v + (seed << 6) + (seed >> 2));
-}
-
-ReverseBits :: inline (x: u32) -> u32
+reverse_bits :: inline (x: u32) -> u32
 {
     x = (((x & 0xaaaaaaaa) >> 1) | ((x & 0x55555555) << 1));
     x = (((x & 0xcccccccc) >> 2) | ((x & 0x33333333) << 2));
@@ -189,7 +184,7 @@ ReverseBits :: inline (x: u32) -> u32
     return ((x >> 16) | (x << 16));
 }
 
-HashDimension :: (rng: Path_Random_State, set: Path_Dimension) -> u32
+hash_dimension :: (rng: Path_Random_State, set: Path_Dimension) -> u32
 {
     Hash :: (n: u32) -> u32
     {

@@ -20,7 +20,7 @@ Intersect_Info :: struct
     v    : float;
 };
 
-IntersectSphere :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
+intersect_sphere :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
 {
     info := Intersect_Info.{ t = -1 };
 
@@ -76,7 +76,7 @@ IntersectSphere :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, t
     return info;
 }
 
-IntersectBox :: (vmin: Vector3, vmax: Vector3, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
+intersect_box :: (vmin: Vector3, vmax: Vector3, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
 {
     info := Intersect_Info.{ t = -1 };
 
@@ -161,7 +161,7 @@ IntersectBox :: (vmin: Vector3, vmax: Vector3, origin: Vector3, dir: Vector3, tm
     return info;
 }
 
-IntersectDisk :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
+intersect_disk :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
 {
     info := Intersect_Info.{ t = -1 };
 
@@ -210,9 +210,9 @@ IntersectDisk :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, tma
     return info;
 }
 
-IntersectTriangle :: (v0: Vertex3, v1: Vertex3, v2: Vertex3, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
+intersect_triangle :: (v0: Vertex3, v1: Vertex3, v2: Vertex3, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
 {
-    // https://www.graphics.cornell.edu/pubs/1997/MT97.pdf
+    // Reference: https://www.graphics.cornell.edu/pubs/1997/MT97.pdf
 
     info := Intersect_Info.{ t = -1 };
 
@@ -261,7 +261,7 @@ IntersectTriangle :: (v0: Vertex3, v1: Vertex3, v2: Vertex3, origin: Vector3, di
 
 // @todo: cleanup/copynpaste from intersect_bvh
 
-IntersectBLAS :: (indices: []u32, vertices: []Vertex3, blas: Acceleration_Structure, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
+intersect_blas :: (indices: []u32, vertices: []Vertex3, blas: Acceleration_Structure, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
 {
     info := Intersect_Info.{ t = -1 };
 
@@ -277,7 +277,7 @@ IntersectBLAS :: (indices: []u32, vertices: []Vertex3, blas: Acceleration_Struct
         top -= 1;
         node := blas.nodes[nodes_stack[top]];
 
-        if (Hits(origin, inv_dir, node.bbox, tmin, tmax))
+        if (hits(origin, inv_dir, node.bbox, tmin, tmax))
         {
             if (node.num_primitives)
             {
@@ -295,7 +295,7 @@ IntersectBLAS :: (indices: []u32, vertices: []Vertex3, blas: Acceleration_Struct
                     vtx1       := vertices[vtx_idx1];
                     vtx2       := vertices[vtx_idx2];
 
-                    current := IntersectTriangle(vtx0, vtx1, vtx2, origin, dir, tmin, tmax);
+                    current := intersect_triangle(vtx0, vtx1, vtx2, origin, dir, tmin, tmax);
 
                     if current.t >= 0.0
                     {
@@ -318,13 +318,13 @@ IntersectBLAS :: (indices: []u32, vertices: []Vertex3, blas: Acceleration_Struct
     return info;
 }
 
-IntersectMesh :: (indices: []u32, vertices: []Vertex3, blas: Acceleration_Structure, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
+intersect_mesh :: (indices: []u32, vertices: []Vertex3, blas: Acceleration_Structure, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Intersect_Info
 {
-    info := IntersectBLAS(indices, vertices, blas, origin, dir, tmin, tmax);
+    info := intersect_blas(indices, vertices, blas, origin, dir, tmin, tmax);
     return info;
 }
 
-Hits :: (origin: Vector3, inv_dir: Vector3, box: Box3, t0: float, t1: float) -> bool
+hits :: (origin: Vector3, inv_dir: Vector3, box: Box3, t0: float, t1: float) -> bool
 {
     for 0..2
     {
@@ -354,56 +354,6 @@ Hits :: (origin: Vector3, inv_dir: Vector3, box: Box3, t0: float, t1: float) -> 
     }
 
     return true;
-}
-
-TransformPoint :: (m: Matrix4, v: Vector3) -> Vector3
-{
-    result: Vector3 = ---;
-    result.x = m._11 * v.x + m._12 * v.y + m._13 * v.z + m._14;
-    result.y = m._21 * v.x + m._22 * v.y + m._23 * v.z + m._24;
-    result.z = m._31 * v.x + m._32 * v.y + m._33 * v.z + m._34;
-    w       := m._41 * v.x + m._42 * v.y + m._43 * v.z + m._44;
-    return result / w;
-}
-
-TransformVector :: (m: Matrix4, v: Vector3) -> Vector3
-{
-    result: Vector3 = ---;
-    result.x = m._11 * v.x + m._12 * v.y + m._13 * v.z;
-    result.y = m._21 * v.x + m._22 * v.y + m._23 * v.z;
-    result.z = m._31 * v.x + m._32 * v.y + m._33 * v.z;
-    return result;
-}
-
-TransformBox :: (t: Matrix4, box: Box3) -> Box3
-{
-    center := 0.5 * (box.vmin + box.vmax);
-    extent := 0.5 * (box.vmax - box.vmin);
-
-    rcenter := TransformPoint(t, center);
-    half    := Vector3.{0, 0, 0};
-
-    half.x       = abs(extent.x * t.floats[0 + 0]) + abs(extent.y * t.floats[0 + 1]) + abs(extent.z * t.floats[0 + 2]);
-    half.y       = abs(extent.x * t.floats[4 + 0]) + abs(extent.y * t.floats[4 + 1]) + abs(extent.z * t.floats[4 + 2]);
-    half.z       = abs(extent.x * t.floats[8 + 0]) + abs(extent.y * t.floats[8 + 1]) + abs(extent.z * t.floats[8 + 2]);
-
-    return Box3.{rcenter - half, rcenter + half};
-}
-
-Union :: (b: Box3, p: Vector3) -> Box3
-{
-    ret: Box3;
-    ret.vmin = min(b.vmin, p);
-    ret.vmax = max(b.vmax, p);
-    return ret;
-}
-
-Union :: (b1: Box3, b2: Box3) -> Box3
-{
-    ret: Box3;
-    ret.vmin = min(b1.vmin, b2.vmin);
-    ret.vmax = max(b1.vmax, b2.vmax);
-    return ret;
 }
 
 #scope_file
