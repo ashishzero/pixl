@@ -240,8 +240,6 @@ f_ms_avg_metallic :: (Fo: Spectrum, E_avg: float) -> Spectrum
     return f_avg;
 }
 
-#scope_export
-
 f_ms_metallic :: (Fo: Spectrum, NoL: float, NoV: float, roughness: float, alpha: Vector2) -> Spectrum
 {
     ErL       := read_lookup_table3D(Er_metallic, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, NoL, alpha.x, alpha.y);
@@ -252,8 +250,15 @@ f_ms_metallic :: (Fo: Spectrum, NoL: float, NoV: float, roughness: float, alpha:
     return f_ms;
 }
 
-f_metallic :: (V: Vector3, L: Vector3, Fo: Spectrum, specular_color: Spectrum, roughness: float, anisotropic: float) -> Vector3
+#scope_export
+
+f_metallic :: (V: Vector3, L: Vector3, surface: Surface) -> Vector3
 {
+    Fo             := surface.color;
+    specular_color := surface.specular_color;
+    roughness      := surface.specular_roughness;
+    anisotropic    := surface.specular_anisotropic;
+
     if (roughness < 1.0e-4)
     {
         return .{0, 0, 0};
