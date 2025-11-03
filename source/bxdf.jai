@@ -8,6 +8,7 @@ Surface :: struct
     specular_color       : Spectrum;
     specular_roughness   : float;
     specular_anisotropic : float;
+    specular_ior         : float;
 
     emission_strength    : float;
     emission             : Spectrum;
@@ -191,7 +192,7 @@ sample_diffuse :: (V: Vector3, surface: Surface, u: Vector2) -> BxDF_Sample
 
 #scope_file
 
-f_schlick :: (Fo: Spectrum, mu: float) -> Spectrum
+f_schlick_metallic :: (Fo: Spectrum, mu: float) -> Spectrum
 {
     w1 := 1.0 - mu;
     w2 := w1 * w1;
@@ -200,19 +201,11 @@ f_schlick :: (Fo: Spectrum, mu: float) -> Spectrum
     return F;
 }
 
-power6 :: inline (x: float) -> float
-{
-    x2 := x * x;
-    x3 := x2 * x;
-    x6 := x3 * x3;
-    return x6;
-}
-
 f82_tint :: (mu: float, Fo: Spectrum, specular_color: Spectrum) -> Spectrum
 {
     mu82   := 1.0 / 7.0;
-    f_mu   := f_schlick(Fo, mu);
-    f_82   := f_schlick(Fo, mu82);
+    f_mu   := f_schlick_metallic(Fo, mu);
+    f_82   := f_schlick_metallic(Fo, mu82);
     r_mu   := mu * power6(1.0 - mu);
     r_82   := mu82 * power6(1.0 - mu82);
     f_spec := r_mu * f_82 * (Spectrum_One - specular_color) / r_82;
@@ -231,7 +224,7 @@ E_avg_metallic :: (roughness: float) -> float
     return saturate(a / b);
 }
 
-f_ms_avg_metallic :: (Fo: Spectrum, E_avg: float) -> Spectrum
+frensel_avg_metallic :: (Fo: Spectrum, E_avg: float) -> Spectrum
 {
     W1 :: 20.0 / 21.0;
     W2 :: 1.0 / 21.0;
@@ -240,19 +233,9 @@ f_ms_avg_metallic :: (Fo: Spectrum, E_avg: float) -> Spectrum
     return f_avg;
 }
 
-f_ms_metallic :: (Fo: Spectrum, NoL: float, NoV: float, roughness: float, alpha: Vector2) -> Spectrum
-{
-    ErL   := read_lookup_table3D(Er_metallic, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, NoL, alpha.x, alpha.y);
-    ErV   := read_lookup_table3D(Er_metallic, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, NoV, alpha.x, alpha.y);
-    E_avg := E_avg_metallic(roughness);
-    f_avg := f_ms_avg_metallic(Fo, E_avg);
-    f_ms  := f_avg * ErL * ErV * INV_PI / (1.0 - E_avg);
-    return f_ms;
-}
-
 #scope_export
 
-f_metallic :: (V: Vector3, L: Vector3, surface: Surface) -> Vector3
+f_metallic :: (V: Vector3, L: Vector3, surface: Surface) -> Spectrum
 {
     Fo             := surface.color;
     specular_color := surface.specular_color;
@@ -261,7 +244,7 @@ f_metallic :: (V: Vector3, L: Vector3, surface: Surface) -> Vector3
 
     if (roughness < 1.0e-4)
     {
-        return .{0, 0, 0};
+        return Spectrum_Zero;
     }
     else
     {
@@ -271,11 +254,18 @@ f_metallic :: (V: Vector3, L: Vector3, surface: Surface) -> Vector3
         NoL    := saturate(L.z);
         NoH    := saturate(H.z);
         VoH    := saturate(dot(V, H));
-        D      := microfacet_distribution(NoH, alpha);
-        G      := microfacet_mask_shadow(NoV, NoL, alpha);
+        D      := microfacet_ggx_distribution(NoH, alpha);
+        G      := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
         Fss    := f82_tint(VoH, Fo, specular_color);
-        fr     := D * G * Fss / max(4 * NoL * NoV, 1.0e-6);
-        fr     += f_ms_metallic(Fo, NoL, NoV, roughness, alpha);
+        f_ss   := D * G * Fss / max(4 * NoL * NoV, 1.0e-6);
+
+        ErL    := read_table3D(Er_metallic, NoL, alpha.x, alpha.y); // @todo: use 2D table instead
+        ErV    := read_table3D(Er_metallic, NoV, alpha.x, alpha.y);
+        E_avg  := E_avg_metallic(roughness);
+        f_avg  := frensel_avg_metallic(Fo, E_avg);
+        f_ms   := f_avg * ErL * ErV * INV_PI / (1.0 - E_avg);
+
+        fr     := f_ss + f_ms;
         return fr;
     }
 }
@@ -291,14 +281,18 @@ pdf_metallic :: (V: Vector3, L: Vector3, surface: Surface) -> float
     }
     else
     {
-        H     := normalize(V + L);
-        VoH   := saturate(dot(V, H));
-        NoH   := saturate(H.z);
-        NoV   := saturate(V.z);
-        alpha := microfacet_alpha(roughness, anisotropic);
-        D     := microfacet_distribution(NoH, alpha);
-        G1    := microfacet_mask(NoV, alpha);
-        pdf   := (D * G1) / max(4 * NoV, 1.0e-6);
+        P_ms   := 0.5;
+        P_ss   := 1.0 - P_ms;
+        H      := normalize(V + L);
+        VoH    := saturate(dot(V, H));
+        NoH    := saturate(H.z);
+        NoV    := saturate(V.z);
+        alpha  := microfacet_alpha(roughness, anisotropic);
+        D      := microfacet_ggx_distribution(NoH, alpha);
+        G1     := microfacet_ggx_mask(NoV, alpha);
+        pdf_ss := (D * G1) / max(4 * NoV, 1.0e-6);
+        pdf_ms := 1.0 / (2.0 * PI);
+        pdf    := P_ss * pdf_ss + P_ms * pdf_ms;
         return pdf;
     }
 }
@@ -331,7 +325,7 @@ sample_metallic :: (V: Vector3, surface: Surface, u: Vector2) -> BxDF_Sample
         if (u1 < P_ss)
         {
             u1 = u1 / P_ss;
-            H  = microfacet_sample(V, alpha, u1, u2);
+            H  = microfacet_ggx_sample_normal(V, alpha, u1, u2);
             L  = reflect(V, H);
         }
         else
@@ -345,17 +339,230 @@ sample_metallic :: (V: Vector3, surface: Surface, u: Vector2) -> BxDF_Sample
         NoL    := L.z;
         NoH    := H.z;
         VoH    := dot(V, H);
-        D      := microfacet_distribution(NoH, alpha);
-        G      := microfacet_mask_shadow(NoV, NoL, alpha);
-        G1     := microfacet_mask(NoV, alpha);
+        D      := microfacet_ggx_distribution(NoH, alpha);
+        G      := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
+        G1     := microfacet_ggx_mask(NoV, alpha);
         Fss    := f82_tint(VoH, Fo, specular_color);
-        fr     := (D * G * Fss) / max(4 * NoL * NoV, 1.0e-6);
-        fr     += f_ms_metallic(Fo, NoL, NoV, roughness, alpha);
+        f_ss   := (D * G * Fss) / max(4 * NoL * NoV, 1.0e-6);
+
+        ErL    := read_table3D(Er_metallic, NoL, alpha.x, alpha.y); // @todo: use 2D table instead
+        ErV    := read_table3D(Er_metallic, NoV, alpha.x, alpha.y);
+        E_avg  := E_avg_metallic(roughness);
+        f_avg  := frensel_avg_metallic(Fo, E_avg);
+        f_ms   := f_avg * ErL * ErV * INV_PI / (1.0 - E_avg);
+
+        fr     := f_ss + f_ms;
+
         pdf_ss := (D * G1) / max(4 * NoV, 1.0e-6);
         pdf_ms := 1.0 / (2.0 * PI);
         pdf    := P_ss * pdf_ss + P_ms * pdf_ms;
         return .{fr, L, pdf};
     }
+}
+
+//------------------------------------------------------------------------
+// Specular Model
+
+#scope_file
+
+frensel_avg_dielectric :: (eta: float) -> float
+{
+    // https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_slides_v2.pdf
+    eta2 := eta * eta;
+    eta3 := eta2 * eta;
+    f    := 0.997118 + 0.1014 * eta + 0.965241 * eta2 + 0.130607 * eta3;
+    return f;
+}
+
+#scope_export
+
+f_specular_reflect :: (V: Vector3, L: Vector3, surface: Surface) -> Spectrum
+{
+    specular_color := surface.specular_color;
+    roughness      := max(surface.specular_roughness, 1.0e-4);
+    anisotropic    := surface.specular_anisotropic;
+    ior            := surface.specular_ior;
+    alpha          := microfacet_alpha(roughness, anisotropic);
+    H              := normalize(V + L);
+    NoV            := saturate(V.z);
+    NoL            := saturate(L.z);
+    NoH            := saturate(H.z);
+    D              := microfacet_ggx_distribution(NoH, alpha);
+    G              := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
+    fr             := (surface.specular_color * D * G) / max(4 * NoL * NoV, 1.0e-6);
+    return fr;
+}
+
+pdf_specular_reflect :: (V: Vector3, L: Vector3, surface: Surface) -> float
+{
+    specular_color := surface.specular_color;
+    roughness      := max(surface.specular_roughness, 1.0e-4);
+    anisotropic    := surface.specular_anisotropic;
+    ior            := surface.specular_ior;
+    H              := normalize(V + L);
+    VoH            := saturate(dot(V, H));
+    NoH            := saturate(H.z);
+    NoV            := saturate(V.z);
+    alpha          := microfacet_alpha(roughness, anisotropic);
+    D              := microfacet_ggx_distribution(NoH, alpha);
+    G1             := microfacet_ggx_mask(NoV, alpha);
+    pdf            := (D * G1) / max(4 * NoV, 1.0e-6);
+    return pdf;
+}
+
+sample_specular_reflect :: (V: Vector3, surface: Surface, u: Vector2) -> BxDF_Sample
+{
+    specular_color := surface.specular_color;
+    roughness      := max(surface.specular_roughness, 1.0e-4);
+    anisotropic    := surface.specular_anisotropic;
+    ior            := surface.specular_ior;
+    alpha          := microfacet_alpha(roughness, anisotropic);
+    H              := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
+    L              := reflect(V, H);
+    NoV            := V.z;
+    NoL            := L.z;
+    NoH            := H.z;
+    D              := microfacet_ggx_distribution(NoH, alpha);
+    G              := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
+    G1             := microfacet_ggx_mask(NoV, alpha);
+    fr             := (specular_color * D * G) / max(4 * NoL * NoV, 1.0e-6);
+    pdf            := (D * G1) / max(4 * NoV, 1.0e-6);
+    return .{fr, L, pdf};
+}
+
+//------------------------------------------------------------------------
+// Glossy
+
+#scope_file
+
+f_schlick_dielectric :: (mu: float, ior: float) -> float
+{
+    r  := (1 - ior) / (1 + ior);
+    r2 := r * r;
+    f  := r2 + (1.0 - r2) * power5(1.0 - mu);
+    return f;
+}
+
+#scope_export
+
+f_glossy :: (V: Vector3, L: Vector3, surface: Surface) -> Spectrum
+{
+    r     := f_schlick_dielectric(saturate(V.z), surface.specular_ior);
+    P_s   := surface.specular_weight * r;
+    P_d   := 1.0 - P_s;
+    f_s   := f_specular_reflect(V, L, surface);
+    f_d   := f_diffuse(V, L, surface);
+    f     := P_s * f_s + P_d * f_d;
+    return f;
+}
+
+pdf_glossy :: (V: Vector3, L: Vector3, surface: Surface) -> float
+{
+    r     := f_schlick_dielectric(saturate(V.z), surface.specular_ior);
+    P_s   := surface.specular_weight * r;
+    P_d   := 1.0 - P_s;
+    pdf_s := pdf_specular_reflect(V, L, surface);
+    pdf_d := pdf_diffuse(V, L, surface);
+    pdf   := P_s * pdf_s + P_d * pdf_d;
+    return pdf;
+}
+
+sample_glossy :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> BxDF_Sample
+{
+    r   := f_schlick_dielectric(V.z, surface.specular_ior);
+    P_s := surface.specular_weight * r;
+    P_d := 1.0 - P_s;
+
+    if (p < P_d)
+    {
+        sample := sample_diffuse(V, surface, u);
+        fs     := f_specular_reflect(V, sample.L, surface);
+        f      := P_s * fs + P_d * sample.fr;
+        pdf_s  := pdf_specular_reflect(V, sample.L, surface);
+        pdf    := P_s * pdf_s + P_d * sample.pdf;
+        return .{f, sample.L, pdf};
+    }
+    else
+    {
+        sample := sample_specular_reflect(V, surface, u);
+        fd     := f_diffuse(V, sample.L, surface);
+        f      := P_s * sample.fr + P_d * fd;
+        pdf_d  := pdf_diffuse(V, sample.L, surface);
+        pdf    := P_s * sample.pdf + P_d * pdf_d;
+        return .{f, sample.L, pdf};
+    }
+}
+
+//------------------------------------------------------------------------
+// Principled BSDF
+
+f_principled_bsdf :: (V: Vector3, L: Vector3, surface: Surface) -> Spectrum
+{
+    P_m := surface.metalness;
+    P_g := 1.0 - P_m;
+    f_m := f_metallic(V, L, surface);
+    f_g := f_glossy(V, L, surface);
+    f   := P_m * f_m + P_g * f_g;
+    return f;
+}
+
+pdf_principled_bsdf :: (V: Vector3, L: Vector3, surface: Surface) -> float
+{
+    P_m   := surface.metalness;
+    P_g   := 1.0 - P_m;
+    pdf_m := pdf_metallic(V, L, surface);
+    pdf_g := pdf_glossy(V, L, surface);
+    pdf   := P_m * pdf_m + P_g * pdf_g;
+    return pdf;
+}
+
+sample_principled_bsdf :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> BxDF_Sample
+{
+    P_m := surface.metalness;
+    P_g := 1.0 - P_m;
+
+    if (p < P_g)
+    {
+        p = p / P_g;
+        sample := sample_glossy(V, surface, p, u);
+        fm     := f_metallic(V, sample.L, surface);
+        f      := P_m * fm + P_g * sample.fr;
+        pdf_m  := pdf_metallic(V, sample.L, surface);
+        pdf    := P_m * pdf_m + P_g * sample.pdf;
+        return .{f, sample.L, pdf};
+    }
+    else
+    {
+        sample := sample_metallic(V, surface, u);
+        fg     := f_metallic(V, sample.L, surface);
+        f      := P_m * sample.fr + P_g * fg;
+        pdf_g  := pdf_glossy(V, sample.L, surface);
+        pdf    := P_m * sample.pdf + P_g * pdf_g;
+        return .{f, sample.L, pdf};
+    }
+}
+
+//------------------------------------------------------------------------
+// Utils
+
+power5 :: inline (x: float) -> float
+{
+    x2 := x * x;
+    y  := x2 * x2 * x;
+    return y;
+}
+
+power6 :: inline (x: float) -> float
+{
+    x2 := x * x;
+    x3 := x2 * x;
+    x6 := x3 * x3;
+    return x6;
+}
+
+read_table3D :: inline (table: []float, x: float, y: float, z: float) -> float
+{
+    return read_lookup_table3D(table, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, BxDF_LOOKUP_TABLE_SIZE, x, y, z);
 }
 
 #load "microfacet.jai";

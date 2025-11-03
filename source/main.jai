@@ -10,14 +10,6 @@ RAYTRACE_BITMAP_HEIGHT :: 1080;
 
 want_screenshot := false;
 
-refract :: inline (uv: Vector3, n: Vector3, factor: float) -> Vector3
-{
-    cos_theta    := min(dot(-uv, n), 1.0);
-    out_perp     := factor * (uv + cos_theta * n);
-    out_parallel := -sqrt(abs(1.0 - length_squared(out_perp))) * n;
-    return out_perp + out_parallel;
-}
-
 smoothstep :: inline (a: float, b: float, v: float) -> float
 {
     dist := b - a;
@@ -182,32 +174,19 @@ material_surface :: (material: Material, hit: HitInfo) -> Surface
     surface.specular_color       = SampleTextureSpectrum(material.specular_color, hit.u, hit.v);
     surface.specular_roughness   = SampleAlpha(material.specular_roughness, hit.u, hit.v);
     surface.specular_anisotropic = SampleAlpha(material.specular_anisotropic, hit.u, hit.v);
+    surface.specular_ior         = SampleAlpha(material.specular_ior, hit.u, hit.v);
     surface.emission             = SampleTextureSpectrum(material.emission, hit.u, hit.v);
     surface.emission_strength    = SampleAlpha(material.emission_strength, hit.u, hit.v);
+
+    if (hit.face != .FRONT)
+    {
+        if (surface.specular_ior != 0)
+        {
+            surface.specular_ior = 1.0 / surface.specular_ior;
+        }
+    }
+
     return surface;
-}
-
-sample_bsdf :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> BxDF_Sample
-{
-    P_m := surface.metalness;
-    P_d := 1.0 - P_m;
-
-    if (p < P_d)
-    {
-        sample := sample_diffuse(V, surface, u);
-        pdf_m  := pdf_metallic(V, sample.L, surface);
-        pdf    := P_m * pdf_m + P_d * sample.pdf;
-        return .{sample.fr, sample.L, pdf};
-    }
-    else
-    {
-        sample := sample_metallic(V, surface, u);
-        pdf_d  := pdf_diffuse(V, sample.L, surface);
-        pdf    := P_m * sample.pdf + P_d * pdf_d;
-        return .{sample.fr, sample.L, pdf};
-    }
-
-    return .{};
 }
 
 EncodeSphericalUV :: (n: Vector3) -> Vector2
@@ -231,7 +210,6 @@ Ray_Type :: enum
     SECONDARY;
 }
 
-// @todo: use Matrix4x3
 forward_transform :: (xform: Matrix3, p: Vector3) -> Vector3
 {
     r: Vector3 = ---;
@@ -296,7 +274,7 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, 
             u      := random_sample_2D(rng, .BxDF);
 
             V      := forward_transform(inv_TBN, -ray.dir);
-            sample := sample_bsdf(V, surface, p, u);
+            sample := sample_principled_bsdf(V, surface, p, u);
 
             // @todo: return emission from BSDFSample as well
             emittance := surface.emission_strength * surface.emission;
@@ -805,7 +783,16 @@ WriteHeatMap :: (bitmap: Bitmap, x: int, y: int, alpha: float)
   //  write_color(bitmap, x, y, color, false);
 }
 
-load_bunny :: () -> PrimitiveMesh, Matrix4
+make_matrix4x3 :: (m: Matrix4) -> Matrix4x3
+{
+    r: Matrix4x3 = ---;
+    r._11 = m._11; r._12 = m._12; r._13 = m._13; r._14 = m._14;
+    r._21 = m._21; r._22 = m._22; r._23 = m._23; r._24 = m._24;
+    r._31 = m._31; r._32 = m._32; r._33 = m._33; r._34 = m._34;
+    return r;
+}
+
+load_bunny :: () -> Primitive_Mesh, Matrix4
 {
     theta := 20.0 / 360.0 * 2 * PI;
 
@@ -821,7 +808,7 @@ load_bunny :: () -> PrimitiveMesh, Matrix4
     return bunny, xform;
 }
 
-load_monkey :: () -> PrimitiveMesh, Matrix4
+load_monkey :: () -> Primitive_Mesh, Matrix4
 {
     theta := 30.0 / 360.0 * 2 * PI;
 
@@ -837,7 +824,7 @@ load_monkey :: () -> PrimitiveMesh, Matrix4
     return monkey, xform;
 }
 
-load_dragon :: () -> PrimitiveMesh, Matrix4
+load_dragon :: () -> Primitive_Mesh, Matrix4
 {
     theta := 90.0 / 360.0 * 2 * PI;
 
@@ -853,7 +840,7 @@ load_dragon :: () -> PrimitiveMesh, Matrix4
     return dragon, xform;
 }
 
-load_backdrop :: () -> PrimitiveMesh, Matrix4
+load_backdrop :: () -> Primitive_Mesh, Matrix4
 {
     scale := 2.0;
     position := Vector3.{0, 0, -10.1};
@@ -862,7 +849,7 @@ load_backdrop :: () -> PrimitiveMesh, Matrix4
     return backdrop, xform;
 }
 
-load_shaderball :: () -> PrimitiveMesh, PrimitiveMesh, Matrix4
+load_shaderball :: () -> Primitive_Mesh, Primitive_Mesh, Matrix4
 {
     scale := 0.5;
     position := Vector3.{0, 0, 0};
@@ -1066,14 +1053,15 @@ load_scene :: (using scene: *Scene, type: SceneType)
             material.color       = create_constant_texture(.{0.699, 0.704, 0.671}); // Cobalt
             //material.color       = create_constant_texture(.{1, 1, 1});
             //material.color       = create_constant_texture(.{1.000, 0.735, 0.353}); // Gold
-            material.metalness   = create_constant_texture(1.0);
+            material.metalness   = create_constant_texture(0.0);
             material.diffuse_roughness    = create_constant_texture(1.0);
-            material.specular_weight      = create_constant_texture(1.0);
+            material.specular_weight      = create_constant_texture(0.7);
             //material.specular_color       = create_constant_texture(.{1, 1, 1});
             //material.specular_color       = create_constant_texture(.{0.993, 1.000, 1.000}); // Gold
             material.specular_color       = create_constant_texture(.{0.727, 0.772, 0.823}); // Cobalt
             material.specular_roughness   = create_constant_texture(0.25);
             material.specular_anisotropic = create_constant_texture(0.0);
+            material.specular_ior         = create_constant_texture(2.5);
 
             white      := create_lambertian_material(scene, create_constant_texture(.{1, 1, 1}));
             red        := create_lambertian_material(scene, create_constant_texture(.{0.65, 0.05, 0.05}));
@@ -1100,20 +1088,23 @@ load_scene :: (using scene: *Scene, type: SceneType)
             camera.fov         = 45.0 / 360.0;
             camera.position    = .{0, 0, -5};
             camera.orientation = .{};
-            environment        = load_texture_from_file("data/envmap/golden_gate_hills_2k.hdr");
+            //environment        = load_texture_from_file("data/envmap/golden_gate_hills_2k.hdr");
 
-            config.flat_background = true;
+            environment        = create_constant_texture(.{1, 1, 1});
+            exposure = 1.0;
+
+            //config.flat_background = true;
 
             NUM_TEST_SPHERES :: 10;
 
             radius  := 0.3;
             spacing := 2 * radius + 0.1;
             start_x := -3.1;
-            start_y :=  1.0;
+            start_y :=  1.5;
 
             // Backdrop
             {
-                checker := create_lambertian_material(scene, create_checkerboard_texture(Vector3.{0.9, 0.9, 0.9}, .{0.1, 0.1, 0.1}, .{10, 10}));
+                checker := create_lambertian_material(scene, create_checkerboard_texture(Vector3.{0.9, 0.9, 0.9}, .{0.1, 0.1, 0.1}, .{40, 40}));
                 add_box(scene, Matrix4_Identity, .{-6, -6, 0.5}, .{6, 6, 0.6}, checker); // back
             }
 
@@ -1177,6 +1168,59 @@ load_scene :: (using scene: *Scene, type: SceneType)
                 }
             }
 
+            // Dielectric (Roughness)
+            {
+                center  := Vector3.{start_x, start_y, 0.0};
+                start_y -= spacing;
+
+                for 0..NUM_TEST_SPHERES-1
+                {
+                    roughness := it.(float) / (NUM_TEST_SPHERES - 1).(float);
+
+                    id, material                 := create_material(scene);
+                    material.color                = create_constant_texture(.{0.89, 0.77, 0.13});
+                    material.metalness            = create_constant_texture(0.0);
+                    material.specular_weight      = create_constant_texture(1.0);
+                    material.specular_color       = create_constant_texture(.{1.000, 1.000, 1.000});
+                    material.specular_roughness   = create_constant_texture(roughness);
+                    material.specular_anisotropic = create_constant_texture(0.0);
+                    material.specular_ior         = create_constant_texture(1.5);
+
+                    add_sphere(scene, center, radius, id);
+                    center.x += spacing;
+                }
+            }
+
+            // Dielectric (IOR)
+            {
+                center    := Vector3.{start_x, start_y, 0.0};
+                start_y   -= spacing;
+                roughness := 0.25;
+
+                ior_1 := 1.0;
+                ior_2 := 2.5;
+
+                color   := Vector3.{0.02, 0.53, 0.42};
+
+                for 0..NUM_TEST_SPHERES-1
+                {
+                    t := it.(float) / (NUM_TEST_SPHERES - 1).(float);
+                    ior := lerp(ior_1, ior_2, t);
+
+                    id, material                 := create_material(scene);
+                    material.color                = create_constant_texture(color);
+                    material.metalness            = create_constant_texture(0.0);
+                    material.specular_weight      = create_constant_texture(1.0);
+                    material.specular_color       = create_constant_texture(.{1.000, 1.000, 1.000});
+                    material.specular_roughness   = create_constant_texture(roughness);
+                    material.specular_anisotropic = create_constant_texture(0.0);
+                    material.specular_ior         = create_constant_texture(ior);
+
+                    add_sphere(scene, center, radius, id);
+                    center.x += spacing;
+                }
+            }
+
         case .envmap_test;
             camera.fov         = 45.0 / 360.0;
             camera.position    = .{0, 0, -5};
@@ -1202,8 +1246,8 @@ add_sphere :: (scene: *Scene, xform: Matrix4, radius: float, material_id: Materi
 
     primitive := add_primitive(scene, .SPHERE);
     primitive.shape.sphere.radius = radius;
-    primitive.xform.forward = xform;
-    primitive.xform.inverse = inv;
+    primitive.xform.forward = make_matrix4x3(xform);
+    primitive.xform.inverse = make_matrix4x3(inv);
     primitive.material_id = material_id;
 }
 
@@ -1220,8 +1264,8 @@ add_disk :: (scene: *Scene, p: Vector3, radius: float, material_id: MaterialID)
 
     primitive := add_primitive(scene, .DISK);
     primitive.shape.disk.radius = radius;
-    primitive.xform.forward = make_translation_matrix4(p);
-    primitive.xform.inverse = make_translation_matrix4(-p);
+    primitive.xform.forward = make_matrix4x3(make_translation_matrix4(p));
+    primitive.xform.inverse = make_matrix4x3(make_translation_matrix4(-p));
     primitive.material_id = material_id;
 }
 
@@ -1231,8 +1275,8 @@ add_box :: (scene: *Scene, xform: Matrix4, min: Vector3, max: Vector3, material_
     primitive := add_primitive(scene, .BOX);
     primitive.shape.box.vmin = min;
     primitive.shape.box.vmax = max;
-    primitive.xform.forward = xform;
-    primitive.xform.inverse = inv;
+    primitive.xform.forward = make_matrix4x3(xform);
+    primitive.xform.inverse = make_matrix4x3(inv);
     primitive.material_id = material_id;
 }
 
@@ -1256,7 +1300,7 @@ add_translated_box :: (scene: *Scene, xform: Matrix4, p: Vector3, q: Vector3, ma
     add_box(scene, make_translation_matrix4(h) * xform, -d, d, material_id);
 }
 
-add_mesh :: (scene: *Scene, xform: Matrix4, mesh: PrimitiveMesh, material_id: MaterialID)
+add_mesh :: (scene: *Scene, xform: Matrix4, mesh: Primitive_Mesh, material_id: MaterialID)
 {
     primitive := add_primitive(scene, .MESH);
 
@@ -1264,8 +1308,8 @@ add_mesh :: (scene: *Scene, xform: Matrix4, mesh: PrimitiveMesh, material_id: Ma
 
     _, inv := inverse(xform);
 
-    primitive.xform.forward = xform;
-    primitive.xform.inverse = inv;
+    primitive.xform.forward = make_matrix4x3(xform);
+    primitive.xform.inverse = make_matrix4x3(inv);
     primitive.material_id = material_id;
 }
 
@@ -1402,7 +1446,7 @@ build_bvh :: (scene: *Scene)
 {
     if scene.primitives.count
     {
-        array_resize(*scene.tlas.bboxes, scene.primitives.count, initialize=false);
+        array_resize(*scene.bboxes, scene.primitives.count, initialize=false);
         array_resize(*scene.tlas.indices, scene.primitives.count, initialize=false);
         array_resize(*scene.tlas.nodes, 2 * scene.primitives.count - 1);
 
@@ -1438,7 +1482,7 @@ build_bvh :: (scene: *Scene)
                     }
             }
 
-            scene.tlas.bboxes[it_index] = bbox;
+            scene.bboxes[it_index] = bbox;
         }
 
         for *scene.tlas.indices
@@ -1446,7 +1490,7 @@ build_bvh :: (scene: *Scene)
             it.* = it_index.(u32);
         }
 
-        build_bvh_binned_sah(scene.tlas.nodes, scene.tlas.indices, scene.tlas.bboxes);
+        build_bvh_binned_sah(scene.tlas.nodes, scene.tlas.indices, scene.bboxes);
 
         for scene.tlas.indices
         {
@@ -1826,30 +1870,34 @@ build_bvh_binned_sah :: (nodes: []BVH_Node, indices: []u32, bboxes: []Box3)
     build_bvh_sah_binned_recursive(*builder, 0, 0, indices.count - 1, indices, bboxes, centriods);
 }
 
-build_blas :: (using mesh: *PrimitiveMesh)
+build_blas :: (mesh: *Primitive_Mesh)
 {    
-    num_triangles := indices.count / 3;
+    num_triangles := mesh.indices.count / 3;
 
-    array_resize(*blas.bboxes, num_triangles, initialize=false);
-    array_resize(*blas.indices, num_triangles, initialize=false);
-    array_resize(*blas.nodes, 2 * num_triangles - 1, initialize=false);
+    // @todo: cleanup
+    bboxes: []Box3;
+    defer array_free(bboxes);
+
+    array_resize(*bboxes, num_triangles, initialize=false);
+    array_resize(*mesh.blas.indices, num_triangles, initialize=false);
+    array_resize(*mesh.blas.nodes, 2 * num_triangles - 1, initialize=false);
 
     for 0..num_triangles-1
     {
-        i0 := indices[it * 3 + 0];
-        i1 := indices[it * 3 + 1];
-        i2 := indices[it * 3 + 2];
+        i0 := mesh.indices[it * 3 + 0];
+        i1 := mesh.indices[it * 3 + 1];
+        i2 := mesh.indices[it * 3 + 2];
 
-        v0 := vertices[i0].p;
-        v1 := vertices[i1].p;
-        v2 := vertices[i2].p;
+        v0 := mesh.vertices[i0].p;
+        v1 := mesh.vertices[i1].p;
+        v2 := mesh.vertices[i2].p;
 
-        blas.bboxes[it]  = triangle_bbox(v0, v1, v2);
-        blas.indices[it] = it.(u32);
+        bboxes[it]  = triangle_bbox(v0, v1, v2);
+        mesh.blas.indices[it] = it.(u32);
     }
 
     // @todo: map indices or may be not worth it??
-    build_bvh_binned_sah(blas.nodes, blas.indices, blas.bboxes);
+    build_bvh_binned_sah(mesh.blas.nodes, mesh.blas.indices, bboxes);
 }
 
 sign_of :: (v: float) -> float
@@ -1892,7 +1940,7 @@ orthonormal_basis :: (x_axis: Vector3) -> (y_axis: Vector3, z_axis: Vector3)
     return y_axis, z_axis;
 }
 
-load_obj_model :: (path: string) -> PrimitiveMesh
+load_obj_model :: (path: string) -> Primitive_Mesh
 {
     auto_release_temp();
 
@@ -2032,7 +2080,7 @@ load_obj_model :: (path: string) -> PrimitiveMesh
         indices[it] = entry.*;
     }
 
-    mesh: PrimitiveMesh;
+    mesh: Primitive_Mesh;
 
     mesh.vertices = array_copy(array_view(attrs, 0, num_attrs));
     mesh.indices  = indices;
@@ -2190,7 +2238,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=64, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=128, max_depth=5);
     load_scene(*scene, args.scene);
     prepare_for_rendering(*scene);
 
@@ -2427,7 +2475,7 @@ draw_triangle :: (v0: Vertex3, v1: Vertex3, v2: Vertex3, color: Vector4, pv: Mat
     //draw_line(v2.p, v0.p, color, projection);
 }
 
-draw_mesh :: (mesh: PrimitiveMesh, color: Vector4, pv: Matrix4, inv_transpose: Matrix4)
+draw_mesh :: (mesh: Primitive_Mesh, color: Vector4, pv: Matrix4, inv_transpose: Matrix4)
 {
     num_triangles := mesh.indices.count / 3;
 

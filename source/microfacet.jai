@@ -3,7 +3,7 @@
 // Microfacet Model
 // Trowbridge–Reitz (GGX) model
 
-microfacet_distribution :: (NoH: float, alpha: Vector2) -> float
+microfacet_ggx_distribution :: (NoH: float, alpha: Vector2) -> float
 {
     alpha_x  := max(alpha.x, 1.0e-3);
     alpha_y  := max(alpha.y, 1.0e-3);
@@ -19,7 +19,7 @@ microfacet_distribution :: (NoH: float, alpha: Vector2) -> float
     return D;
 }
 
-microfacet_mask :: (mu: float, alpha: Vector2) -> float
+microfacet_ggx_mask :: (mu: float, alpha: Vector2) -> float
 {
     cos_mu    := saturate(mu);
     cos2      := max(cos_mu * cos_mu, 1.0e-6);
@@ -31,7 +31,7 @@ microfacet_mask :: (mu: float, alpha: Vector2) -> float
     return G;
 }
 
-microfacet_mask_shadow :: (NoV: float, NoL: float, alpha: Vector2) -> float
+microfacet_ggx_mask_shadow :: (NoV: float, NoL: float, alpha: Vector2) -> float
 {
     cosV      := saturate(NoV);
     cosL      := saturate(NoL);
@@ -49,7 +49,7 @@ microfacet_mask_shadow :: (NoV: float, NoL: float, alpha: Vector2) -> float
     return G;
 }
 
-microfacet_sample :: (V: Vector3, alpha: Vector2, u1: float, u2: float) -> Vector3
+microfacet_ggx_sample_normal :: (V: Vector3, alpha: Vector2, u1: float, u2: float) -> Vector3
 {
     N := normalize(Vector3.{alpha.x * V.x, alpha.y * V.y, V.z});
 
@@ -82,6 +82,18 @@ microfacet_sample :: (V: Vector3, alpha: Vector2, u1: float, u2: float) -> Vecto
     return H;
 }
 
+microfacet_ggx_brdf_cosine :: (V: Vector3, alpha: Vector2, u: Vector2) -> float
+{
+    H      := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
+    L      := reflect(V, H);
+    NoV    := V.z;
+    NoL    := L.z;
+    G      := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
+    G1     := microfacet_ggx_mask(NoV, alpha);
+    f      := G / G1; // includes cosine term
+    return f;
+}
+
 microfacet_alpha :: (roughness: float, anisotropic: float) -> Vector2
 {
     r       := clamp(roughness, 1.0e-3, 1.0);
@@ -91,16 +103,4 @@ microfacet_alpha :: (roughness: float, anisotropic: float) -> Vector2
     alpha_y := r2 * (1.0 - aspect);
     alpha   := Vector2.{alpha_x, alpha_y};
     return alpha;
-}
-
-microfacet_brdf_cosine :: (V: Vector3, alpha: Vector2, u: Vector2) -> float
-{
-    H      := microfacet_sample(V, alpha, u.x, u.y);
-    L      := reflect(V, H);
-    NoV    := V.z;
-    NoL    := L.z;
-    G      := microfacet_mask_shadow(NoV, NoL, alpha);
-    G1     := microfacet_mask(NoV, alpha);
-    f      := G / G1; // includes cosine term
-    return f;
 }

@@ -46,16 +46,14 @@ BVH_Node :: struct
 
 Acceleration_Structure :: struct
 {
-    nodes      : []BVH_Node;
-    indices    : []u32;
-    bboxes     : []Box3; // @todo: Not needed remove!!
+    nodes   : []BVH_Node;
+    indices : []u32;
 }
 
-// @todo: cleanup: use Matrix4x3
 Transform :: struct
 {
-    forward: Matrix4;
-    inverse: Matrix4;
+    forward: Matrix4x3;
+    inverse: Matrix4x3;
 }
 
 MaterialID  :: #type,distinct u32;
@@ -151,7 +149,7 @@ morton2 :: (x: u32, y: u32) -> u32
 
 //------------------------------------------------------------------------
 
-transform_box :: (t: Matrix4, box: Box3) -> Box3
+transform_box :: (t: Matrix4x3, box: Box3) -> Box3
 {
     center := 0.5 * (box.vmin + box.vmax);
     extent := 0.5 * (box.vmax - box.vmin);
@@ -184,14 +182,22 @@ box_union :: (b1: Box3, b2: Box3) -> Box3
 
 fract :: inline (x: float) -> float { return x - floor(x); }
 
+mix :: (x: $T, y: T, t: float) -> T
+{
+    return x * (1.0 - t) + y * t;
+}
+
 reflect :: inline (d: Vector3, n: Vector3) -> Vector3
 {
     return -d + 2 * dot(d, n) * n;
 }
 
-mix :: (x: $T, y: T, t: float) -> T
+refract :: inline (uv: Vector3, n: Vector3, factor: float) -> Vector3
 {
-    return x * (1.0 - t) + y * t;
+    cos_theta    := min(dot(-uv, n), 1.0);
+    out_perp     := factor * (uv + cos_theta * n);
+    out_parallel := -sqrt(abs(1.0 - length_squared(out_perp))) * n;
+    return out_perp + out_parallel;
 }
 
 //------------------------------------------------------------------------

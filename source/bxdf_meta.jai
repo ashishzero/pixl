@@ -73,7 +73,7 @@ compute_metallic_brdf_lookup_tables_thread :: (thread: *Thread) -> s64
             alpha_x   := max(BIAS, y.(float) / (N - 1).(float));
             alpha_y   := z.(float) / (N - 1).(float);
             V         := Vector3.{sine, 0.0, cosine};
-            E_sum     += microfacet_brdf_cosine(normalize(V), .{alpha_x, alpha_y}, .{u1, u2});
+            E_sum     += microfacet_ggx_brdf_cosine(normalize(V), .{alpha_x, alpha_y}, .{u1, u2});
         }
         E := saturate((E_sum / NUM_SAMPLES.(float64)).(float));
         shared.Er_metallic[index] = 1.0 - E;

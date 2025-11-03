@@ -1,34 +1,34 @@
 #load "primitives.jai";
 
-PrimitiveSphere :: struct
+Primitive_Sphere :: struct
 {
     radius: float;
 }
 
-PrimitiveDisk :: struct
+Primitive_Disk :: struct
 {
     radius: float;
 }
 
-PrimitiveBox :: struct
+Primitive_Box :: struct
 {
     vmin: Vector3;
     vmax: Vector3;
 }
 
-PrimitiveMesh :: struct
+Primitive_Mesh :: struct
 {
     indices: []u32;
     vertices: []Vertex3;
     blas: Acceleration_Structure;
 }
 
-PrimitiveShape :: union
+Primitive_Shape :: union
 {
-    sphere : PrimitiveSphere;
-    disk   : PrimitiveDisk;
-    box    : PrimitiveBox;
-    mesh   : PrimitiveMesh;
+    sphere : Primitive_Sphere;
+    disk   : Primitive_Disk;
+    box    : Primitive_Box;
+    mesh   : Primitive_Mesh;
 }
 
 Primitive :: struct
@@ -36,7 +36,7 @@ Primitive :: struct
     type        : Primitive_Type;
     xform       : Transform;
     material_id : MaterialID;
-    shape       : PrimitiveShape;
+    shape       : Primitive_Shape;
 }
 
 Bitmap :: Simp.Bitmap;
@@ -70,6 +70,7 @@ Material :: struct
     specular_color       : Texture2D;
     specular_roughness   : Texture2D;
     specular_anisotropic : Texture2D;
+    specular_ior         : Texture2D;
 
     emission             : Texture2D;
     emission_strength    : Texture2D;
@@ -120,6 +121,7 @@ Scene :: struct
     exposure := 2.0; // @todo: to Camera?
 
     primitives : [..]Primitive;
+    bboxes     : [..]Box3;
 
     tlas       : Acceleration_Structure;
     mapped     : [..]Primitive;
@@ -178,9 +180,10 @@ intersect_primitive :: (primitive: Primitive, world_origin: Vector3, world_dir: 
 
     if (intersect.t >= 0.0)
     {
+        inverse := make_matrix4(primitive.xform.inverse);
         // @todo: May be transform the minimum hit only??
         info.p            = transform_point(primitive.xform.forward, intersect.p);
-        info.n            = transform_vector(transpose(primitive.xform.inverse), intersect.n);
+        info.n            = transform_vector(transpose(inverse), intersect.n);
         info.dpdu         = transform_vector(primitive.xform.forward, intersect.dpdu);
         info.dpdv         = transform_vector(primitive.xform.forward, intersect.dpdv);
         info.n            = normalize(info.n);
