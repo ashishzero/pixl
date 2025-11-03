@@ -172,7 +172,7 @@ SampleTextureSpectrum :: (texture: Texture2D, u: float, v: float) -> Spectrum
     return Spectrum.{color.x, color.y, color.z};
 }
 
-SampleMaterialSurfaceProperties :: (material: Material, hit: HitInfo) -> Surface
+material_surface :: (material: Material, hit: HitInfo) -> Surface
 {
     surface: Surface = ---;
     surface.color                = SampleTextureSpectrum(material.color, hit.u, hit.v);
@@ -187,7 +187,7 @@ SampleMaterialSurfaceProperties :: (material: Material, hit: HitInfo) -> Surface
     return surface;
 }
 
-BxDFSample :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> BxDF_Sample
+sample_bsdf :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> BxDF_Sample
 {
     P_m := surface.metalness;
     P_d := 1.0 - P_m;
@@ -232,7 +232,7 @@ Ray_Type :: enum
 }
 
 // @todo: use Matrix4x3
-ForwardTransform :: (xform: Matrix3, p: Vector3) -> Vector3
+forward_transform :: (xform: Matrix3, p: Vector3) -> Vector3
 {
     r: Vector3 = ---;
     r.x = xform._11 * p.x + xform._12 * p.y + xform._13 * p.z;
@@ -241,7 +241,7 @@ ForwardTransform :: (xform: Matrix3, p: Vector3) -> Vector3
     return r;
 }
 
-InverseTransform :: (xform: Matrix3, p: Vector3) -> Vector3
+inverse_transform :: (xform: Matrix3, p: Vector3) -> Vector3
 {
     r: Vector3 = ---;
     r.x = xform._11 * p.x + xform._21 * p.y + xform._31 * p.z;
@@ -287,16 +287,16 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, 
             //------------------------------------------------------------------------
             // Sample
             material := scene.materials[hit.material_id];
-            surface  := SampleMaterialSurfaceProperties(material, hit);
+            surface  := material_surface(material, hit);
 
-            NextBounce(rng);
+            next_bounce(rng);
             stats.n_bounces += 1;
 
             p      := random_sample_1D(rng, .LOBE);
             u      := random_sample_2D(rng, .BxDF);
 
-            V      := ForwardTransform(inv_TBN, -ray.dir);
-            sample := BxDFSample(V, surface, p, u);
+            V      := forward_transform(inv_TBN, -ray.dir);
+            sample := sample_bsdf(V, surface, p, u);
 
             // @todo: return emission from BSDFSample as well
             emittance := surface.emission_strength * surface.emission;
@@ -310,12 +310,10 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, 
             cosine := saturate(sample.L.z);
             fr *= cosine * sample.fr / sample.pdf;
 
-            //print("Fr = %\n", cosine * sample.Fr / sample.pdf);
-
             //------------------------------------------------------------------------
             // Next ray
             ray.origin = hit.p;
-            ray.dir    = InverseTransform(inv_TBN, sample.L);
+            ray.dir    = inverse_transform(inv_TBN, sample.L);
             ray.tmin   = 1.0e-3;
             ray.tmax   = FLOAT32_MAX;
             ray_type   = .SECONDARY;
@@ -1206,10 +1204,6 @@ add_sphere :: (scene: *Scene, xform: Matrix4, radius: float, material_id: Materi
     primitive.shape.sphere.radius = radius;
     primitive.xform.forward = xform;
     primitive.xform.inverse = inv;
-    bbox: Box3 = ---;
-    bbox.vmin = center - Vector3.{radius, radius, radius};
-    bbox.vmax = center + Vector3.{radius, radius, radius};
-    array_add(*scene.tlas.bboxes, bbox);
     primitive.material_id = material_id;
 }
 
@@ -1228,24 +1222,17 @@ add_disk :: (scene: *Scene, p: Vector3, radius: float, material_id: MaterialID)
     primitive.shape.disk.radius = radius;
     primitive.xform.forward = make_translation_matrix4(p);
     primitive.xform.inverse = make_translation_matrix4(-p);
-
-    bbox := bounding_box_from_points(p - Vector3.{radius, radius, 0}, p + Vector3.{radius, radius, 0});
-    //primitive.bbox = pad_to_minimus(bbox, 0.0001);
-    array_add(*scene.tlas.bboxes, bbox);
     primitive.material_id = material_id;
 }
 
 add_box :: (scene: *Scene, xform: Matrix4, min: Vector3, max: Vector3, material_id: MaterialID)
 {
     _, inv := inverse(xform);
-
     primitive := add_primitive(scene, .BOX);
     primitive.shape.box.vmin = min;
     primitive.shape.box.vmax = max;
     primitive.xform.forward = xform;
     primitive.xform.inverse = inv;
-    bbox := transform_box(xform, Box3.{min, max});
-    array_add(*scene.tlas.bboxes, bbox);
     primitive.material_id = material_id;
 }
 
@@ -1279,16 +1266,6 @@ add_mesh :: (scene: *Scene, xform: Matrix4, mesh: PrimitiveMesh, material_id: Ma
 
     primitive.xform.forward = xform;
     primitive.xform.inverse = inv;
-
-    bbox := Box3_Empty;
-
-    for v: mesh.vertices
-    {
-        p := transform_point(xform, v.p);
-        bbox = box_union(bbox, p);
-    }
-
-    array_add(*scene.tlas.bboxes, bbox);
     primitive.material_id = material_id;
 }
 
@@ -1425,10 +1402,44 @@ build_bvh :: (scene: *Scene)
 {
     if scene.primitives.count
     {
+        array_resize(*scene.tlas.bboxes, scene.primitives.count, initialize=false);
         array_resize(*scene.tlas.indices, scene.primitives.count, initialize=false);
         array_resize(*scene.tlas.nodes, 2 * scene.primitives.count - 1);
 
         array_resize(*scene.mapped, scene.primitives.count, initialize=false);
+
+        for scene.primitives
+        {
+            bbox: Box3 = ---;
+
+            if #complete it.type ==
+            {
+                case .SPHERE;
+                    radius    := it.shape.sphere.radius;
+                    center    := transform_point(it.xform.forward, Vector3.{0, 0, 0});
+                    bbox.vmin  = center - Vector3.{radius, radius, radius};
+                    bbox.vmax  = center + Vector3.{radius, radius, radius};
+
+                case .DISK;
+                    radius := it.shape.disk.radius;
+                    center := transform_point(it.xform.forward, Vector3.{0, 0, 0});
+                    bbox    = bounding_box_from_points(center - Vector3.{radius, radius, 0}, center + Vector3.{radius, radius, 0});
+                    bbox    = pad_to_minimus(bbox, 0.0001);
+
+                case .BOX;
+                    bbox = transform_box(it.xform.forward, Box3.{it.shape.box.vmin, it.shape.box.vmax});
+
+                case .MESH;
+                    bbox = Box3_Empty;
+                    for v: it.shape.mesh.vertices
+                    {
+                        p := transform_point(it.xform.forward, v.p);
+                        bbox = box_union(bbox, p);
+                    }
+            }
+
+            scene.tlas.bboxes[it_index] = bbox;
+        }
 
         for *scene.tlas.indices
         {

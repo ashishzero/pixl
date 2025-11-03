@@ -29,7 +29,7 @@ intersect_sphere :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, 
     b  := -2 * dot(dir, oc);
     c  := dot(oc, oc) - radius * radius;
 
-    solved, t0, t1 := SolveQuadratic(a, b, c);
+    solved, t0, t1 := solve_quadratic(a, b, c);
 
     if !solved then
         return info;
@@ -43,7 +43,7 @@ intersect_sphere :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, 
             return info;
     }
 
-    hit_p := PointAt(origin, dir, root);
+    hit_p := point_at(origin, dir, root);
 
     info.t = root;
     info.p = hit_p;
@@ -119,7 +119,7 @@ intersect_box :: (vmin: Vector3, vmax: Vector3, origin: Vector3, dir: Vector3, t
         return info;
     }
 
-    hit_p := PointAt(origin, dir, t0);
+    hit_p := point_at(origin, dir, t0);
 
     info.t = t0;
     info.p = hit_p;
@@ -178,7 +178,7 @@ intersect_disk :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, tm
     if root < tmin || tmax < root then
         return info;
 
-    hit_p := PointAt(origin, dir, root);
+    hit_p := point_at(origin, dir, root);
 
     distsq := hit_p.x * hit_p.x + hit_p.y * hit_p.y;
 
@@ -243,7 +243,7 @@ intersect_triangle :: (v0: Vertex3, v1: Vertex3, v2: Vertex3, origin: Vector3, d
 
     w := 1.0 - u - v;
 
-    hit_p := PointAt(origin, dir, t);
+    hit_p := point_at(origin, dir, t);
 
     info.t = t;
     info.p = hit_p;
@@ -358,13 +358,13 @@ hits :: (origin: Vector3, inv_dir: Vector3, box: Box3, t0: float, t1: float) -> 
 
 #scope_file
 
-PointAt :: inline (origin: Vector3, dir: Vector3, t: float) -> Vector3
+point_at :: inline (origin: Vector3, dir: Vector3, t: float) -> Vector3
 {
     point := origin + dir * t;
     return point;
 }
 
-SolveQuadratic :: inline (a: float, b: float, c: float) -> (bool, float, float)
+solve_quadratic :: inline (a: float, b: float, c: float) -> (bool, float, float)
 {
     if (a == 0.0)
     {

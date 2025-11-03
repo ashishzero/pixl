@@ -46,10 +46,9 @@ BVH_Node :: struct
 
 Acceleration_Structure :: struct
 {
-    // @todo: Make these array view
-    nodes      : [..]BVH_Node;
-    indices    : [..]u32;
-    bboxes     : [..]Box3; // @todo: Not needed remove!!
+    nodes      : []BVH_Node;
+    indices    : []u32;
+    bboxes     : []Box3; // @todo: Not needed remove!!
 }
 
 // @todo: cleanup: use Matrix4x3

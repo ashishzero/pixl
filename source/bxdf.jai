@@ -351,7 +351,7 @@ sample_metallic :: (V: Vector3, surface: Surface, u: Vector2) -> BxDF_Sample
         Fss    := f82_tint(VoH, Fo, specular_color);
         fr     := (D * G * Fss) / max(4 * NoL * NoV, 1.0e-6);
         fr     += f_ms_metallic(Fo, NoL, NoV, roughness, alpha);
-        pdf_ss := (D * G1) / max(4 * NoV, 1.0e-6); // @todo: may be bug??
+        pdf_ss := (D * G1) / max(4 * NoV, 1.0e-6);
         pdf_ms := 1.0 / (2.0 * PI);
         pdf    := P_ss * pdf_ss + P_ms * pdf_ms;
         return .{fr, L, pdf};

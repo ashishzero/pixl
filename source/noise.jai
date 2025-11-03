@@ -98,7 +98,7 @@ else
     }
 }
 
-NextBounce :: (rng: *Path_Random_State)
+next_bounce :: (rng: *Path_Random_State)
 {
     rng.bounce += MAX_BOUNCE;
 }
