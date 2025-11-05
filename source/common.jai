@@ -81,9 +81,16 @@ Filter :: struct
 // Up      : +Y
 // Forward : +Z
 
+Camera_Type :: enum u32
+{
+    PERSPECTIVE;
+    ORTHOGRAPHIC;
+}
+
 Camera :: struct
 {
     // @todo: add orthographic/spherical camera?
+    type               := Camera_Type.PERSPECTIVE;
     position           : Vector3;
     orientation        : Quaternion;
     fov                := 0.17;
@@ -202,7 +209,7 @@ refract :: inline (uv: Vector3, n: Vector3, factor: float) -> Vector3
 
 //------------------------------------------------------------------------
 
-read_lookup_table1D :: (lookup: []$T, w: int, u: float) -> T
+read_lookup_table_1D :: (lookup: []$T, w: int, u: float) -> T
 {
     up := u * w - 0.5;
     u0 := clamp(up.(int), 0, w - 1);
@@ -212,7 +219,7 @@ read_lookup_table1D :: (lookup: []$T, w: int, u: float) -> T
     return x;
 }
 
-read_lookup_table2D :: (lookup: []$T, w: int, h: int, u: float, v: float) -> T
+read_lookup_table_2D :: (lookup: []$T, w: int, h: int, u: float, v: float) -> T
 {
     up := u * w.(float) - 0.5;
     vp := v * h.(float) - 0.5;
@@ -228,7 +235,7 @@ read_lookup_table2D :: (lookup: []$T, w: int, h: int, u: float, v: float) -> T
     return x;
 }
 
-read_lookup_table3D :: (lookup: []$T, width: int, height: int, depth: int, u: float, v: float, w: float) -> T
+read_lookup_table_3D :: (lookup: []$T, width: int, height: int, depth: int, u: float, v: float, w: float) -> T
 {
     up   := u * width.(float)  - 0.5;
     vp   := v * height.(float) - 0.5;

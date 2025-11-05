@@ -204,7 +204,7 @@
 #if ENABLED && DEFINE_TYPE_VIEWS_FOR_COMMON_JAI_TYPES {
     // NOTE(Charles): These views can hide fields you may need to look at, you can add a watch "raw(my_variable)" in that case.
 
-    #run raddbg_type_view(bool, "bool($)");
+    //#run raddbg_type_view(bool, "bool($)");
 
     
     // String

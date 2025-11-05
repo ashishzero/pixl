@@ -177,15 +177,6 @@ material_surface :: (material: Material, hit: HitInfo) -> Surface
     surface.specular_ior         = SampleAlpha(material.specular_ior, hit.u, hit.v);
     surface.emission             = SampleTextureSpectrum(material.emission, hit.u, hit.v);
     surface.emission_strength    = SampleAlpha(material.emission_strength, hit.u, hit.v);
-
-    if (hit.face != .FRONT)
-    {
-        if (surface.specular_ior != 0)
-        {
-            surface.specular_ior = 1.0 / surface.specular_ior;
-        }
-    }
-
     return surface;
 }
 
@@ -427,8 +418,8 @@ InvertCDF :: (inv_CDF: []float, CDF: []float, a: float, b: float)
 
 SampleCameraFilter :: inline (camera: Camera, u: Vector2) -> Vector2
 {
-    x := read_lookup_table1D(camera.filter_lut, FILTER_SIZE, u.x);
-    y := read_lookup_table1D(camera.filter_lut, FILTER_SIZE, u.y);
+    x := read_lookup_table_1D(camera.filter_lut, FILTER_SIZE, u.x);
+    y := read_lookup_table_1D(camera.filter_lut, FILTER_SIZE, u.y);
     return .{x, y};
 }
 
@@ -502,7 +493,7 @@ RenderPixel :: (scene: Scene, x: u32, y: u32, frame: u32, stats: *Path_Statistic
 
 RAY_TRACE_TILE_SIZE : s32 : 16;
 
-RenderShared :: struct
+Render_Shared :: struct
 {
     tile_id: int;
 }
@@ -559,7 +550,10 @@ SpiralCoordinates :: (n: int) -> (x: int, y: int)
     return x, y;
 }
 
-render :: (scene: *Scene, weight: float, frame: u32, shared: *RenderShared)
+// @todo: cleanup this global variable
+render_shared: Render_Shared;
+
+render :: (scene: *Scene, weight: float, frame: u32)
 {
     width  := scene.config.width;
     height := scene.config.height;
@@ -573,7 +567,7 @@ render :: (scene: *Scene, weight: float, frame: u32, shared: *RenderShared)
 
     if context.lane.index == 0
     {
-        atomic_write(*shared.tile_id, 0);
+        atomic_write(*render_shared.tile_id, 0);
     }
 
     lane_sync();
@@ -585,12 +579,11 @@ render :: (scene: *Scene, weight: float, frame: u32, shared: *RenderShared)
 
     while !should_quit
     {
-        captured_tile_id := atomic_add(*shared.tile_id, 1);
+        captured_tile_id := atomic_add(*render_shared.tile_id, 1);
 
         if captured_tile_id >= num_tiles then break;
 
         tile_x, tile_y := SpiralCoordinates(captured_tile_id);
-
         tile_x += offset_x;
         tile_y += offset_y;
 
@@ -705,7 +698,9 @@ wavefront_raytrace_entry :: (thread: *Thread) -> s64
 
         t0 := current_time_monotonic();
 
-        render(scene, weight, frame_index.(u32), thread.data.(*RenderShared));
+        print("scene.type = %\n", scene.camera.type);
+
+        render(scene, weight, frame_index.(u32));
 
         t1 := current_time_monotonic();
 
@@ -1030,11 +1025,12 @@ load_scene :: (using scene: *Scene, type: SceneType)
             id, material        := create_material(scene);
             material.color       = create_constant_texture(.{1, 1, 1});
             material.metalness   = create_constant_texture(0.0);
-            material.diffuse_roughness    = create_constant_texture(0.7);
-            material.specular_weight      = create_constant_texture(0.7);
+            material.diffuse_roughness    = create_constant_texture(0.0);
+            material.specular_weight      = create_constant_texture(1.0);
             material.specular_color       = create_constant_texture(.{1, 1, 1});
-            material.specular_roughness   = create_constant_texture(0.2);
+            material.specular_roughness   = create_constant_texture(0.8);
             material.specular_anisotropic = create_constant_texture(0.0);
+            material.specular_ior         = create_constant_texture(1.5);
 
             add_sphere(scene, center, radius, id);
 
@@ -1088,6 +1084,9 @@ load_scene :: (using scene: *Scene, type: SceneType)
             camera.fov         = 45.0 / 360.0;
             camera.position    = .{0, 0, -5};
             camera.orientation = .{};
+
+            camera.type = .ORTHOGRAPHIC;
+
             //environment        = load_texture_from_file("data/envmap/golden_gate_hills_2k.hdr");
 
             environment        = create_constant_texture(.{1, 1, 1});
@@ -1530,7 +1529,18 @@ UpdateCameraParams :: (camera: *Camera)
 generate_ray :: (pixel: Vector2, camera: Camera, lens_uv: Vector2) -> Ray
 {
     origin := Vector3.{0, 0, 0};
-    target := pixel.x * camera.dxdu + pixel.y * camera.dydv + Vector3.{0, 0, 1};
+    target := Vector3.{0, 0, 1};
+
+    if #complete camera.type ==
+    {
+        case .PERSPECTIVE;
+            origin = Vector3.{0, 0, 0};
+            target = pixel.x * camera.dxdu + pixel.y * camera.dydv + Vector3.{0, 0, 1};
+
+        case .ORTHOGRAPHIC;
+            origin = pixel.x * camera.dxdu + pixel.y * camera.dydv;
+            target = origin + Vector3.{0, 0, 1};
+    }
 
     if camera.lens_radius > 0.0
     {
@@ -2238,8 +2248,9 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=128, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=16, max_depth=5);
     load_scene(*scene, args.scene);
+
     prepare_for_rendering(*scene);
 
     wave: Thread_Wave;

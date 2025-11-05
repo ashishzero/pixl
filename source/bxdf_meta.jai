@@ -3,80 +3,97 @@
 #load "noise.jai";
 #load "microfacet.jai";
 
-compute_metallic_brdf_lookup_tables :: ()
+compute_metallic_k_ms_table :: ()
 {
     wave: Thread_Wave;
-    thread_wave_start(*wave, compute_metallic_brdf_lookup_tables_thread, used_threads = 4);
+    thread_wave_start(*wave, compute_metallic_k_ms_lut_thread, used_threads = 4);
     thread_wave_join(*wave);
+}
+
+compute_metallic_E_avg_table :: ()
+{
+    wave: Thread_Wave;
+    thread_wave_start(*wave, compute_metallic_E_avg_lut_thread, used_threads = 4);
+    thread_wave_join(*wave);
+}
+
+dump_computed_tables :: (path: string)
+{
+    write_entire_file(path, *shared_builder);
 }
 
 #scope_file
 
-N :: 32;
-NUM_SAMPLES :: 1 << 20;
-
-Compute_BxDF_Lookup_Table_Shared :: struct
+sample_brdf :: (V: Vector3, roughness: float, anisotropic: float, u: Vector2) -> float
 {
-    index          : int;
-    Er_metallic    : [N * N * N]float;
+    roughness  = max(roughness, 1.0e-4);
+    alpha     := microfacet_alpha(roughness, anisotropic);
+    H         := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
+    L         := reflect(V, H);
+    NoV       := V.z;
+    NoL       := L.z;
+    G         := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
+    G1        := microfacet_ggx_mask(NoV, alpha);
+    fr        := G / max(G1, 1.0e-6);
+    return fr;
 }
 
-shared: Compute_BxDF_Lookup_Table_Shared;
+METALLIC_K_MS_LUT_SIZE      :: 32;
+METALLIC_E_AVG_LUT_SIZE     :: 32;
+METALLIC_K_MS_SAMPLE_COUNT  :: 1 << 24;
+METALLIC_E_AVG_SAMPLE_COUNT :: 1 << 26;
 
-sync_and_reset :: ($msg: string = "")
+MAX_BUFFER_SIZE   :: #run -> int
 {
-    lane_sync();
-    if (context.lane.index == 0)
+    N := METALLIC_K_MS_LUT_SIZE * METALLIC_K_MS_LUT_SIZE;
+
+    if (METALLIC_E_AVG_LUT_SIZE * METALLIC_E_AVG_LUT_SIZE > N)
     {
-        atomic_write(*shared.index, 0);
-        if (msg.count)
-        {
-            print(msg);
-        }
+        N = METALLIC_E_AVG_LUT_SIZE * METALLIC_E_AVG_LUT_SIZE;
     }
-    lane_sync();
+
+    return N;
 }
 
-compute_metallic_brdf_lookup_tables_thread :: (thread: *Thread) -> s64
-{
-    //------------------------------------------------------------------------
-    // Metallic
+//------------------------------------------------------------------------
+shared_index   : int;
+shared_buffer  : [MAX_BUFFER_SIZE]float;
+shared_builder : String_Builder;
 
-    sync_and_reset("\rComputing metallic E table...");
+compute_metallic_k_ms_lut_thread :: (thread: *Thread) -> s64
+{
+    sync_and_reset("\rComputing metallic k ms...");
 
     while (true)
     {
-        BIAS :: 1.0e-6;
+        captured_index := atomic_add(*shared_index, 1);
+        if (captured_index >= METALLIC_K_MS_LUT_SIZE * METALLIC_K_MS_LUT_SIZE)
+        {
+            break;
+        }
 
-        captured_index := atomic_add(*shared.index, 1);
-        if (captured_index >= N * N * N) then break;
+        print("\rComputing metallic k ms... %\%", captured_index * 100 / (METALLIC_K_MS_LUT_SIZE * METALLIC_K_MS_LUT_SIZE - 1));
 
-        print("\rComputing metallic E table... %\%", captured_index * 100 / (N * N * N - 1));
+        y  := captured_index / METALLIC_K_MS_LUT_SIZE;
+        x  := captured_index % METALLIC_K_MS_LUT_SIZE;
 
-        z  := captured_index / (N * N);
-        zr := captured_index % (N * N);
-        y  := zr / N;
-        x  := zr % N;
+        E_ss  : float64 = 0.0;
+        seed  := hash_combine(murmur_finalize32(x.(u32)), murmur_finalize32(y.(u32)));
+        index := y * METALLIC_K_MS_LUT_SIZE + x;
 
-        E_sum : float64 = 0.0;
-        seed  := hash_combine(hash_combine(murmur_finalize32(x.(u32)), murmur_finalize32(y.(u32))), murmur_finalize32(z.(u32)));
-        index := z * N * N + y * N + x;
-
-        for 0..NUM_SAMPLES-1
+        for 0..METALLIC_K_MS_SAMPLE_COUNT-1
         {
             u1        := sample_scrambled_sobol(it.(u32), seed, 0);
             u2        := sample_scrambled_sobol(it.(u32), seed, 1);
-            u3        := sample_scrambled_sobol(it.(u32), seed, 2);
-
-            cosine    := max(BIAS, x.(float) / (N - 1).(float));
+            cosine    := x.(float) / (METALLIC_K_MS_LUT_SIZE - 1).(float);
             sine      := sqrt(1.0 - cosine * cosine);
-            alpha_x   := max(BIAS, y.(float) / (N - 1).(float));
-            alpha_y   := z.(float) / (N - 1).(float);
+            roughness := y.(float) / (METALLIC_K_MS_LUT_SIZE - 1).(float);
             V         := Vector3.{sine, 0.0, cosine};
-            E_sum     += microfacet_ggx_brdf_cosine(normalize(V), .{alpha_x, alpha_y}, .{u1, u2});
+            E_ss      += sample_brdf(V, roughness, 0.0, .{u1, u2});
         }
-        E := saturate((E_sum / NUM_SAMPLES.(float64)).(float));
-        shared.Er_metallic[index] = 1.0 - E;
+        E_ss  = saturate(E_ss / METALLIC_K_MS_SAMPLE_COUNT.(float64));
+        k_ms := (1.0 - E_ss) / E_ss;
+        shared_buffer[index] = k_ms.(float);
     }
 
     sync_and_reset();
@@ -84,32 +101,97 @@ compute_metallic_brdf_lookup_tables_thread :: (thread: *Thread) -> s64
     if (context.lane.index == 0)
     {
         print("\nDone\n");
+        print_to_builder(*shared_builder, "METALLIC_K_MS_LUT_SIZE :: %;\n\n", METALLIC_K_MS_LUT_SIZE);
+        print_to_builder(*shared_builder, "k_ms_metallic : [METALLIC_K_MS_LUT_SIZE * METALLIC_K_MS_LUT_SIZE]float : .[\n");
 
-        builder: String_Builder;
-
-        print_to_builder(*builder, "BxDF_LOOKUP_TABLE_SIZE :: %;\n\n", N);
-
-        print_to_builder(*builder, "Er_metallic : [BxDF_LOOKUP_TABLE_SIZE * BxDF_LOOKUP_TABLE_SIZE * BxDF_LOOKUP_TABLE_SIZE]float : .[\n");
-        for z:0..N-1
+        for y:0..METALLIC_K_MS_LUT_SIZE-1
         {
-            for y:0..N-1
+            for x:0..METALLIC_K_MS_LUT_SIZE-1
             {
-                for x:0..N-1
+                value := *shared_buffer[y * METALLIC_K_MS_LUT_SIZE + x];
+                print_to_builder(*shared_builder, "0h%,", FormatInt.{value=value.(*u32).*, base=16, minimum_digits=8});
+                if ((x + 1) % 16 == 0)
                 {
-                    value := *shared.Er_metallic[z * N * N + y * N + x];
-                    print_to_builder(*builder, "0h%,", FormatInt.{value=value.(*u32).*, base=16, minimum_digits=8});
-                    if ((x + 1) % 16 == 0)
-                    {
-                        print_to_builder(*builder, "\n");
-                    }
+                    print_to_builder(*shared_builder, "\n");
                 }
             }
         }
-        print_to_builder(*builder, "];\n\n");
-        write_entire_file("source/bxdf_metallic_lookup.jai", *builder);
+        print_to_builder(*shared_builder, "];\n\n");
     }
 
     return 0;
+}
+
+compute_metallic_E_avg_lut_thread :: (thread: *Thread) -> s64
+{
+    sync_and_reset("\rComputing metallic E avg...");
+
+    while (true)
+    {
+        captured_index := atomic_add(*shared_index, 1);
+        if (captured_index >= METALLIC_E_AVG_LUT_SIZE)
+        {
+            break;
+        }
+
+        print("\rComputing metallic E avg... %\%", captured_index * 100 / (METALLIC_E_AVG_LUT_SIZE - 1));
+
+        x  := captured_index;
+
+        E_avg : float64 = 0.0;
+        seed  := murmur_finalize32(x.(u32));
+        index := x;
+
+        for 0..METALLIC_E_AVG_SAMPLE_COUNT-1
+        {
+            u1        := sample_scrambled_sobol(it.(u32), seed, 0);
+            u2        := sample_scrambled_sobol(it.(u32), seed, 1);
+            u3        := sample_scrambled_sobol(it.(u32), seed, 2);
+            cosine    := u3;
+            sine      := sqrt(1.0 - cosine * cosine);
+            roughness := x.(float) / (METALLIC_E_AVG_LUT_SIZE - 1).(float);
+            V         := Vector3.{sine, 0.0, cosine};
+            E_avg     += 2.0 * sample_brdf(V, roughness, 0.0, .{u1, u2});
+        }
+        E_avg  = saturate(E_avg / METALLIC_E_AVG_SAMPLE_COUNT.(float64));
+        shared_buffer[index] = E_avg.(float);
+    }
+
+    sync_and_reset();
+
+    if (context.lane.index == 0)
+    {
+        print("\nDone\n");
+        print_to_builder(*shared_builder, "METALLIC_E_AVG_LUT_SIZE :: %;\n\n", METALLIC_E_AVG_LUT_SIZE);
+        print_to_builder(*shared_builder, "E_avg_metallic : [METALLIC_E_AVG_LUT_SIZE]float : .[\n");
+
+        for x:0..METALLIC_E_AVG_LUT_SIZE-1
+        {
+            value := *shared_buffer[x];
+            print_to_builder(*shared_builder, "0h%,", FormatInt.{value=value.(*u32).*, base=16, minimum_digits=8});
+            if ((x + 1) % 16 == 0)
+            {
+                print_to_builder(*shared_builder, "\n");
+            }
+        }
+        print_to_builder(*shared_builder, "];\n\n");
+    }
+
+    return 0;
+}
+
+sync_and_reset :: ($msg: string = "")
+{
+    lane_sync();
+    if (context.lane.index == 0)
+    {
+        atomic_write(*shared_index, 0);
+        if (msg.count)
+        {
+            print(msg);
+        }
+    }
+    lane_sync();
 }
 
 #import "Atomics";

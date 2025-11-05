@@ -82,18 +82,6 @@ microfacet_ggx_sample_normal :: (V: Vector3, alpha: Vector2, u1: float, u2: floa
     return H;
 }
 
-microfacet_ggx_brdf_cosine :: (V: Vector3, alpha: Vector2, u: Vector2) -> float
-{
-    H      := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
-    L      := reflect(V, H);
-    NoV    := V.z;
-    NoL    := L.z;
-    G      := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
-    G1     := microfacet_ggx_mask(NoV, alpha);
-    f      := G / G1; // includes cosine term
-    return f;
-}
-
 microfacet_alpha :: (roughness: float, anisotropic: float) -> Vector2
 {
     r       := clamp(roughness, 1.0e-3, 1.0);
