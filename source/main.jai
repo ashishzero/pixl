@@ -164,7 +164,7 @@ SampleTextureSpectrum :: (texture: Texture2D, u: float, v: float) -> Spectrum
     return Spectrum.{color.x, color.y, color.z};
 }
 
-material_surface :: (material: Material, hit: HitInfo) -> Surface
+material_surface :: (material: Material, hit: Hit_Info) -> Surface
 {
     surface: Surface = ---;
     surface.color                = SampleTextureSpectrum(material.color, hit.u, hit.v);
@@ -238,12 +238,9 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, 
     ray      := primary;
     ray_type := Ray_Type.PRIMARY;
 
-    debug_history : [..]MaterialID;
-    defer array_free(debug_history);
-
     for 0..depth
     {
-        hit         := HitInfo.{ t = -1 };
+        hit         := Hit_Info.{ t = -1 };
         num_visited : u32 = 0;
 
         if (!scene.config.flat_background || ray_type == .PRIMARY)
@@ -273,8 +270,6 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, 
             material := scene.materials[hit.material_id];
             surface  := material_surface(material, hit);
 
-            array_add(*debug_history, hit.material_id);
-
             next_bounce(rng);
             stats.n_bounces += 1;
 
@@ -288,7 +283,7 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, 
             emittance := surface.emission_strength * surface.emission;
             radiance += fr * emittance;
 
-            if (sample.pdf < 1.e-6)
+            if (sample.pdf < 1.0e-6)
             {
                 break;
             }
@@ -1119,10 +1114,10 @@ load_scene :: (using scene: *Scene, type: SceneType)
             material.metalness            = create_constant_texture(0.0);
             material.specular_weight      = create_constant_texture(1.0);
             material.specular_color       = create_constant_texture(.{1.000, 1.000, 1.000});
-            material.specular_roughness   = create_constant_texture(0.0);
+            material.specular_roughness   = create_constant_texture(0.5);
             material.specular_anisotropic = create_constant_texture(0.0);
             material.specular_ior         = create_constant_texture(1.5);
-            material.transmission         = create_constant_texture(0.0);
+            material.transmission         = create_constant_texture(1.0);
 
             center := Vector3.{0, 0, 0};
             radius := 1.5;
@@ -1196,107 +1191,108 @@ load_scene :: (using scene: *Scene, type: SceneType)
             }
 
             // Metal (Anisotropic)
-  //          {
-  //              roughness := 0.5;
-  //              center    := Vector3.{start_x, start_y, 0.0};
-  //              start_y   -= spacing;
+            {
+                roughness := 0.5;
+                center    := Vector3.{start_x, start_y, 0.0};
+                start_y   -= spacing;
 
-  //              for 0..NUM_TEST_SPHERES-1
-  //              {
-  //                  anisotropic := it.(float) / (NUM_TEST_SPHERES - 1).(float);
+                for 0..NUM_TEST_SPHERES-1
+                {
+                    anisotropic := it.(float) / (NUM_TEST_SPHERES - 1).(float);
 
-  //                  id, material                 := create_material(scene);
-  //                  material.color                = create_constant_texture(.{0.617, 0.576, 0.540}); // Titanium
-  //                  material.metalness            = create_constant_texture(1.0);
-  //                  material.specular_weight      = create_constant_texture(1.0);
-  //                  material.specular_color       = create_constant_texture(.{0.695, 0.726, 0.770}); // Titanium
-  //                  material.specular_roughness   = create_constant_texture(roughness);
-  //                  material.specular_anisotropic = create_constant_texture(anisotropic);
+                    id, material                 := create_material(scene);
+                    material.color                = create_constant_texture(.{0.617, 0.576, 0.540}); // Titanium
+                    material.metalness            = create_constant_texture(1.0);
+                    material.specular_weight      = create_constant_texture(1.0);
+                    material.specular_color       = create_constant_texture(.{0.695, 0.726, 0.770}); // Titanium
+                    material.specular_roughness   = create_constant_texture(roughness);
+                    material.specular_anisotropic = create_constant_texture(anisotropic);
 
-  //                  add_sphere(scene, center, radius, id);
-  //                  center.x += spacing;
-  //              }
-  //          }
+                    add_sphere(scene, center, radius, id);
+                    center.x += spacing;
+                }
+            }
 
-  //          // Dielectric (Roughness)
-  //          {
-  //              center  := Vector3.{start_x, start_y, 0.0};
-  //              start_y -= spacing;
+            // Dielectric (Roughness)
+            {
+                center  := Vector3.{start_x, start_y, 0.0};
+                start_y -= spacing;
 
-  //              for 0..NUM_TEST_SPHERES-1
-  //              {
-  //                  roughness := it.(float) / (NUM_TEST_SPHERES - 1).(float);
+                for 0..NUM_TEST_SPHERES-1
+                {
+                    roughness := it.(float) / (NUM_TEST_SPHERES - 1).(float);
 
-  //                  id, material                 := create_material(scene);
-  //                  material.color                = create_constant_texture(.{0.89, 0.77, 0.13});
-  //                  material.metalness            = create_constant_texture(0.0);
-  //                  material.specular_weight      = create_constant_texture(1.0);
-  //                  material.specular_color       = create_constant_texture(.{1.000, 1.000, 1.000});
-  //                  material.specular_roughness   = create_constant_texture(roughness);
-  //                  material.specular_anisotropic = create_constant_texture(0.0);
-  //                  material.specular_ior         = create_constant_texture(2.4);
+                    id, material                 := create_material(scene);
+                    material.color                = create_constant_texture(.{0.89, 0.77, 0.13});
+                    material.metalness            = create_constant_texture(0.0);
+                    material.specular_weight      = create_constant_texture(1.0);
+                    material.specular_color       = create_constant_texture(.{1.000, 1.000, 1.000});
+                    material.specular_roughness   = create_constant_texture(roughness);
+                    material.specular_anisotropic = create_constant_texture(0.0);
+                    material.specular_ior         = create_constant_texture(2.4);
 
-  //                  add_sphere(scene, center, radius, id);
-  //                  center.x += spacing;
-  //              }
-  //          }
+                    add_sphere(scene, center, radius, id);
+                    center.x += spacing;
+                }
+            }
+
+            // Dielectric (Specular Weight)
+            {
+                center    := Vector3.{start_x, start_y, 0.0};
+                start_y   -= spacing;
+                roughness := 0.25;
+                ior       := 1.5;
+
+                color   := Vector3.{0.02, 0.53, 0.42};
+
+                for 0..NUM_TEST_SPHERES-1
+                {
+                    t := it.(float) / (NUM_TEST_SPHERES - 1).(float);
+
+                    id, material                 := create_material(scene);
+                    material.color                = create_constant_texture(color);
+                    material.metalness            = create_constant_texture(0.0);
+                    material.specular_weight      = create_constant_texture(t);
+                    material.specular_color       = create_constant_texture(.{1.000, 1.000, 1.000});
+                    material.specular_roughness   = create_constant_texture(roughness);
+                    material.specular_anisotropic = create_constant_texture(0.0);
+                    material.specular_ior         = create_constant_texture(ior);
+
+                    add_sphere(scene, center, radius, id);
+                    center.x += spacing;
+                }
+            }
 
             // Dielectric (IOR)
-  //          {
-  //              center    := Vector3.{start_x, start_y, 0.0};
-  //              start_y   -= spacing;
-  //              roughness := 0.25;
+            {
+                center    := Vector3.{start_x, start_y, 0.0};
+                start_y   -= spacing;
+                roughness := 0.5;
 
-  //              ior_1 := 1.0;
-  //              ior_2 := 3.0;
+                ior1      := 0.5;
+                ior2      := 1.5;
 
-  //              color   := Vector3.{0.02, 0.53, 0.42};
+                color   := Vector3.{0.617, 0.576, 0.540};
 
-  //              for 0..NUM_TEST_SPHERES-1
-  //              {
-  //                  t := it.(float) / (NUM_TEST_SPHERES - 1).(float);
-  //                  ior := lerp(ior_1, ior_2, t);
+                for 0..NUM_TEST_SPHERES-1
+                {
+                    t := it.(float) / (NUM_TEST_SPHERES - 1).(float);
+                    ior := lerp(ior1, ior2, t);
 
-  //                  id, material                 := create_material(scene);
-  //                  material.color                = create_constant_texture(color);
-  //                  material.metalness            = create_constant_texture(0.0);
-  //                  material.specular_weight      = create_constant_texture(1.0);
-  //                  material.specular_color       = create_constant_texture(.{1.000, 1.000, 1.000});
-  //                  material.specular_roughness   = create_constant_texture(roughness);
-  //                  material.specular_anisotropic = create_constant_texture(0.0);
-  //                  material.specular_ior         = create_constant_texture(ior);
+                    id, material                 := create_material(scene);
+                    material.color                = create_constant_texture(color);
+                    material.metalness            = create_constant_texture(0.0);
+                    material.specular_weight      = create_constant_texture(1.0);
+                    material.specular_color       = create_constant_texture(.{1.000, 1.000, 1.000});
+                    material.specular_roughness   = create_constant_texture(roughness);
+                    material.specular_anisotropic = create_constant_texture(0.0);
+                    material.specular_ior         = create_constant_texture(ior);
+                    material.transmission         = create_constant_texture(1.0);
 
-  //                  add_sphere(scene, center, radius, id);
-  //                  center.x += spacing;
-  //              }
-  //          }
-
-            // Dielectric (Transmission)
-  //          {
-  //              center    := Vector3.{start_x, start_y, 0.0};
-  //              start_y   -= spacing;
-  //              roughness := 0.25;
-
-  //              color   := Vector3.{0.617, 0.576, 0.540};
-
-  //              for 0..NUM_TEST_SPHERES-1
-  //              {
-  //                  t := it.(float) / (NUM_TEST_SPHERES - 1).(float);
-
-  //                  id, material                 := create_material(scene);
-  //                  material.color                = create_constant_texture(color);
-  //                  material.metalness            = create_constant_texture(0.0);
-  //                  material.specular_weight      = create_constant_texture(1.0);
-  //                  material.specular_color       = create_constant_texture(.{1.000, 1.000, 1.000});
-  //                  material.specular_roughness   = create_constant_texture(roughness);
-  //                  material.specular_anisotropic = create_constant_texture(0.0);
-  //                  material.specular_ior         = create_constant_texture(1.5);
-  //                  material.transmission         = create_constant_texture(t);
-
-  //                  add_sphere(scene, center, radius, id);
-  //                  center.x += spacing;
-  //              }
-  //          }
+                    add_sphere(scene, center, radius, id);
+                    center.x += spacing;
+                }
+            }
 
         case .envmap_test;
             camera.fov         = 45.0 / 360.0;
@@ -2336,7 +2332,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=16, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=256, max_depth=5);
     load_scene(*scene, args.scene);
 
     prepare_for_rendering(*scene);

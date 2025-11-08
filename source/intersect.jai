@@ -140,22 +140,22 @@ Hit_Face :: enum u32
     BACK;
 }
 
-HitInfo :: struct
+Hit_Info :: struct
 {
-    p           : Vector3;
-    t           : float;
-    n           : Vector3;
-    dpdu        : Vector3;
-    dpdv        : Vector3;
-    u           : float;
-    v           : float;
-    face        : Hit_Face;
-    material_id : MaterialID;
+    p            : Vector3;
+    t            : float;
+    n            : Vector3;
+    dpdu         : Vector3;
+    dpdv         : Vector3;
+    u            : float;
+    v            : float;
+    face         : Hit_Face;
+    material_id  : MaterialID;
 }
 
 #scope_file
 
-intersect_primitive :: (primitive: Primitive, world_origin: Vector3, world_dir: Vector3, tmin: float, tmax: float) -> HitInfo
+intersect_primitive :: (primitive: Primitive, world_origin: Vector3, world_dir: Vector3, tmin: float, tmax: float) -> Hit_Info
 {
     origin := transform_point(primitive.xform.inverse, world_origin);
     dir    := transform_vector(primitive.xform.inverse, world_dir);
@@ -177,7 +177,7 @@ intersect_primitive :: (primitive: Primitive, world_origin: Vector3, world_dir: 
             intersect = intersect_mesh(primitive.shape.mesh.indices, primitive.shape.mesh.vertices, primitive.shape.mesh.blas, origin, dir, tmin, tmax);
     }
 
-    info := HitInfo.{ t = -1 };
+    info := Hit_Info.{ t = -1 };
 
     if (intersect.t >= 0.0)
     {
@@ -208,10 +208,10 @@ intersect_primitive :: (primitive: Primitive, world_origin: Vector3, world_dir: 
 
 #scope_export
 
-intersect_tlas :: (nodes: []BVH_Node, primitives: []Primitive, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> HitInfo, u32
+intersect_tlas :: (nodes: []BVH_Node, primitives: []Primitive, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Hit_Info, u32
 {
     visited : u32 = 0;
-    info := HitInfo.{ t = -1 };
+    info := Hit_Info.{ t = -1 };
 
     if nodes.count
     {
@@ -257,7 +257,7 @@ intersect_tlas :: (nodes: []BVH_Node, primitives: []Primitive, origin: Vector3, 
     return info, visited;
 }
 
-intersect_scene :: (scene: Scene, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> HitInfo, u32
+intersect_scene :: (scene: Scene, origin: Vector3, dir: Vector3, tmin: float, tmax: float) -> Hit_Info, u32
 {
     hit, num_visited := intersect_tlas(scene.tlas.nodes, scene.mapped, origin, dir, tmin, tmax);
     return hit, num_visited;
