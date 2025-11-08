@@ -29,7 +29,7 @@ sample_brdf :: (V: Vector3, roughness: float, anisotropic: float, u: Vector2) ->
     roughness  = max(roughness, 1.0e-4);
     alpha     := microfacet_alpha(roughness, anisotropic);
     H         := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
-    L         := reflect(V, H);
+    L         := reflect(-V, H);
     NoV       := V.z;
     NoL       := L.z;
     G         := microfacet_ggx_mask_shadow(NoV, NoL, alpha);

@@ -155,8 +155,8 @@ intersect_box :: (vmin: Vector3, vmax: Vector3, origin: Vector3, dir: Vector3, t
         info.dpdv = Vector3.{0, 1, 0};
     }
 
-    Clamp(*info.u, 0.0, 1.0);
-    Clamp(*info.v, 0.0, 1.0);
+    info.u = clamp(info.u, 0.0, 1.0);
+    info.v = clamp(info.v, 0.0, 1.0);
 
     return info;
 }

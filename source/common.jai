@@ -95,7 +95,7 @@ Camera :: struct
     orientation        : Quaternion;
     fov                := 0.17;
     aspect_ratio       := 1.0;
-    lens_focal_length  := 15.0;
+    focus_distance     := 5.0;
     lens_radius        := 0.0;
     filter             : Filter;
 
@@ -194,17 +194,30 @@ mix :: (x: $T, y: T, t: float) -> T
     return x * (1.0 - t) + y * t;
 }
 
-reflect :: inline (d: Vector3, n: Vector3) -> Vector3
+reflect :: inline (I: Vector3, N: Vector3) -> Vector3
 {
-    return -d + 2 * dot(d, n) * n;
+    return I - 2.0 * dot(N, I) * N;
 }
 
-refract :: inline (uv: Vector3, n: Vector3, factor: float) -> Vector3
+refract :: inline (I: Vector3, N: Vector3, eta: float) -> Vector3, bool
 {
-    cos_theta    := min(dot(-uv, n), 1.0);
-    out_perp     := factor * (uv + cos_theta * n);
-    out_parallel := -sqrt(abs(1.0 - length_squared(out_perp))) * n;
-    return out_perp + out_parallel;
+    mu := dot(N, I);
+    k  := 1.0 - eta * eta * (1.0 - mu * mu);
+    if (k >= 0.0)
+    {
+        R := eta * I - (eta * mu + sqrt(k)) * N;
+        return R, true;
+    }
+    return .{}, false;
+}
+
+sdiv :: inline (x: float, y: float) -> float
+{
+    if (y != 0.0)
+    {
+        return x/y;
+    }
+    return 0.0;
 }
 
 //------------------------------------------------------------------------

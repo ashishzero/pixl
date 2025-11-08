@@ -9,6 +9,7 @@ Surface :: struct
     specular_roughness   : float;
     specular_anisotropic : float;
     specular_ior         : float;
+    transmission         : float;
 
     emission_strength    : float;
     emission             : Spectrum;
@@ -55,9 +56,9 @@ ltc_coeffs :: (mu: float, roughness: float) -> float, float, float, float
 {
     r := roughness;
     a := 1.0 + r * (0.303392 + (-0.518982 + 0.111709 * mu) * mu + (-0.276266 + 0.335918 * mu) * r);
-    b := r * (-1.16407 + 1.15859 * mu + (0.150815 - 0.150105 * mu) * r) / (mu * mu * mu - 1.43545);
+    b := sdiv(r * (-1.16407 + 1.15859 * mu + (0.150815 - 0.150105 * mu) * r), (mu * mu * mu - 1.43545));
     c := 1.0 + (0.20013 + (-0.506373 + 0.261777 * mu) * mu) * r;
-    d := ((0.540852 + (-1.01625 + 0.475392 * mu) * mu) * r) / (-1.0743 + mu * (0.0725628 + mu));
+    d := sdiv(((0.540852 + (-1.01625 + 0.475392 * mu) * mu) * r), (-1.0743 + mu * (0.0725628 + mu)));
     return a, b, c, d;
 }
 
@@ -301,7 +302,7 @@ sample_metallic :: (V: Vector3, surface: Surface, u: Vector2) -> BxDF_Sample
     {
         alpha     := microfacet_alpha(roughness, anisotropic);
         H         := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
-        L         := reflect(V, H);
+        L         := reflect(-V, H);
         NoV       := V.z;
         NoL       := L.z;
         NoH       := H.z;
@@ -373,7 +374,7 @@ sample_specular_reflect :: (V: Vector3, surface: Surface, u: Vector2) -> BxDF_Sa
     anisotropic    := surface.specular_anisotropic;
     alpha          := microfacet_alpha(roughness, anisotropic);
     H              := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
-    L              := reflect(V, H);
+    L              := reflect(-V, H);
     NoV            := V.z;
     NoL            := L.z;
     NoH            := H.z;
@@ -384,6 +385,34 @@ sample_specular_reflect :: (V: Vector3, surface: Surface, u: Vector2) -> BxDF_Sa
     fr             := (specular_color * D * G) / max(4 * NoL * NoV, 1.0e-6);
     pdf            := (D * G1) / max(4 * NoV, 1.0e-6);
     return .{fr, L, pdf};
+}
+
+sample_specular_transmit :: (V: Vector3, surface: Surface, u: Vector2) -> BxDF_Sample
+{
+    L := refract(-V, .{0, 0, 1}, surface.specular_ior);
+    ft    := Spectrum_One / abs(L.z);
+    pdf   := 1.0;
+    return .{ft, L, pdf};
+
+    //roughness      := max(surface.specular_roughness, 1.0e-4);
+    //anisotropic    := surface.specular_anisotropic;
+    //alpha          := microfacet_alpha(roughness, anisotropic);
+    //H              := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
+    //L              := refract(-V, H, surface.specular_ior);
+    //NoV            := V.z;
+    //NoL            := abs(L.z);
+    //NoH            := H.z;
+    //LoH            := abs(NoL * NoH);
+    //VoH            := abs(NoV * NoH);
+    //D              := microfacet_ggx_distribution(NoH, alpha);
+    //G              := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
+    //// @todo: multiscatter!!!
+    //dL_sqrt        := LoH + VoH / surface.specular_ior;
+    //dL             := max(dL_sqrt * dL_sqrt, 1.0e-4);
+    //ft             := (Spectrum_One * D * G * NoL * NoH) / max(dL * NoL * NoV, 1.0e-4);
+    //dH_over_dL     := saturate(LoH) / dL;
+    //pdf            := D * dH_over_dL;
+    //return .{ft, L, pdf};
 }
 
 //------------------------------------------------------------------------
@@ -403,56 +432,118 @@ f_schlick_dielectric :: (mu: float, ior: float) -> float
 
 f_glossy :: (V: Vector3, L: Vector3, surface: Surface) -> Spectrum
 {
-    r     := f_schlick_dielectric(saturate(V.z), surface.specular_ior);
-    P_s   := surface.specular_weight * r;
-    P_d   := 1.0 - P_s;
-    f_s   := f_specular_reflect(V, L, surface);
+    return f_diffuse(V, L, surface);
+
+    // @todo: make this equivalent to sample_glossy
+    r   := f_schlick_dielectric(V.z, surface.specular_ior);
+    t   := surface.transmission;
+    P_d := 1.0 - surface.specular_weight;
+    P_r := surface.specular_weight * (1.0 - t + r * t);
+    P_t := surface.specular_weight * (1.0 - r) * t;
+
+    f_r   := f_specular_reflect(V, L, surface);
     f_d   := f_diffuse(V, L, surface);
-    f     := P_s * f_s + P_d * f_d;
+    f     := P_r * f_r + P_d * f_d;
     return f;
 }
 
 pdf_glossy :: (V: Vector3, L: Vector3, surface: Surface) -> float
 {
-    r     := f_schlick_dielectric(saturate(V.z), surface.specular_ior);
-    P_s   := surface.specular_weight * r;
-    P_d   := 1.0 - P_s;
-    pdf_s := pdf_specular_reflect(V, L, surface);
+    return pdf_diffuse(V, L, surface);
+
+    // @todo: make this equivalent to sample_glossy
+    r   := f_schlick_dielectric(V.z, surface.specular_ior);
+    t   := surface.transmission;
+    P_d := 1.0 - surface.specular_weight;
+    P_r := surface.specular_weight * (1.0 - t + r * t);
+    P_t := surface.specular_weight * (1.0 - r) * t;
+
+    pdf_r := pdf_specular_reflect(V, L, surface);
     pdf_d := pdf_diffuse(V, L, surface);
-    pdf   := P_s * pdf_s + P_d * pdf_d;
+    pdf   := P_r * pdf_r + P_d * pdf_d;
     return pdf;
 }
 
 sample_glossy :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> BxDF_Sample
 {
-    if (surface.specular_ior <= 1.0)
-    {
-        return sample_diffuse(V, surface, u);
-    }
+    return sample_diffuse(V, surface, u);
 
     r   := f_schlick_dielectric(V.z, surface.specular_ior);
-    P_s := surface.specular_weight * r;
-    P_d := 1.0 - P_s;
+    t   := surface.transmission;
+    P_d := 1.0 - surface.specular_weight;
+    P_r := surface.specular_weight * (1.0 - t + r * t);
+    P_t := surface.specular_weight * (1.0 - r) * t;
+
+  //  print("r = %, P_r = %, P_t = %\n", r, P_r, P_t);
 
     if (p < P_d)
     {
         sample := sample_diffuse(V, surface, u);
         fs     := f_specular_reflect(V, sample.L, surface);
-        f      := P_s * fs + P_d * sample.fr;
+        fd     := sample.fr;
+        f      := P_r * fs + P_d * fd;
         pdf_s  := pdf_specular_reflect(V, sample.L, surface);
-        pdf    := P_s * pdf_s + P_d * sample.pdf;
+        pdf    := P_r * pdf_s + P_d * sample.pdf;
+        return .{f, sample.L, pdf};
+    }
+    else if (p < P_d + P_r)
+    {
+        // @todo: energy conservation
+        sample := sample_specular_reflect(V, surface, u);
+        fd     := f_diffuse(V, sample.L, surface);
+        fs     := sample.fr;
+        f      := P_r * fs + P_d * fd;
+        pdf_d  := pdf_diffuse(V, sample.L, surface);
+        pdf    := P_r * sample.pdf + P_d * pdf_d;
         return .{f, sample.L, pdf};
     }
     else
     {
-        // @todo: transmission
-        sample := sample_specular_reflect(V, surface, u);
-        fd     := f_diffuse(V, sample.L, surface);
-        f      := P_s * sample.fr + P_d * fd;
-        pdf_d  := pdf_diffuse(V, sample.L, surface);
-        pdf    := P_s * sample.pdf + P_d * pdf_d;
+        sample := sample_specular_transmit(V, surface, u);
+        f      := P_t * sample.fr;
+        pdf    := P_t * sample.pdf;
         return .{f, sample.L, pdf};
     }
+
+    return .{};
+
+  //  r    := f_schlick_dielectric(V.z, surface.specular_ior);
+  //  P_sr := surface.specular_weight * r;
+  //  P_st := 1.0 - P_sr;
+
+  //  if (p < P_sr)
+  //  {
+  //      // @todo: energy conservation
+  //      sample := sample_specular_reflect(V, surface, u);
+  //      fd     := f_diffuse(V, sample.L, surface);
+  //      fs     := sample.fr;
+  //      f      := P_sr * fs + P_st * fd;
+  //      pdf_d  := pdf_diffuse(V, sample.L, surface);
+  //      pdf    := P_sr * sample.pdf + P_st * pdf_d;
+  //      return .{f, sample.L, pdf};
+  //  }
+  //  else
+  //  {
+  //      // @todo: energy conservation
+  //      p    = (p - P_sr) / P_st;
+  //      P_t := (1.0 - r) * surface.transmission;
+  //      P_d := 1.0 - P_t;
+
+  //      if (p < P_d) {
+  //          sample := sample_diffuse(V, surface, u);
+  //          fs     := f_specular_reflect(V, sample.L, surface);
+  //          fd     := sample.fr;
+  //          f      := P_sr * fs + P_st * P_d * fd;
+  //          pdf_sr := pdf_specular_reflect(V, sample.L, surface);
+  //          pdf    := P_sr * pdf_sr + P_st * P_d * sample.pdf;
+  //          return .{f, sample.L, pdf};
+  //      } else {
+  //          sample := sample_specular_transmit(V, surface, u);
+  //          f      := P_st * P_t * sample.fr;
+  //          pdf    := P_st * P_t * sample.pdf;
+  //          return .{f, sample.L, pdf};
+  //      }
+  //  }
 }
 
 //------------------------------------------------------------------------

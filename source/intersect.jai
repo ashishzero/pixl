@@ -71,6 +71,7 @@ Material :: struct
     specular_roughness   : Texture2D;
     specular_anisotropic : Texture2D;
     specular_ior         : Texture2D;
+    transmission         : Texture2D;
 
     emission             : Texture2D;
     emission_strength    : Texture2D;
@@ -133,7 +134,7 @@ Scene :: struct
     statistics : []Path_Statistics;
 }
 
-HitFace :: enum u32
+Hit_Face :: enum u32
 {
     FRONT;
     BACK;
@@ -148,7 +149,7 @@ HitInfo :: struct
     dpdv        : Vector3;
     u           : float;
     v           : float;
-    face        : HitFace;
+    face        : Hit_Face;
     material_id : MaterialID;
 }
 
