@@ -1229,7 +1229,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
                     material.specular_color       = create_constant_texture(.{1.000, 1.000, 1.000});
                     material.specular_roughness   = create_constant_texture(roughness);
                     material.specular_anisotropic = create_constant_texture(0.0);
-                    material.specular_ior         = create_constant_texture(2.4);
+                    material.specular_ior         = create_constant_texture(3.0);
 
                     add_sphere(scene, center, radius, id);
                     center.x += spacing;
