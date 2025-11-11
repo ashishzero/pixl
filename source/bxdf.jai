@@ -742,13 +742,23 @@ f_pdf_specular_brdf :: (V: Vector3, L: Vector3, H: Vector3, alpha: Vector2, spec
     return f, pdf;
 }
 
+dielectric_normal :: (V: Vector3, L: Vector3, ior: float) -> Vector3
+{
+    H := normalize(V + ior * L);
+    if (H.z < 0.0)
+    {
+        H = -H;
+    }
+    return H;
+}
+
 #scope_export
 
 f_glossy_brdf :: (V: Vector3, L: Vector3, surface: Surface) -> Spectrum
 {
     if (V.z * L.z > 0.0)
     {
-        H             := normalize(V + L); // use streatched H here!!!
+        H             := dielectric_normal(V, L, surface.specular_ior);
         F             := frensel_schlick_dielectric(surface.specular_ior, dot(V, H));
         P_s           := F * surface.specular_weight;
 
@@ -769,7 +779,7 @@ pdf_glossy_brdf :: (V: Vector3, L: Vector3, surface: Surface) -> float
 {
     if (V.z * L.z > 0.0)
     {
-        H             := normalize(V + L); // use streatched H here!!!
+        H             := dielectric_normal(V, L, surface.specular_ior);
         F             := frensel_schlick_dielectric(surface.specular_ior, dot(V, H));
         P_s           := F * surface.specular_weight;
         P_d           := 1.0 - P_s;
@@ -817,7 +827,7 @@ sample_glossy_brdf :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> BS
         p       = (p - P_s) / P_d;
         sample := sample_diffuse_brdf(V, surface, p, u);
         L       = sample.L;
-        H      := normalize(V + L);
+        H      := dielectric_normal(V, L, surface.specular_ior);
         f_s     = f_specular_brdf(V, L, H, alpha, specular_tint);
         f_d     = sample.f;
         pdf_s   = pdf_specular_brdf(V, L, H, alpha);
