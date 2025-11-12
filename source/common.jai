@@ -199,13 +199,14 @@ reflect :: inline (I: Vector3, N: Vector3) -> Vector3
     return I - 2.0 * dot(N, I) * N;
 }
 
-refract :: inline (I: Vector3, N: Vector3, eta: float) -> Vector3, bool
+refract :: inline (I: Vector3, N: Vector3, ior: float) -> Vector3, bool
 {
-    mu := dot(N, I);
-    k  := 1.0 - eta * eta * (1.0 - mu * mu);
-    if (k >= 0.0)
+    cos_i := -dot(N, I);
+    sin_t := ior * ior * (1.0 - cos_i * cos_i);
+    if (sin_t <= 1.0)
     {
-        R := eta * I - (eta * mu + sqrt(k)) * N;
+        k := 1.0 - sin_t;
+        R := ior * I + (ior * cos_i - sqrt(k)) * N;
         return R, true;
     }
     return .{}, false;

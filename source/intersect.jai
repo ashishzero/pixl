@@ -67,7 +67,7 @@ Material :: struct
     metalness            : Texture2D;
     transmission         : Texture2D;
     diffuse_roughness    : Texture2D;
-    specular_weight      : Texture2D;
+    specular             : Texture2D;
     specular_ior         : Texture2D;
     specular_roughness   : Texture2D;
     specular_anisotropic : Texture2D;
