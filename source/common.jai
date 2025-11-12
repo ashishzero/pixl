@@ -212,6 +212,15 @@ refract :: inline (I: Vector3, N: Vector3, ior: float) -> Vector3, bool
     return .{}, false;
 }
 
+exp :: (s: Spectrum) -> Spectrum
+{
+    r : Spectrum = ---;
+    r.x = exp(s.x);
+    r.y = exp(s.y);
+    r.z = exp(s.z);
+    return r;
+}
+
 sdiv :: inline (x: float, y: float) -> float
 {
     if (y != 0.0)

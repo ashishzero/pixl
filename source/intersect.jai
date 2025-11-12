@@ -64,17 +64,19 @@ Texture2D :: struct
 Material :: struct
 {
     color                : Texture2D;
-    metalness            : Texture2D;
-    transmission         : Texture2D;
+    metallic             : Texture2D;
     diffuse_roughness    : Texture2D;
     specular             : Texture2D;
     specular_ior         : Texture2D;
     specular_roughness   : Texture2D;
     specular_anisotropic : Texture2D;
     specular_tint        : Texture2D;
-
-    emission_color       : Texture2D;
+    transmission         : Texture2D;
+    absorption_strength  : Texture2D;
+    absorption           : Texture2D;
     emission_strength    : Texture2D;
+    emission_color       : Texture2D;
+    
 
     //specular        : Texture2D(float);
     //ior             : Texture2D(float);

@@ -168,7 +168,7 @@ material_surface :: (material: Material, hit: Hit_Info) -> Surface
 {
     surface: Surface = ---;
     surface.base_color           = SampleTextureSpectrum(material.color, hit.u, hit.v);
-    surface.metallic             = SampleAlpha(material.metalness, hit.u, hit.v);
+    surface.metallic             = SampleAlpha(material.metallic, hit.u, hit.v);
     surface.diffuse_roughness    = SampleAlpha(material.diffuse_roughness, hit.u, hit.v);
     surface.specular             = SampleAlpha(material.specular, hit.u, hit.v);
     surface.specular_tint        = SampleTextureSpectrum(material.specular_tint, hit.u, hit.v);
@@ -176,13 +176,10 @@ material_surface :: (material: Material, hit: Hit_Info) -> Surface
     surface.specular_anisotropic = SampleAlpha(material.specular_anisotropic, hit.u, hit.v);
     surface.specular_ior         = SampleAlpha(material.specular_ior, hit.u, hit.v);
     surface.transmission         = SampleAlpha(material.transmission, hit.u, hit.v);
-    surface.emission_color       = SampleTextureSpectrum(material.emission_color, hit.u, hit.v);
+    surface.absorption_strength  = SampleAlpha(material.absorption_strength, hit.u, hit.v);
+    surface.absorption           = SampleTextureSpectrum(material.absorption, hit.u, hit.v);
     surface.emission_strength    = SampleAlpha(material.emission_strength, hit.u, hit.v);
-
-    if (surface.specular_ior == 0.0)
-    {
-        surface.specular_ior = 1.0;
-    }
+    surface.emission_color       = SampleTextureSpectrum(material.emission_color, hit.u, hit.v);
 
     if (hit.face == .BACK)
     {
@@ -233,10 +230,10 @@ inverse_transform :: (xform: Matrix3, p: Vector3) -> Vector3
 
 trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, stats: *Path_Statistics) -> Vector3
 {
-    radiance := Spectrum.{0, 0, 0};
-    fr       := Spectrum.{1, 1, 1};
-    ray      := primary;
-    ray_type := Ray_Type.PRIMARY;
+    radiance   := Spectrum.{0, 0, 0};
+    throughput := Spectrum.{1, 1, 1};
+    ray        := primary;
+    ray_type   := Ray_Type.PRIMARY;
 
     for 0..depth
     {
@@ -279,9 +276,13 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, 
             V      := forward_transform(inv_TBN, -ray.dir);
             sample := sample_principled_bsdf(V, surface, p, u);
 
-            // @todo: return emission from BSDFSample as well
+            if (hit.face == .BACK && surface.specular_ior != 1.0)
+            {
+                throughput *= exp(-hit.t * surface.absorption_strength * surface.absorption);
+            }
+
             emittance := surface.emission_strength * surface.emission_color;
-            radiance += fr * emittance;
+            radiance += throughput * emittance;
 
             if (sample.pdf < 1.0e-6)
             {
@@ -289,7 +290,7 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, 
             }
 
             cosine := abs(sample.L.z);
-            fr *= cosine * sample.f / sample.pdf;
+            throughput *= cosine * sample.f / sample.pdf;
 
             //------------------------------------------------------------------------
             // Next ray
@@ -314,7 +315,7 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, 
   //              env.y = clamp(env.y, 0.0, 1.0);
   //              env.z = clamp(env.z, 0.0, 1.0);
 
-                radiance += fr * env;
+                radiance += throughput * env;
             }
             else
             {
@@ -1038,7 +1039,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
             id, material        := create_material(scene);
             material.color       = create_constant_texture(.{1, 1, 1});
-            material.metalness   = create_constant_texture(0.0);
+            material.metallic   = create_constant_texture(0.0);
             material.diffuse_roughness    = create_constant_texture(0.0);
             material.specular             = create_constant_texture(1.0);
             material.specular_tint        = create_constant_texture(.{1, 1, 1});
@@ -1063,7 +1064,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
             material.color       = create_constant_texture(.{0.699, 0.704, 0.671}); // Cobalt
             //material.color       = create_constant_texture(.{1, 1, 1});
             //material.color       = create_constant_texture(.{1.000, 0.735, 0.353}); // Gold
-            material.metalness   = create_constant_texture(0.0);
+            material.metallic   = create_constant_texture(0.0);
             material.diffuse_roughness    = create_constant_texture(1.0);
             material.specular             = create_constant_texture(0.7);
             //material.specular_color       = create_constant_texture(.{1, 1, 1});
@@ -1115,7 +1116,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
             id, material                 := create_material(scene);
             material.color                = create_constant_texture(color);
-            material.metalness            = create_constant_texture(0.0);
+            material.metallic            = create_constant_texture(0.0);
             material.specular             = create_constant_texture(0.0);
             material.transmission         = create_constant_texture(1.0);
             material.specular_tint        = create_constant_texture(.{1.0, 1.0, 1.0});
@@ -1166,7 +1167,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
                     id, material                 := create_material(scene);
                     material.color                = create_constant_texture(.{1.000, 0.735, 0.353}); // Gold
-                    material.metalness            = create_constant_texture(1.0);
+                    material.metallic            = create_constant_texture(1.0);
                     material.specular             = create_constant_texture(1.0);
                     material.specular_tint        = create_constant_texture(.{0.993, 1.000, 1.000}); // Gold
                     material.specular_roughness   = create_constant_texture(roughness);
@@ -1189,7 +1190,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
                     id, material                 := create_material(scene);
                     material.color                = create_constant_texture(.{0.617, 0.576, 0.540}); // Titanium
-                    material.metalness            = create_constant_texture(1.0);
+                    material.metallic            = create_constant_texture(1.0);
                     material.specular             = create_constant_texture(1.0);
                     material.specular_tint        = create_constant_texture(.{0.695, 0.726, 0.770}); // Titanium
                     material.specular_roughness   = create_constant_texture(roughness);
@@ -1238,7 +1239,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
                     id, material                 := create_material(scene);
                     material.color                = create_constant_texture(color);
-                    material.metalness            = create_constant_texture(0.0);
+                    material.metallic            = create_constant_texture(0.0);
                     material.specular             = create_constant_texture(specular);
                     material.specular_tint        = create_constant_texture(.{0.95, 0.92, 0.88});
                     material.specular_roughness   = create_constant_texture(roughness);
@@ -1266,7 +1267,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
                     id, material                 := create_material(scene);
                     material.color                = create_constant_texture(color);
-                    material.metalness            = create_constant_texture(0.0);
+                    material.metallic            = create_constant_texture(0.0);
                     material.specular             = create_constant_texture(specular);
                     material.specular_tint        = create_constant_texture(.{0.95, 0.92, 0.88});
                     material.specular_roughness   = create_constant_texture(0.8);
@@ -1317,13 +1318,15 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
                     id, material                 := create_material(scene);
                     material.color                = create_constant_texture(color);
-                    material.metalness            = create_constant_texture(0.0);
+                    material.metallic             = create_constant_texture(0.0);
                     material.specular             = create_constant_texture(0.0);
                     material.transmission         = create_constant_texture(1.0);
-                    material.specular_tint        = create_constant_texture(.{1.0, 1.0, 1.0});
+                    material.specular_tint        = create_constant_texture(.{0.23, 0.47, 0.54});
                     material.specular_roughness   = create_constant_texture(roughness);
                     material.specular_anisotropic = create_constant_texture(0.0);
                     material.specular_ior         = create_constant_texture(ior);
+                    material.absorption           = create_constant_texture(Spectrum_One - .{0.23, 0.47, 0.54});
+                    material.absorption_strength  = create_constant_texture(5.0);
 
                     add_sphere(scene, center, radius, id);
                     center.x += spacing;
@@ -1427,14 +1430,18 @@ create_material :: (scene: *Scene) -> MaterialID, *Material
     id       := scene.materials.count.(MaterialID);
     material := array_add(*scene.materials);
     material.color = create_constant_texture(Vector3.{0.8, 0.8, 0.8});
-    material.metalness = create_constant_texture(0.0);
+    material.metallic = create_constant_texture(0.0);
     material.diffuse_roughness = create_constant_texture(0.0);
     material.specular = create_constant_texture(0.0);
     material.specular_tint = create_constant_texture(Vector3.{1, 1, 1});
+    material.specular_ior = create_constant_texture(1.5);
     material.specular_roughness = create_constant_texture(0.3);
     material.specular_anisotropic = create_constant_texture(0.0);
-    material.specular_ior = create_constant_texture(1.5);
     material.transmission = create_constant_texture(0.0);
+    material.absorption_strength = create_constant_texture(0.0);
+    material.absorption = create_constant_texture(.{0.0, 0.0, 0.0});
+    material.emission_strength = create_constant_texture(0.0);
+    material.emission_color = create_constant_texture(.{0.0, 0.0, 0.0});
     return id, material;
 }
 
@@ -1449,7 +1456,7 @@ create_lambertian_material :: (scene: *Scene, color: Texture2D, roughness := 0.0
 create_metal_material :: (scene: *Scene, roughness := 0.0, specular_tint := Vector3.{1, 1, 1}, base_color := Vector3.{1, 1, 1}) -> MaterialID
 {
     id, material := create_material(scene);
-    material.metalness = create_constant_texture(1.0);
+    material.metallic = create_constant_texture(1.0);
     material.specular_roughness = create_constant_texture(roughness);
     material.color = create_constant_texture(base_color);
     material.specular_tint = create_constant_texture(specular_tint);
