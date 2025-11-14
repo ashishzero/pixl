@@ -414,6 +414,98 @@ refracted_normal :: inline (V: Vector3, L: Vector3, ior: float) -> Vector3
 
 #scope_export
 
+f_specular_brdf :: (V: Vector3, L: Vector3, H: Vector3, alpha: Vector2) -> float
+{
+    NoV   := V.z;
+    NoL   := L.z;
+    NoH   := abs(H.z);
+    D     := microfacet_ggx_distribution(NoH, alpha);
+    G     := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
+    scale := (D * G) / max(4 * NoL * NoV, 1.0e-6);
+    f_ss  := scale; // @todo: multiscatter!!!
+    f     := f_ss;
+    return f;
+}
+
+pdf_specular_brdf :: (V: Vector3, L: Vector3, H: Vector3, alpha: Vector2) -> float
+{
+    NoV := V.z;
+    NoH := H.z;
+    D   := microfacet_ggx_distribution(NoH, alpha);
+    G1  := microfacet_ggx_mask(NoV, alpha);
+    pdf := (D * G1) / max(4 * NoV, 1.0e-6);
+    return pdf;
+}
+
+f_pdf_specular_brdf :: (V: Vector3, L: Vector3, H: Vector3, alpha: Vector2) -> float, float
+{
+    NoV   := V.z;
+    NoL   := L.z;
+    NoH   := abs(H.z);
+    D     := microfacet_ggx_distribution(NoH, alpha);
+    G     := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
+    G1    := microfacet_ggx_mask(NoV, alpha);
+    scale := (D * G) / max(4 * NoL * NoV, 1.0e-6);
+    f_ss  := scale; // @todo: multiscatter!!!
+    f     := f_ss;
+    pdf   := (D * G1) / max(4 * NoV, 1.0e-6);
+    return f, pdf;
+}
+
+f_specular_btdf :: (V: Vector3, L: Vector3, H: Vector3, ior: float, alpha: Vector2) -> float
+{
+    NoV     := V.z;
+    NoL     := L.z;
+    NoH     := abs(H.z);
+    VoH     := dot(V, H);
+    LoH     := -dot(L, H);
+    D       := microfacet_ggx_distribution(NoH, alpha);
+    G       := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
+    dL_sqrt := LoH + VoH / ior;
+    dL      := dL_sqrt * dL_sqrt;
+    VoLoH   := VoH * LoH;
+    scale   := (D * G * VoLoH) / max(dL * NoL * NoV, 1.0e-6);
+    f_ss    := scale; // @todo: multiscatter!!!
+    f       := f_ss;
+    return f;
+}
+
+pdf_specular_btdf :: (V: Vector3, L: Vector3, H: Vector3, ior: float, alpha: Vector2) -> float
+{
+    NoV     := V.z;
+    NoH     := H.z;
+    VoH     := dot(V, H);
+    LoH     := -dot(L, H);
+    D       := microfacet_ggx_distribution(NoH, alpha);
+    G1      := microfacet_ggx_mask(NoV, alpha);
+    VoLoH   := VoH * LoH;
+    dL_sqrt := LoH + VoH / ior;
+    dL      := dL_sqrt * dL_sqrt;
+    pdf     := (D * G1 * VoLoH) / max(dL * NoV, 1.0e-6);
+    return pdf;
+}
+
+f_pdf_specular_btdf :: (V: Vector3, L: Vector3, H: Vector3, ior: float, alpha: Vector2) -> float, float
+{
+    NoV     := V.z;
+    NoL     := abs(L.z);
+    NoH     := H.z;
+    VoH     := dot(V, H);
+    LoH     := -dot(L, H);
+    D       := microfacet_ggx_distribution(NoH, alpha);
+    G       := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
+    G1      := microfacet_ggx_mask(NoV, alpha);
+    dL_sqrt := LoH + VoH / ior;
+    dL      := dL_sqrt * dL_sqrt;
+    VoLoH   := VoH * LoH;
+    scale   := (D * G * VoLoH) / max(dL * NoL * NoV, 1.0e-6);
+    f_ss    := scale; // @todo: multiscatter!!!
+
+    f       := f_ss;
+    pdf     := (D * G1 * VoLoH) / max(dL * NoV, 1.0e-6);
+    return f, pdf;
+}
+
 f_dielectric_base_bsdf :: (V: Vector3, L: Vector3, surface: Surface) -> Spectrum
 {
     specular_tint := surface.specular_tint;
@@ -438,40 +530,23 @@ f_dielectric_base_bsdf :: (V: Vector3, L: Vector3, surface: Surface) -> Spectrum
     }
     else
     {
-        NoV     := V.z;
-        NoL     := L.z;
-        alpha   := microfacet_alpha(roughness, anisotropic);
+        alpha := microfacet_alpha(roughness, anisotropic);
 
-        if (NoV == 0.0 && NoL == 0.0)
+        if (V.z == 0.0 || L.z == 0.0)
         {
             return Spectrum_Zero;
         }
 
-        if (NoL > 0.0)
+        if (L.z > 0.0)
         {
-            H      = normalize(V + L);
-            NoH   := abs(H.z);
-            D     := microfacet_ggx_distribution(NoH, alpha);
-            G     := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
-            scale := (D * G) / max(4 * NoL * NoV, 1.0e-6);
-            f_ss  := scale * Spectrum_One; // @todo: multiscatter!!!
-            f_s    = f_ss;
-            f_d    = f_diffuse_brdf(V, L, surface);
+            H   = normalize(V + L);
+            f_s = Spectrum_One * f_specular_brdf(V, L, H, alpha);
+            f_d = f_diffuse_brdf(V, L, surface);
         }
         else
         {
-            H        = refracted_normal(V, L, ior);
-            NoH     := abs(H.z);
-            VoH     := dot(V, H);
-            LoH     := -dot(L, H);
-            D       := microfacet_ggx_distribution(NoH, alpha);
-            G       := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
-            dL_sqrt := LoH + VoH / ior;
-            dL      := dL_sqrt * dL_sqrt;
-            VoLoH   := VoH * LoH;
-            scale   := (D * G * VoLoH) / max(dL * NoL * NoV, 1.0e-6);
-            f_ss    := scale * Spectrum_One; // @todo: multiscatter!!!
-            f_t      = f_ss;
+            H   = refracted_normal(V, L, ior);
+            f_t = Spectrum_One * f_specular_btdf(V, L, H, ior, alpha);
         }
     }
 
@@ -517,24 +592,13 @@ pdf_dielectric_base_bsdf :: (V: Vector3, L: Vector3, surface: Surface) -> float
         if (L.z > 0.0)
         {
             H     := normalize(V + L);
-            NoH   := H.z;
-            D     := microfacet_ggx_distribution(NoH, alpha);
-            G1    := microfacet_ggx_mask(NoV, alpha);
-            pdf_s  = (D * G1) / max(4 * NoV, 1.0e-6);
+            pdf_s  = pdf_specular_brdf(V, L, H, alpha);
             pdf_d  = pdf_diffuse_brdf(V, L, surface);
         }
         else if (L.z < 0.0)
         {
-            H       := refracted_normal(V, L, ior);
-            NoH     := H.z;
-            VoH     := dot(V, H);
-            LoH     := -dot(L, H);
-            D       := microfacet_ggx_distribution(NoH, alpha);
-            G1      := microfacet_ggx_mask(NoV, alpha);
-            VoLoH   := VoH * LoH;
-            dL_sqrt := LoH + VoH / ior;
-            dL      := dL_sqrt * dL_sqrt;
-            pdf_t    = (D * G1 * VoLoH) / max(dL * NoV, 1.0e-6);
+            H     := refracted_normal(V, L, ior);
+            pdf_t  = pdf_specular_btdf(V, L, H, ior, alpha);
         }
     }
 
@@ -625,17 +689,9 @@ sample_dielectric_base_bsdf :: (V: Vector3, surface: Surface, p: float, u: Vecto
                 return .{};
             }
 
-            NoV   := V.z;
-            NoL   := L.z;
-            NoH   := abs(H.z);
-            D     := microfacet_ggx_distribution(NoH, alpha);
-            G     := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
-            G1    := microfacet_ggx_mask(NoV, alpha);
-            scale := (D * G) / max(4 * NoL * NoV, 1.0e-6);
-            f_ss  := scale * Spectrum_One; // @todo: multiscatter!!!
-
-            f_s   = f_ss;
-            pdf_s = (D * G1) / max(4 * NoV, 1.0e-6);
+            fs: float;
+            fs, pdf_s = f_pdf_specular_brdf(V, L, H, alpha);
+            f_s = Spectrum_One * fs;
         }
         else
         {
@@ -647,22 +703,9 @@ sample_dielectric_base_bsdf :: (V: Vector3, surface: Surface, p: float, u: Vecto
                 return .{};
             }
 
-            NoV     := V.z;
-            NoL     := abs(L.z);
-            NoH     := H.z;
-            VoH     := dot(V, H);
-            LoH     := -dot(L, H);
-            D       := microfacet_ggx_distribution(NoH, alpha);
-            G       := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
-            G1      := microfacet_ggx_mask(NoV, alpha);
-            dL_sqrt := LoH + VoH / ior;
-            dL      := dL_sqrt * dL_sqrt;
-            VoLoH   := VoH * LoH;
-            scale   := (D * G * VoLoH) / max(dL * NoL * NoV, 1.0e-6);
-            f_ss    := scale * Spectrum_One; // @todo: multiscatter!!!
-
-            f_t   = f_ss;
-            pdf_t = (D * G1 * VoLoH) / max(dL * NoV, 1.0e-6);
+            ft: float;
+            ft, pdf_t = f_pdf_specular_btdf(V, L, H, ior, alpha);
+            f_t = Spectrum_One * ft;
         }
     }
 
@@ -673,41 +716,6 @@ sample_dielectric_base_bsdf :: (V: Vector3, surface: Surface, p: float, u: Vecto
     pdf := P_s * pdf_s + P_d * pdf_d + P_t * pdf_t;
     return .{L, f, pdf};
 }
-
-//sample_dielectric_base_bsdf :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> BSDF_Sample
-//{
-//    P_t := surface.transmission;
-//    P_o := 1.0 - P_t;
-
-//    L : Vector3 = ---;
-//    f_t, f_o: Spectrum = ---;
-//    pdf_t, pdf_o: float = ---;
-
-//    if (p < P_o)
-//    {
-//        p       = p / P_o;
-//        sample := sample_opaque_base_brdf(V, surface, p, u);
-//        L       = sample.L;
-//        f_t     = f_translucent_bsdf(V, L, surface);
-//        f_o     = sample.f;
-//        pdf_t   = pdf_translucent_bsdf(V, L, surface);
-//        pdf_o   = sample.pdf;
-//    }
-//    else
-//    {
-//        p       = (p - P_o) / P_t;
-//        sample := sample_translucent_bsdf(V, surface, p, u);
-//        L       = sample.L;
-//        f_t     = sample.f;
-//        f_o     = f_opaque_base_brdf(V, L, surface);
-//        pdf_t   = sample.pdf;
-//        pdf_o   = pdf_opaque_base_brdf(V, L, surface);
-//    }
-
-//    f   := P_t * f_t + P_o * f_o;
-//    pdf := P_t * pdf_t + P_o * pdf_o;
-//    return .{L, f, pdf};
-//}
 
 //------------------------------------------------------------------------
 // Principled BSDF

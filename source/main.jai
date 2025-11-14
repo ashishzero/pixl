@@ -686,6 +686,7 @@ SceneType :: enum
     shaderball_test;
     sphere_test;
     metallic_test;
+    diffuse_test;
     glossy_test;
     translucent_test;
     envmap_test;
@@ -1197,6 +1198,56 @@ load_scene :: (using scene: *Scene, type: SceneType)
                     material.specular_tint        = create_constant_texture(.{0.695, 0.726, 0.770}); // Titanium
                     material.specular_roughness   = create_constant_texture(roughness);
                     material.specular_anisotropic = create_constant_texture(anisotropic);
+
+                    add_sphere(scene, center, radius, id);
+                    center.x += spacing;
+                }
+            }
+
+        case .diffuse_test;
+            camera.fov         = 45.0 / 360.0;
+            camera.position    = .{0, 0, -1};
+            camera.orientation = .{};
+
+            camera.type = .ORTHOGRAPHIC;
+
+            environment = load_texture_from_file("data/envmap/golden_gate_hills_2k.hdr");
+            //environment = create_constant_texture(.{1, 1, 1});
+            exposure = 2;
+
+            //config.flat_background = true;
+
+            radius  := 0.25;
+            spacing := 2 * radius + 0.1;
+            start_x := -2.8;
+            start_y :=  1.6;
+
+            // Backdrop
+            {
+                checker := create_lambertian_material(scene, create_checkerboard_texture(Vector3.{1, 1, 1}, .{0.1, 0.1, 0.1}, .{40, 40}));
+                add_box(scene, Matrix4_Identity, .{-6, -6, 0.5}, .{6, 6, 0.6}, checker); // back
+            }
+
+            for h:0..TEST_SPHERES_HEIGHT-1
+            {
+                color         := Vector3.{0.023, 0.023, 0.023};
+                specular_tint := Vector3.{1, 1, 1};
+                center        := Vector3.{start_x, start_y, 0.0};
+                start_y -= spacing;
+
+                for 0..TEST_SPHERES_WIDTH-1
+                {
+                    roughness := it.(float) / (TEST_SPHERES_WIDTH - 1).(float);
+                    weight    := lerp(0.02, 0.7, h.(float) / (TEST_SPHERES_HEIGHT - 1).(float));
+
+                    id, material                 := create_material(scene);
+                    material.color                = create_constant_texture(color);
+                    material.metallic             = create_constant_texture(0.0);
+                    material.specular_ior         = create_constant_texture(0.5);
+                    material.specular_weight      = create_constant_texture(weight);
+                    material.specular_tint        = create_constant_texture(specular_tint);
+                    material.specular_roughness   = create_constant_texture(roughness);
+                    material.specular_anisotropic = create_constant_texture(0.0);
 
                     add_sphere(scene, center, radius, id);
                     center.x += spacing;
