@@ -166,15 +166,17 @@ SampleTextureSpectrum :: (texture: Texture2D, u: float, v: float) -> Spectrum
 
 material_surface :: (material: Material, hit: Hit_Info) -> Surface
 {
+    specular := SampleAlpha(material.specular_ior, hit.u, hit.v);
+
     surface: Surface = ---;
     surface.base_color           = SampleTextureSpectrum(material.color, hit.u, hit.v);
     surface.metallic             = SampleAlpha(material.metallic, hit.u, hit.v);
     surface.diffuse_roughness    = SampleAlpha(material.diffuse_roughness, hit.u, hit.v);
-    surface.specular             = SampleAlpha(material.specular, hit.u, hit.v);
+    surface.specular_ior         = specular_ior(specular);
+    surface.specular_weight      = SampleAlpha(material.specular_weight, hit.u, hit.v);
     surface.specular_tint        = SampleTextureSpectrum(material.specular_tint, hit.u, hit.v);
     surface.specular_roughness   = SampleAlpha(material.specular_roughness, hit.u, hit.v);
     surface.specular_anisotropic = SampleAlpha(material.specular_anisotropic, hit.u, hit.v);
-    surface.specular_ior         = SampleAlpha(material.specular_ior, hit.u, hit.v);
     surface.transmission         = SampleAlpha(material.transmission, hit.u, hit.v);
     surface.absorption_strength  = SampleAlpha(material.absorption_strength, hit.u, hit.v);
     surface.absorption           = SampleTextureSpectrum(material.absorption, hit.u, hit.v);
@@ -629,7 +631,7 @@ render :: (scene: *Scene, weight: float, frame: u32)
 
                 //color *= inv_samples;
                 prev_color := scene.rgbx[index].xyz;
-                
+
                 render := lerp(prev_color, color, weight);
 
                 scene.rgbx[index].xyz = render;
@@ -684,7 +686,7 @@ SceneType :: enum
     shaderball_test;
     sphere_test;
     metallic_test;
-    opaque_base_test;
+    glossy_test;
     translucent_test;
     envmap_test;
 }
@@ -910,8 +912,8 @@ turns_to_radians :: (turns: float) -> float
     return turns * 2.0 * PI;
 }
 
-NUM_TEST_SPHERES :: 10;
-NUM_HEIGHTS      :: 3;
+TEST_SPHERES_WIDTH  :: 10;
+TEST_SPHERES_HEIGHT :: 6;
 
 load_scene :: (using scene: *Scene, type: SceneType)
 {
@@ -1041,11 +1043,10 @@ load_scene :: (using scene: *Scene, type: SceneType)
             material.color       = create_constant_texture(.{1, 1, 1});
             material.metallic   = create_constant_texture(0.0);
             material.diffuse_roughness    = create_constant_texture(0.0);
-            material.specular             = create_constant_texture(1.0);
+            material.specular_ior         = create_constant_texture(1.0);
             material.specular_tint        = create_constant_texture(.{1, 1, 1});
             material.specular_roughness   = create_constant_texture(0.8);
             material.specular_anisotropic = create_constant_texture(0.0);
-            material.specular_ior         = create_constant_texture(1.5);
 
             add_sphere(scene, center, radius, id);
 
@@ -1066,17 +1067,19 @@ load_scene :: (using scene: *Scene, type: SceneType)
             //material.color       = create_constant_texture(.{1.000, 0.735, 0.353}); // Gold
             material.metallic   = create_constant_texture(0.0);
             material.diffuse_roughness    = create_constant_texture(1.0);
-            material.specular             = create_constant_texture(0.7);
-            //material.specular_color       = create_constant_texture(.{1, 1, 1});
+            material.specular_tint        = create_constant_texture(.{0.34, 0.51, 0.36});
             //material.specular_color       = create_constant_texture(.{0.993, 1.000, 1.000}); // Gold
-            material.specular_tint        = create_constant_texture(.{0.727, 0.772, 0.823}); // Cobalt
+            //material.specular_tint        = create_constant_texture(.{0.727, 0.772, 0.823}); // Cobalt
             material.specular_roughness   = create_constant_texture(0.25);
             material.specular_anisotropic = create_constant_texture(0.0);
-            material.specular_ior         = create_constant_texture(2.5);
+            material.specular_ior         = create_constant_texture(0.1);
+            material.transmission         = create_constant_texture(1.0);
+            material.absorption           = create_constant_texture(.{0.7, 0.3, 0.7});
+            material.absorption_strength  = create_constant_texture(1.0);
 
             white      := create_lambertian_material(scene, create_constant_texture(.{1, 1, 1}));
             red        := create_lambertian_material(scene, create_constant_texture(.{0.65, 0.05, 0.05}));
-            black      := create_lambertian_material(scene, create_constant_texture(.{0.1, 0.1, 0.1}));
+            black, mat := create_lambertian_material(scene, create_constant_texture(.{0.01, 0.01, 0.01}));
             checker    := create_lambertian_material(scene, create_checkerboard_texture(Vector3.{0.9, 0.9, 0.9}, .{0.1, 0.1, 0.1}, .{40, 40}));
 
             earth      := load_texture_from_file("data/misc/earth.png", 3);
@@ -1117,12 +1120,11 @@ load_scene :: (using scene: *Scene, type: SceneType)
             id, material                 := create_material(scene);
             material.color                = create_constant_texture(color);
             material.metallic            = create_constant_texture(0.0);
-            material.specular             = create_constant_texture(0.0);
             material.transmission         = create_constant_texture(1.0);
             material.specular_tint        = create_constant_texture(.{1.0, 1.0, 1.0});
             material.specular_roughness   = create_constant_texture(0.0);
             material.specular_anisotropic = create_constant_texture(0.0);
-            material.specular_ior         = create_constant_texture(1.0 / 1.02);
+            material.specular_ior         = create_constant_texture(0.1);
 
             center := Vector3.{0, 0, 0};
             radius := 1.5;
@@ -1155,20 +1157,21 @@ load_scene :: (using scene: *Scene, type: SceneType)
                 add_box(scene, Matrix4_Identity, .{-6, -6, 0.5}, .{6, 6, 0.6}, checker); // back
             }
 
-            for h:0..NUM_HEIGHTS-1
+            TEST_HALF_HEIGHT :: TEST_SPHERES_HEIGHT / 2;
+
+            for h:0..TEST_HALF_HEIGHT-1
             {
                 center  := Vector3.{start_x, start_y, 0.0};
                 start_y -= spacing;
 
-                for 0..NUM_TEST_SPHERES-1
+                for 0..TEST_SPHERES_WIDTH-1
                 {
-                    roughness   := it.(float) / (NUM_TEST_SPHERES - 1).(float);
-                    anisotropic := h.(float) / (NUM_HEIGHTS - 1).(float);
+                    roughness   := it.(float) / (TEST_SPHERES_WIDTH - 1).(float);
+                    anisotropic := h.(float) / (TEST_HALF_HEIGHT - 1).(float);
 
                     id, material                 := create_material(scene);
                     material.color                = create_constant_texture(.{1.000, 0.735, 0.353}); // Gold
                     material.metallic            = create_constant_texture(1.0);
-                    material.specular             = create_constant_texture(1.0);
                     material.specular_tint        = create_constant_texture(.{0.993, 1.000, 1.000}); // Gold
                     material.specular_roughness   = create_constant_texture(roughness);
                     material.specular_anisotropic = create_constant_texture(anisotropic);
@@ -1178,20 +1181,19 @@ load_scene :: (using scene: *Scene, type: SceneType)
                 }
             }
 
-            for h:0..NUM_HEIGHTS-1
+            for h:0..TEST_HALF_HEIGHT-1
             {
                 center    := Vector3.{start_x, start_y, 0.0};
                 start_y   -= spacing;
 
-                for 0..NUM_TEST_SPHERES-1
+                for 0..TEST_SPHERES_WIDTH-1
                 {
-                    roughness   := it.(float) / (NUM_TEST_SPHERES - 1).(float);
-                    anisotropic := h.(float) / (NUM_HEIGHTS - 1).(float);
+                    roughness   := it.(float) / (TEST_SPHERES_WIDTH - 1).(float);
+                    anisotropic := h.(float) / (TEST_HALF_HEIGHT - 1).(float);
 
                     id, material                 := create_material(scene);
                     material.color                = create_constant_texture(.{0.617, 0.576, 0.540}); // Titanium
                     material.metallic            = create_constant_texture(1.0);
-                    material.specular             = create_constant_texture(1.0);
                     material.specular_tint        = create_constant_texture(.{0.695, 0.726, 0.770}); // Titanium
                     material.specular_roughness   = create_constant_texture(roughness);
                     material.specular_anisotropic = create_constant_texture(anisotropic);
@@ -1201,7 +1203,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
                 }
             }
 
-        case .opaque_base_test;
+        case .glossy_test;
             camera.fov         = 45.0 / 360.0;
             camera.position    = .{0, 0, -1};
             camera.orientation = .{};
@@ -1225,54 +1227,25 @@ load_scene :: (using scene: *Scene, type: SceneType)
                 add_box(scene, Matrix4_Identity, .{-6, -6, 0.5}, .{6, 6, 0.6}, checker); // back
             }
 
-            // Diffuse/Specular (Roughness)
-            for h:0..NUM_HEIGHTS-1
+            for h:0..TEST_SPHERES_HEIGHT-1
             {
-                color   := Vector3.{0.58, 0.29, 0.0};
-                center  := Vector3.{start_x, start_y, 0.0};
+                color         := Vector3.{0.000, 0.251, 0.804};
+                specular_tint := Vector3.{0.275, 0.510, 0.706};
+                center        := Vector3.{start_x, start_y, 0.0};
                 start_y -= spacing;
 
-                for 0..NUM_TEST_SPHERES-1
+                for 0..TEST_SPHERES_WIDTH-1
                 {
-                    specular  := it.(float) / (NUM_TEST_SPHERES - 1).(float);
-                    roughness := h.(float) / (NUM_HEIGHTS - 1).(float);
+                    roughness := it.(float) / (TEST_SPHERES_WIDTH - 1).(float);
+                    specular  := lerp(0.02, 0.7, h.(float) / (TEST_SPHERES_HEIGHT - 1).(float));
 
                     id, material                 := create_material(scene);
                     material.color                = create_constant_texture(color);
-                    material.metallic            = create_constant_texture(0.0);
-                    material.specular             = create_constant_texture(specular);
-                    material.specular_tint        = create_constant_texture(.{0.95, 0.92, 0.88});
+                    material.metallic             = create_constant_texture(0.0);
+                    material.specular_ior         = create_constant_texture(specular);
+                    material.specular_tint        = create_constant_texture(specular_tint);
                     material.specular_roughness   = create_constant_texture(roughness);
                     material.specular_anisotropic = create_constant_texture(0.0);
-                    material.specular_ior         = create_constant_texture(1.45);
-
-                    add_sphere(scene, center, radius, id);
-                    center.x += spacing;
-                }
-            }
-
-            // Diffuse/Specular (Roughness)
-            for h:0..NUM_HEIGHTS-1
-            {
-                color   := Vector3.{0.58, 0.29, 0.0};
-                center  := Vector3.{start_x, start_y, 0.0};
-                start_y -= spacing;
-
-                for 0..NUM_TEST_SPHERES-1
-                {
-                    t1       := it.(float) / (NUM_TEST_SPHERES - 1).(float);
-                    t2       := h.(float) / (NUM_HEIGHTS - 1).(float);
-                    ior      := lerp(1.0, 3.0, t1);
-                    specular := lerp(0.5, 1.0, t2);
-
-                    id, material                 := create_material(scene);
-                    material.color                = create_constant_texture(color);
-                    material.metallic            = create_constant_texture(0.0);
-                    material.specular             = create_constant_texture(specular);
-                    material.specular_tint        = create_constant_texture(.{0.95, 0.92, 0.88});
-                    material.specular_roughness   = create_constant_texture(0.8);
-                    material.specular_anisotropic = create_constant_texture(0.0);
-                    material.specular_ior         = create_constant_texture(ior);
 
                     add_sphere(scene, center, radius, id);
                     center.x += spacing;
@@ -1303,30 +1276,28 @@ load_scene :: (using scene: *Scene, type: SceneType)
                 add_box(scene, Matrix4_Identity, .{-6, -6, 0.5}, .{6, 6, 0.6}, checker); // back
             }
 
-            for h:0..NUM_HEIGHTS*2-1
+            for h:0..TEST_SPHERES_HEIGHT-1
             {
-                color   := Vector3.{0.58, 0.29, 0.0};
+                color         := Vector3.{0.337, 0.604, 0.886};
+                specular_tint := Vector3.{0.886, 0.922, 0.973};
                 center  := Vector3.{start_x, start_y, 0.0};
                 start_y -= spacing;
 
-                for 0..NUM_TEST_SPHERES-1
+                for 0..TEST_SPHERES_WIDTH-1
                 {
-                    t1        := it.(float) / (NUM_TEST_SPHERES - 1).(float);
-                    t2        := h.(float) / (NUM_HEIGHTS * 2 - 1).(float);
-                    roughness := t2;
-                    ior       := lerp(1.0, 2.0, t1);
+                    roughness := it.(float) / (TEST_SPHERES_WIDTH - 1).(float);
+                    specular  := lerp(0.02, 1.0, h.(float) / (TEST_SPHERES_HEIGHT - 1).(float));
 
                     id, material                 := create_material(scene);
                     material.color                = create_constant_texture(color);
                     material.metallic             = create_constant_texture(0.0);
-                    material.specular             = create_constant_texture(0.0);
                     material.transmission         = create_constant_texture(1.0);
-                    material.specular_tint        = create_constant_texture(.{0.23, 0.47, 0.54});
+                    material.specular_tint        = create_constant_texture(specular_tint);
                     material.specular_roughness   = create_constant_texture(roughness);
                     material.specular_anisotropic = create_constant_texture(0.0);
-                    material.specular_ior         = create_constant_texture(ior);
-                    material.absorption           = create_constant_texture(Spectrum_One - .{0.23, 0.47, 0.54});
-                    material.absorption_strength  = create_constant_texture(5.0);
+                    material.specular_ior         = create_constant_texture(specular);
+                    material.absorption           = create_constant_texture(.{1, 1, 1});
+                    material.absorption_strength  = create_constant_texture(3.0);
 
                     add_sphere(scene, center, radius, id);
                     center.x += spacing;
@@ -1432,25 +1403,25 @@ create_material :: (scene: *Scene) -> MaterialID, *Material
     material.color = create_constant_texture(Vector3.{0.8, 0.8, 0.8});
     material.metallic = create_constant_texture(0.0);
     material.diffuse_roughness = create_constant_texture(0.0);
-    material.specular = create_constant_texture(0.0);
     material.specular_tint = create_constant_texture(Vector3.{1, 1, 1});
-    material.specular_ior = create_constant_texture(1.5);
+    material.specular_ior = create_constant_texture(0.5);
+    material.specular_weight = create_constant_texture(1.0);
     material.specular_roughness = create_constant_texture(0.3);
     material.specular_anisotropic = create_constant_texture(0.0);
     material.transmission = create_constant_texture(0.0);
     material.absorption_strength = create_constant_texture(0.0);
-    material.absorption = create_constant_texture(.{0.0, 0.0, 0.0});
+    material.absorption = create_constant_texture(.{1.0, 1.0, 1.0});
     material.emission_strength = create_constant_texture(0.0);
-    material.emission_color = create_constant_texture(.{0.0, 0.0, 0.0});
+    material.emission_color = create_constant_texture(.{1.0, 1.0, 1.0});
     return id, material;
 }
 
-create_lambertian_material :: (scene: *Scene, color: Texture2D, roughness := 0.0) -> MaterialID
+create_lambertian_material :: (scene: *Scene, color: Texture2D, roughness := 0.0) -> MaterialID, *Material
 {
     id, material := create_material(scene);
     material.color = color;
     material.diffuse_roughness = create_constant_texture(roughness);
-    return id;
+    return id, material;
 }
 
 create_metal_material :: (scene: *Scene, roughness := 0.0, specular_tint := Vector3.{1, 1, 1}, base_color := Vector3.{1, 1, 1}) -> MaterialID
@@ -2008,7 +1979,7 @@ build_bvh_binned_sah :: (nodes: []BVH_Node, indices: []u32, bboxes: []Box3)
 }
 
 build_blas :: (mesh: *Primitive_Mesh)
-{    
+{
     num_triangles := mesh.indices.count / 3;
 
     // @todo: cleanup
@@ -2439,7 +2410,7 @@ main :: ()
                     show_random_test = !show_random_test;
                 }
 
-                
+
                 if it.key_pressed && it.key_code == .ARROW_RIGHT
                 {
                     num_samples_to_display = (num_samples_to_display + 1) % NUM_RANDOM_SAMPLES;
@@ -2475,7 +2446,7 @@ main :: ()
 
         if (!white_furnace_test_enabled)
         {
-            if display_type == 
+            if display_type ==
             {
                 case .BOUNCE_HEATMAP;
                     display_bitmap = *scene.bounces_heatmap;
@@ -2800,7 +2771,7 @@ draw_one_frame :: (wnd: Window_Type, map: *Simp.Texture, scene: Scene, num_threa
         p3 := center - w + h;
 
         white : = Vector4.{ 1, 1, 1, 1 };
-        
+
         Simp.immediate_quad(p0, p1, p2, p3, white, white, white, white);
     }
 

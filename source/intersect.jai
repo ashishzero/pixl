@@ -66,8 +66,8 @@ Material :: struct
     color                : Texture2D;
     metallic             : Texture2D;
     diffuse_roughness    : Texture2D;
-    specular             : Texture2D;
     specular_ior         : Texture2D;
+    specular_weight      : Texture2D;
     specular_roughness   : Texture2D;
     specular_anisotropic : Texture2D;
     specular_tint        : Texture2D;
@@ -76,7 +76,6 @@ Material :: struct
     absorption           : Texture2D;
     emission_strength    : Texture2D;
     emission_color       : Texture2D;
-    
 
     //specular        : Texture2D(float);
     //ior             : Texture2D(float);
@@ -84,7 +83,7 @@ Material :: struct
     //sheen           : Texture2D(float);
     //sheen_tint      : Texture2D(float);
     //clearcoat       : Texture2D(float);
-    //clearcoat_gloss : Texture2D(float);\
+    //clearcoat_gloss : Texture2D(float);
 }
 
 PathTracerConfig :: struct
