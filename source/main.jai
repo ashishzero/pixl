@@ -1238,7 +1238,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
                 for 0..TEST_SPHERES_WIDTH-1
                 {
                     roughness := it.(float) / (TEST_SPHERES_WIDTH - 1).(float);
-                    weight    := lerp(0.02, 0.7, h.(float) / (TEST_SPHERES_HEIGHT - 1).(float));
+                    weight    := h.(float) / (TEST_SPHERES_HEIGHT - 1).(float);
 
                     id, material                 := create_material(scene);
                     material.color                = create_constant_texture(color);
@@ -1930,7 +1930,7 @@ build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi:
     prev_count = 0;
     prev_box   = Box3_Empty;
 
-    for #v2 < 1..SPLIT_COUNT
+    for < 1..SPLIT_COUNT
     {
         prev_box = box_union(prev_box, bins[it].bbox);
         prev_count += bins[it].count;
@@ -2397,7 +2397,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=256, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=64, max_depth=5);
     load_scene(*scene, args.scene);
 
     prepare_for_rendering(*scene);

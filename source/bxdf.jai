@@ -117,12 +117,8 @@ f_metallic_brdf :: (V: Vector3, L: Vector3, surface: Surface) -> Spectrum
         alpha     := microfacet_alpha(roughness, anisotropic);
         H         := normalize(V + L);
         NoV       := V.z;
-        NoL       := L.z;
-        NoH       := H.z;
         VoH       := dot(V, H);
-        D         := microfacet_ggx_distribution(NoH, alpha);
-        G         := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
-        scale     := D * G / max(4 * NoL * NoV, 1.0e-6);
+        scale     := f_metallic_brdf(V, L, H, alpha);
         F_ss      := f82_tint(VoH, Fo, specular_tint);
         darkening := microfacet_ggx_metallic_preserve_energy(F_ss, NoV, alpha);
         f_ss      := scale * F_ss;
@@ -138,14 +134,9 @@ pdf_metallic_brdf :: (V: Vector3, L: Vector3, surface: Surface) -> float
     anisotropic := surface.specular_anisotropic;
     if (roughness >= ROUGHNESS_THRESHOLD && V.z * L.z > 0.0)
     {
-        H      := normalize(V + L);
-        VoH    := dot(V, H);
-        NoH    := H.z;
-        NoV    := V.z;
-        alpha  := microfacet_alpha(roughness, anisotropic);
-        D      := microfacet_ggx_distribution(NoH, alpha);
-        G1     := microfacet_ggx_mask(NoV, alpha); 
-        pdf    := (D * G1) / max(4 * NoV, 1.0e-6);
+        alpha := microfacet_alpha(roughness, anisotropic);
+        H     := normalize(V + L);
+        pdf   := pdf_metallic_brdf(V, L, H, alpha);
         return pdf;
     }
     return 0.0;
@@ -166,19 +157,13 @@ sample_metallic_brdf :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> 
 
         if (L.z > 0.0)
         {
-            NoV       := V.z;
-            NoL       := L.z;
-            NoH       := H.z;
-            VoH       := dot(V, H);
-            D         := microfacet_ggx_distribution(NoH, alpha);
-            G         := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
-            G1        := microfacet_ggx_mask(NoV, alpha);
-            scale     := (D * G) / max(4 * NoL * NoV, 1.0e-6);
-            F_ss      := f82_tint(VoH, Fo, specular_tint);
-            darkening := microfacet_ggx_metallic_preserve_energy(F_ss, NoV, alpha);
-            f_ss      := scale * F_ss;
-            f         := darkening * f_ss;
-            pdf       := (D * G1) / max(4 * NoV, 1.0e-6);
+            NoV        := V.z;
+            VoH        := dot(V, H);
+            scale, pdf := f_pdf_metallic_brdf(V, L, H, alpha);
+            F_ss       := f82_tint(VoH, Fo, specular_tint);
+            darkening  := microfacet_ggx_metallic_preserve_energy(F_ss, NoV, alpha);
+            f_ss       := scale * F_ss;
+            f          := darkening * f_ss;
             return .{L, f, pdf};
         }
 
@@ -413,98 +398,6 @@ refracted_normal :: inline (V: Vector3, L: Vector3, ior: float) -> Vector3
 // Dielectric Base
 
 #scope_export
-
-f_specular_brdf :: (V: Vector3, L: Vector3, H: Vector3, alpha: Vector2) -> float
-{
-    NoV   := V.z;
-    NoL   := L.z;
-    NoH   := abs(H.z);
-    D     := microfacet_ggx_distribution(NoH, alpha);
-    G     := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
-    scale := (D * G) / max(4 * NoL * NoV, 1.0e-6);
-    f_ss  := scale; // @todo: multiscatter!!!
-    f     := f_ss;
-    return f;
-}
-
-pdf_specular_brdf :: (V: Vector3, L: Vector3, H: Vector3, alpha: Vector2) -> float
-{
-    NoV := V.z;
-    NoH := H.z;
-    D   := microfacet_ggx_distribution(NoH, alpha);
-    G1  := microfacet_ggx_mask(NoV, alpha);
-    pdf := (D * G1) / max(4 * NoV, 1.0e-6);
-    return pdf;
-}
-
-f_pdf_specular_brdf :: (V: Vector3, L: Vector3, H: Vector3, alpha: Vector2) -> float, float
-{
-    NoV   := V.z;
-    NoL   := L.z;
-    NoH   := abs(H.z);
-    D     := microfacet_ggx_distribution(NoH, alpha);
-    G     := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
-    G1    := microfacet_ggx_mask(NoV, alpha);
-    scale := (D * G) / max(4 * NoL * NoV, 1.0e-6);
-    f_ss  := scale; // @todo: multiscatter!!!
-    f     := f_ss;
-    pdf   := (D * G1) / max(4 * NoV, 1.0e-6);
-    return f, pdf;
-}
-
-f_specular_btdf :: (V: Vector3, L: Vector3, H: Vector3, ior: float, alpha: Vector2) -> float
-{
-    NoV     := V.z;
-    NoL     := L.z;
-    NoH     := abs(H.z);
-    VoH     := dot(V, H);
-    LoH     := -dot(L, H);
-    D       := microfacet_ggx_distribution(NoH, alpha);
-    G       := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
-    dL_sqrt := LoH + VoH / ior;
-    dL      := dL_sqrt * dL_sqrt;
-    VoLoH   := VoH * LoH;
-    scale   := (D * G * VoLoH) / max(dL * NoL * NoV, 1.0e-6);
-    f_ss    := scale; // @todo: multiscatter!!!
-    f       := f_ss;
-    return f;
-}
-
-pdf_specular_btdf :: (V: Vector3, L: Vector3, H: Vector3, ior: float, alpha: Vector2) -> float
-{
-    NoV     := V.z;
-    NoH     := H.z;
-    VoH     := dot(V, H);
-    LoH     := -dot(L, H);
-    D       := microfacet_ggx_distribution(NoH, alpha);
-    G1      := microfacet_ggx_mask(NoV, alpha);
-    VoLoH   := VoH * LoH;
-    dL_sqrt := LoH + VoH / ior;
-    dL      := dL_sqrt * dL_sqrt;
-    pdf     := (D * G1 * VoLoH) / max(dL * NoV, 1.0e-6);
-    return pdf;
-}
-
-f_pdf_specular_btdf :: (V: Vector3, L: Vector3, H: Vector3, ior: float, alpha: Vector2) -> float, float
-{
-    NoV     := V.z;
-    NoL     := abs(L.z);
-    NoH     := H.z;
-    VoH     := dot(V, H);
-    LoH     := -dot(L, H);
-    D       := microfacet_ggx_distribution(NoH, alpha);
-    G       := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
-    G1      := microfacet_ggx_mask(NoV, alpha);
-    dL_sqrt := LoH + VoH / ior;
-    dL      := dL_sqrt * dL_sqrt;
-    VoLoH   := VoH * LoH;
-    scale   := (D * G * VoLoH) / max(dL * NoL * NoV, 1.0e-6);
-    f_ss    := scale; // @todo: multiscatter!!!
-
-    f       := f_ss;
-    pdf     := (D * G1 * VoLoH) / max(dL * NoV, 1.0e-6);
-    return f, pdf;
-}
 
 f_dielectric_base_bsdf :: (V: Vector3, L: Vector3, surface: Surface) -> Spectrum
 {
