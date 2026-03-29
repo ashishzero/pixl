@@ -33,7 +33,7 @@ build :: ()
     make_directory_if_it_does_not_exist(output_path);
 
     build_program(output_path, "PixL", "source/main.jai");
-    build_program(output_path, "PixL_meta", "source/meta.jai");
+    build_program(output_path, "PixL_bxdf_gen", "source/bxdf_meta.jai");
 
     set_build_options_dc(.{do_output=false});
 }

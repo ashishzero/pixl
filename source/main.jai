@@ -166,26 +166,32 @@ SampleTextureSpectrum :: (texture: Texture2D, u: float, v: float) -> Spectrum
 
 material_surface :: (material: Material, hit: Hit_Info) -> Surface
 {
-    specular := SampleAlpha(material.specular_ior, hit.u, hit.v);
+    specular_ior         := SampleAlpha(material.specular_ior, hit.u, hit.v);
+    specular_weight      := SampleAlpha(material.specular_weight, hit.u, hit.v);
+    specular_roughness   := SampleAlpha(material.specular_roughness, hit.u, hit.v);
+    specular_anisotropic := SampleAlpha(material.specular_anisotropic, hit.u, hit.v);
+    absorption_strength  := SampleAlpha(material.absorption_strength, hit.u, hit.v);
+    absorption           := SampleTextureSpectrum(material.absorption, hit.u, hit.v);
+    emission_strength    := SampleAlpha(material.emission_strength, hit.u, hit.v);
+    emission_color       := SampleTextureSpectrum(material.emission_color, hit.u, hit.v);
 
     surface: Surface = ---;
-    surface.base_color           = SampleTextureSpectrum(material.color, hit.u, hit.v);
-    surface.metallic             = SampleAlpha(material.metallic, hit.u, hit.v);
-    surface.diffuse_roughness    = SampleAlpha(material.diffuse_roughness, hit.u, hit.v);
-    surface.specular_ior         = specular_ior(specular);
-    surface.specular_weight      = SampleAlpha(material.specular_weight, hit.u, hit.v);
-    surface.specular_tint        = SampleTextureSpectrum(material.specular_tint, hit.u, hit.v);
-    surface.specular_roughness   = SampleAlpha(material.specular_roughness, hit.u, hit.v);
-    surface.specular_anisotropic = SampleAlpha(material.specular_anisotropic, hit.u, hit.v);
-    surface.transmission         = SampleAlpha(material.transmission, hit.u, hit.v);
-    surface.absorption_strength  = SampleAlpha(material.absorption_strength, hit.u, hit.v);
-    surface.absorption           = SampleTextureSpectrum(material.absorption, hit.u, hit.v);
-    surface.emission_strength    = SampleAlpha(material.emission_strength, hit.u, hit.v);
-    surface.emission_color       = SampleTextureSpectrum(material.emission_color, hit.u, hit.v);
+
+    surface.color            = SampleTextureSpectrum(material.color, hit.u, hit.v);
+    surface.roughness        = SampleAlpha(material.diffuse_roughness, hit.u, hit.v);
+    surface.ior              = ior_relative_to_physical(specular_ior);
+    surface.specular         = saturate(specular_weight);
+    surface.metallic         = saturate(SampleAlpha(material.metallic, hit.u, hit.v));
+    surface.fresnel.F0       = surface.color;
+    surface.fresnel.F90      = SampleTextureSpectrum(material.specular_tint, hit.u, hit.v);
+    surface.microfacet_alpha = microfacet_alpha(specular_roughness, specular_anisotropic);
+    surface.transmission     = saturate(SampleAlpha(material.transmission, hit.u, hit.v));
+    surface.absorption       = absorption_strength * absorption;
+    surface.emission         = emission_strength * emission_color;
 
     if (hit.face == .BACK)
     {
-        surface.specular_ior = 1.0 / surface.specular_ior;
+        surface.ior = 1.0 / surface.ior;
     }
 
     return surface;
@@ -228,6 +234,17 @@ inverse_transform :: (xform: Matrix3, p: Vector3) -> Vector3
     r.y = xform._12 * p.x + xform._22 * p.y + xform._32 * p.z;
     r.z = xform._13 * p.x + xform._23 * p.y + xform._33 * p.z;
     return r;
+}
+
+is_nan_or_inf :: (x: float) -> bool
+{
+    nan, inf := is_nan_is_inf(x);
+    return nan || inf;
+}
+
+is_nan_or_inf :: (s: Spectrum) -> bool
+{
+    return is_nan_or_inf(s.x) || is_nan_or_inf(s.y) || is_nan_or_inf(s.z);
 }
 
 trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, stats: *Path_Statistics) -> Vector3
@@ -273,26 +290,42 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, 
             stats.n_bounces += 1;
 
             p      := random_sample_1D(rng, .LOBE);
-            u      := random_sample_2D(rng, .BxDF);
+            u      := random_sample_3D(rng, .BxDF);
 
             V      := forward_transform(inv_TBN, -ray.dir);
-            sample := sample_principled_bsdf(V, surface, p, u);
+            sample := sample_surface_bsdf(V, surface, p, u);
 
-            if (hit.face == .BACK && surface.specular_ior != 1.0)
+            if (is_nan_or_inf(sample.bxdf.f))
             {
-                throughput *= exp(-hit.t * surface.absorption_strength * surface.absorption);
+                print(" --------------- brdf nan/inf(%): internal error, needs debugging\n", sample.bxdf.f);
+                break;
             }
 
-            emittance := surface.emission_strength * surface.emission_color;
-            radiance += throughput * emittance;
+            if (hit.face == .BACK)
+            {
+                throughput *= exp(-hit.t * surface.absorption);
+            }
 
-            if (sample.pdf < 1.0e-6)
+            radiance += throughput * surface.emission;
+
+            if (sample.bxdf.pdf < 1.0e-6)
             {
                 break;
             }
 
+  //          if (isnan(sample.bxdf.f.x) || isnan(sample.bxdf.f.y) || isnan(sample.bxdf.f.z))
+  //          {
+  //              print("nan/inf: %\n", sample.bxdf);
+  //          }
+
             cosine := abs(sample.L.z);
-            throughput *= cosine * sample.f / sample.pdf;
+            throughput *= cosine * sample.bxdf.f / sample.bxdf.pdf;
+
+            // TODO: add checks properly
+            //if (isnan(throughput.x) || isnan(throughput.y) || isnan(throughput.z))
+            //{
+            //    print("nan/inf: %\n", throughput.x);
+            //}
 
             //------------------------------------------------------------------------
             // Next ray
@@ -506,6 +539,47 @@ RenderPixel :: (scene: Scene, x: u32, y: u32, frame: u32, stats: *Path_Statistic
     return radiance;
 }
 
+TEST_SPHERES_WIDTH  :: 10;
+TEST_SPHERES_HEIGHT :: 6;
+
+test_scene :: (using scene: *Scene, $parameterize_material : #type(m: *Material, x: int, y: int, xp: float, yp: float))
+{
+    camera.fov         = 45.0 / 360.0;
+    camera.position    = .{0, 0, -1};
+    camera.orientation = .{};
+    camera.type        = .ORTHOGRAPHIC;
+    environment        = load_texture_from_file("data/envmap/golden_gate_hills_2k.hdr");
+    exposure           = 2;
+
+    radius            := 0.25;
+    spacing           := 2 * radius + 0.1;
+    start_x           := -2.8;
+    start_y           :=  1.6;
+
+    checkerboard_texture  := create_checkerboard_texture(Vector3.{1, 1, 1}, .{0.1, 0.1, 0.1}, .{40, 40});
+    checkerboard_material := create_lambertian_material(scene, checkerboard_texture);
+
+    add_box(scene, Matrix4_Identity, .{-6, -6, 0.5}, .{6, 6, 0.6}, checkerboard_material);
+
+    for y:0..TEST_SPHERES_HEIGHT-1
+    {
+        center  := Vector3.{start_x, start_y, 0.0};
+        start_y -= spacing;
+
+        for x:0..TEST_SPHERES_WIDTH-1
+        {
+            parameter_1 := x.(float) / (TEST_SPHERES_WIDTH - 1).(float);
+            parameter_2 := y.(float) / (TEST_SPHERES_HEIGHT - 1).(float);
+
+            material_id, material := create_material(scene);
+            parameterize_material(material, x, y, parameter_1, parameter_2);
+
+            add_sphere(scene, center, radius, material_id);
+            center.x += spacing;
+        }
+    }
+}
+
 RAY_TRACE_TILE_SIZE : s32 : 16;
 
 Render_Shared :: struct
@@ -685,10 +759,10 @@ SceneType :: enum
     white_furnace_test;
     shaderball_test;
     sphere_test;
-    metallic_test;
-    diffuse_test;
-    glossy_test;
-    translucent_test;
+    conductor_test;
+    plastic_test;
+    dielectric_test;
+    transmission_test;
     envmap_test;
 }
 
@@ -859,6 +933,21 @@ load_backdrop :: () -> Primitive_Mesh, Matrix4
     return backdrop, xform;
 }
 
+load_dragon_origin :: () -> Primitive_Mesh, Matrix4
+{
+    scale := 10.0;
+    position := Vector3.{0, 5, 0};
+    theta := -90.0 / 360.0 * 2 * PI;
+
+    orientation: Quaternion;
+    set_from_axis_and_angle(*orientation, 0, 1, 0, theta);
+
+    dragon := load_obj_model("data/dragon/dragon.obj");
+    xform    := make_translation_matrix4(position) * rotation_matrix(Matrix4, orientation) * make_scale_matrix4(.{scale, scale, scale});
+
+    return dragon, xform;
+}
+
 load_shaderball :: () -> Primitive_Mesh, Primitive_Mesh, Matrix4
 {
     scale := 0.5;
@@ -913,8 +1002,22 @@ turns_to_radians :: (turns: float) -> float
     return turns * 2.0 * PI;
 }
 
-TEST_SPHERES_WIDTH  :: 10;
-TEST_SPHERES_HEIGHT :: 6;
+hsv_to_rgb :: (cx: float, cy: float, cz: float) -> (r: float, g: float, b: float) {
+    p: Vector3;
+    p.x = abs(fract(cx + 1)     * 6 - 3) - 1;
+    p.y = abs(fract(cx + 2/3.0) * 6 - 3) - 1;
+    p.z = abs(fract(cx + 1/3.0) * 6 - 3) - 1;
+
+    Clamp(*p.x, 0, 1);
+    Clamp(*p.y, 0, 1);
+    Clamp(*p.z, 0, 1);
+
+    p.x = lerp(1, p.x, cy);
+    p.y = lerp(1, p.y, cy);
+    p.z = lerp(1, p.z, cy);
+
+    return cz * p.x, cz * p.y, cz * p.z;
+}
 
 load_scene :: (using scene: *Scene, type: SceneType)
 {
@@ -983,31 +1086,33 @@ load_scene :: (using scene: *Scene, type: SceneType)
             camera.fov           = 40.0 / 360.0;
             camera.position      = .{278, 278, -800};
 
-            environment = create_constant_texture(.{0, 0, 0});
-            //environment          = .{0.3, 0.2, 0.7};
+            //environment = create_constant_texture(.{0, 0, 0});
+            environment          = create_constant_texture(.{0.3, 0.2, 0.7});
+            exposure    = 1;
 
             red   := create_lambertian_material(scene, create_constant_texture(.{0.65, 0.05, 0.05}));
             white := create_lambertian_material(scene, create_constant_texture(.{0.73, 0.73, 0.73}));
             green := create_lambertian_material(scene, create_constant_texture(.{0.12, 0.45, 0.15}));
             light := create_emission_material(scene, create_constant_texture(.{15, 15, 15}));
 
-            add_box(scene, Matrix4_Identity, .{213, 554, 227}, .{343, 554.01, 332}, light);
-            add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{0.01, 555, 555}, green); // left
-            add_box(scene, Matrix4_Identity, .{555, 0, 0}, .{555.01, 555, 555}, red); // right
-            add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{555, 0.01, 555}, white); // bottom
-            add_box(scene, Matrix4_Identity, .{0, 0, 555}, .{555, 555, 555.01}, white); // back
+            //add_box(scene, Matrix4_Identity, .{213, 554, 227}, .{343, 554.01, 332}, light);
+            //add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{0.01, 555, 555}, green); // left
+            //add_box(scene, Matrix4_Identity, .{555, 0, 0}, .{555.01, 555, 555}, red); // right
+            //add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{555, 0.01, 555}, white); // bottom
+            //add_box(scene, Matrix4_Identity, .{0, 0, 555}, .{555, 555, 555.01}, white); // back
             add_box(scene, Matrix4_Identity, .{0, 555, 0}, .{555, 555.01, 555}, white); // top
 
             dragon_material := create_lambertian_material(scene, create_constant_texture(.{1, 1, 1}));
             dragon, xform   := load_dragon();
 
-            add_mesh(scene, xform, dragon, dragon_material);
+            //add_mesh(scene, xform, dragon, dragon_material);
 
         case .cornell_monkey;
             camera.fov           = 40.0 / 360.0;
             camera.position      = .{278, 278, -800};
 
             environment = create_constant_texture(.{0, 0, 0});
+            exposure    = 1;
             //environment          = .{0.3, 0.2, 0.7};
 
             red   := create_lambertian_material(scene, create_constant_texture(.{0.65, 0.05, 0.05}));
@@ -1073,8 +1178,8 @@ load_scene :: (using scene: *Scene, type: SceneType)
             //material.specular_tint        = create_constant_texture(.{0.727, 0.772, 0.823}); // Cobalt
             material.specular_roughness   = create_constant_texture(0.25);
             material.specular_anisotropic = create_constant_texture(0.0);
-            material.specular_ior         = create_constant_texture(0.1);
-            material.transmission         = create_constant_texture(1.0);
+            //material.specular_ior         = create_constant_texture(0.1);
+            material.transmission         = create_constant_texture(0.0);
             material.absorption           = create_constant_texture(.{0.7, 0.3, 0.7});
             material.absorption_strength  = create_constant_texture(1.0);
 
@@ -1087,17 +1192,19 @@ load_scene :: (using scene: *Scene, type: SceneType)
             textured   := create_lambertian_material(scene, earth);
 
             backdrop, backdrop_xform     := load_backdrop();
-            internals, externals, shaderball_xform := load_shaderball();
+            //internals, externals, shaderball_xform := load_shaderball();
+            dragon, dragon_xform := load_dragon_origin();
 
-            add_box(scene, Matrix4_Identity, .{ -5, 10, -15 }, .{ -1, 10.01, -11 }, light);
-            add_box(scene, Matrix4_Identity, .{  1, 10, -15 }, .{  5, 10.01, -11 }, light);
+            //add_box(scene, Matrix4_Identity, .{ -5, 10, -15 }, .{ -1, 10.01, -11 }, light);
+            //add_box(scene, Matrix4_Identity, .{  1, 10, -15 }, .{  5, 10.01, -11 }, light);
 
             //add_sphere(scene, Vector3.{0, 2, 0}, 2, textured);
 
             add_mesh(scene, backdrop_xform, backdrop, checker);
             //add_sphere(scene, Vector3.{0, 2, 0}, 2, id);
-            add_mesh(scene, shaderball_xform, internals, black);
-            add_mesh(scene, shaderball_xform, externals, id);
+            //add_mesh(scene, shaderball_xform, internals, black);
+            //add_mesh(scene, shaderball_xform, externals, id);
+            add_mesh(scene, dragon_xform, dragon, id);
 
         case .sphere_test;
             camera.fov         = 45.0 / 360.0;
@@ -1134,226 +1241,68 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
             add_sphere(scene, center, radius, id);
 
-        case .metallic_test;
-            camera.fov         = 45.0 / 360.0;
-            camera.position    = .{0, 0, -1};
-            camera.orientation = .{};
-
-            camera.type = .ORTHOGRAPHIC;
-
-            environment = load_texture_from_file("data/envmap/golden_gate_hills_2k.hdr");
-            //environment = create_constant_texture(.{1, 1, 1});
-            exposure = 2;
-
-            //config.flat_background = true;
-
-            radius  := 0.25;
-            spacing := 2 * radius + 0.1;
-            start_x := -2.8;
-            start_y :=  1.6;
-
-            // Backdrop
+        case .conductor_test;
+            metallic_material_parameter :: (material: *Material, x: int, y: int, paramx: float, paramy: float)
             {
-                checker := create_lambertian_material(scene, create_checkerboard_texture(Vector3.{1, 1, 1}, .{0.1, 0.1, 0.1}, .{40, 40}));
-                add_box(scene, Matrix4_Identity, .{-6, -6, 0.5}, .{6, 6, 0.6}, checker); // back
-            }
-
-            TEST_HALF_HEIGHT :: TEST_SPHERES_HEIGHT / 2;
-
-            for h:0..TEST_HALF_HEIGHT-1
-            {
-                center  := Vector3.{start_x, start_y, 0.0};
-                start_y -= spacing;
-
-                for 0..TEST_SPHERES_WIDTH-1
+                roughness   := paramx;
+                anisotropic := 0.0;
+                if (y < TEST_SPHERES_HEIGHT / 2)
                 {
-                    roughness   := it.(float) / (TEST_SPHERES_WIDTH - 1).(float);
-                    anisotropic := h.(float) / (TEST_HALF_HEIGHT - 1).(float);
-
-                    id, material                 := create_material(scene);
-                    material.color                = create_constant_texture(.{1.000, 0.735, 0.353}); // Gold
-                    material.metallic            = create_constant_texture(1.0);
-                    material.specular_tint        = create_constant_texture(.{0.993, 1.000, 1.000}); // Gold
-                    material.specular_roughness   = create_constant_texture(roughness);
-                    material.specular_anisotropic = create_constant_texture(anisotropic);
-
-                    add_sphere(scene, center, radius, id);
-                    center.x += spacing;
+                    material.color         = create_constant_texture(.{1.000, 0.735, 0.353}); // Gold
+                    material.specular_tint = create_constant_texture(.{0.993, 1.000, 1.000}); // Gold
+                    anisotropic            = saturate(paramy * 2.0);
                 }
-            }
-
-            for h:0..TEST_HALF_HEIGHT-1
-            {
-                center    := Vector3.{start_x, start_y, 0.0};
-                start_y   -= spacing;
-
-                for 0..TEST_SPHERES_WIDTH-1
+                else
                 {
-                    roughness   := it.(float) / (TEST_SPHERES_WIDTH - 1).(float);
-                    anisotropic := h.(float) / (TEST_HALF_HEIGHT - 1).(float);
-
-                    id, material                 := create_material(scene);
-                    material.color                = create_constant_texture(.{0.617, 0.576, 0.540}); // Titanium
-                    material.metallic            = create_constant_texture(1.0);
-                    material.specular_tint        = create_constant_texture(.{0.695, 0.726, 0.770}); // Titanium
-                    material.specular_roughness   = create_constant_texture(roughness);
-                    material.specular_anisotropic = create_constant_texture(anisotropic);
-
-                    add_sphere(scene, center, radius, id);
-                    center.x += spacing;
+                    material.color         = create_constant_texture(.{0.617, 0.576, 0.540}); // Titanium
+                    material.specular_tint = create_constant_texture(.{0.695, 0.726, 0.770}); // Titanium
+                    anisotropic            = saturate((paramy - 0.5) * 2.0);
                 }
+                material.metallic             = create_constant_texture(1.0);
+                material.specular_roughness   = create_constant_texture(roughness);
+                material.specular_anisotropic = create_constant_texture(anisotropic);
             }
+            test_scene(scene, metallic_material_parameter);
 
-        case .diffuse_test;
-            camera.fov         = 45.0 / 360.0;
-            camera.position    = .{0, 0, -1};
-            camera.orientation = .{};
-
-            camera.type = .ORTHOGRAPHIC;
-
-            environment = load_texture_from_file("data/envmap/golden_gate_hills_2k.hdr");
-            //environment = create_constant_texture(.{1, 1, 1});
-            exposure = 2;
-
-            //config.flat_background = true;
-
-            radius  := 0.25;
-            spacing := 2 * radius + 0.1;
-            start_x := -2.8;
-            start_y :=  1.6;
-
-            // Backdrop
+        case .plastic_test;
+            plastic_material_parameter :: (material: *Material, x: int, y: int, roughness: float, specular_ior: float)
             {
-                checker := create_lambertian_material(scene, create_checkerboard_texture(Vector3.{1, 1, 1}, .{0.1, 0.1, 0.1}, .{40, 40}));
-                add_box(scene, Matrix4_Identity, .{-6, -6, 0.5}, .{6, 6, 0.6}, checker); // back
+                color                      := Vector3.{0, 0.7, 1.0};
+                specular_tint              := Vector3.{1, 1, 1};
+                material.color              = create_constant_texture(color);
+                material.specular_tint      = create_constant_texture(specular_tint);
+                material.diffuse_roughness  = create_constant_texture(roughness);
+                material.specular_ior       = create_constant_texture(specular_ior);
             }
+            test_scene(scene, plastic_material_parameter);
 
-            for h:0..TEST_SPHERES_HEIGHT-1
+        case .dielectric_test;
+            dielectric_material_parameter :: (material: *Material, x: int, y: int, roughness: float, specular_ior: float)
             {
-                color         := Vector3.{0.023, 0.023, 0.023};
-                specular_tint := Vector3.{1, 1, 1};
-                center        := Vector3.{start_x, start_y, 0.0};
-                start_y -= spacing;
-
-                for 0..TEST_SPHERES_WIDTH-1
-                {
-                    roughness := it.(float) / (TEST_SPHERES_WIDTH - 1).(float);
-                    weight    := h.(float) / (TEST_SPHERES_HEIGHT - 1).(float);
-
-                    id, material                 := create_material(scene);
-                    material.color                = create_constant_texture(color);
-                    material.metallic             = create_constant_texture(0.0);
-                    material.specular_ior         = create_constant_texture(0.5);
-                    material.specular_weight      = create_constant_texture(weight);
-                    material.specular_tint        = create_constant_texture(specular_tint);
-                    material.specular_roughness   = create_constant_texture(roughness);
-                    material.specular_anisotropic = create_constant_texture(0.0);
-
-                    add_sphere(scene, center, radius, id);
-                    center.x += spacing;
-                }
+                color                       := Vector3.{0.023, 0.023, 0.023};
+                specular_tint               := Vector3.{1.000, 1.000, 1.000};
+                material.color              = create_constant_texture(color);
+                material.specular_ior       = create_constant_texture(specular_ior);
+                material.specular_tint      = create_constant_texture(specular_tint);
+                material.specular_roughness = create_constant_texture(roughness);
+                material.specular_weight    = create_constant_texture(1.0);
             }
+            test_scene(scene, dielectric_material_parameter);
 
-        case .glossy_test;
-            camera.fov         = 45.0 / 360.0;
-            camera.position    = .{0, 0, -1};
-            camera.orientation = .{};
-
-            camera.type = .ORTHOGRAPHIC;
-
-            environment = load_texture_from_file("data/envmap/golden_gate_hills_2k.hdr");
-            //environment = create_constant_texture(.{1, 1, 1});
-            exposure = 2;
-
-            //config.flat_background = true;
-
-            radius  := 0.25;
-            spacing := 2 * radius + 0.1;
-            start_x := -2.8;
-            start_y :=  1.6;
-
-            // Backdrop
+        case .transmission_test;
+            transmission_material_parameter :: (material: *Material, x: int, y: int, transmission: float, absorption_strength: float)
             {
-                checker := create_lambertian_material(scene, create_checkerboard_texture(Vector3.{1, 1, 1}, .{0.1, 0.1, 0.1}, .{40, 40}));
-                add_box(scene, Matrix4_Identity, .{-6, -6, 0.5}, .{6, 6, 0.6}, checker); // back
+                color                        := Vector3.{0, 0.7, 1.0};
+                specular_tint                := Vector3.{1, 1, 1};
+                absorption_color             := Vector3.{0, 0, 1};
+                material.color                = create_constant_texture(color);
+                material.specular_tint        = create_constant_texture(specular_tint);
+                material.specular_ior         = create_constant_texture(0.0);
+                material.transmission         = create_constant_texture(transmission);
+                material.absorption           = create_constant_texture(absorption_color);
+                material.absorption_strength  = create_constant_texture(absorption_strength * 5);
             }
-
-            for h:0..TEST_SPHERES_HEIGHT-1
-            {
-                color         := Vector3.{0.000, 0.251, 0.804};
-                specular_tint := Vector3.{0.275, 0.510, 0.706};
-                center        := Vector3.{start_x, start_y, 0.0};
-                start_y -= spacing;
-
-                for 0..TEST_SPHERES_WIDTH-1
-                {
-                    roughness := it.(float) / (TEST_SPHERES_WIDTH - 1).(float);
-                    specular  := lerp(0.02, 0.7, h.(float) / (TEST_SPHERES_HEIGHT - 1).(float));
-
-                    id, material                 := create_material(scene);
-                    material.color                = create_constant_texture(color);
-                    material.metallic             = create_constant_texture(0.0);
-                    material.specular_ior         = create_constant_texture(specular);
-                    material.specular_tint        = create_constant_texture(specular_tint);
-                    material.specular_roughness   = create_constant_texture(roughness);
-                    material.specular_anisotropic = create_constant_texture(0.0);
-
-                    add_sphere(scene, center, radius, id);
-                    center.x += spacing;
-                }
-            }
-
-        case .translucent_test;
-            camera.fov         = 45.0 / 360.0;
-            camera.position    = .{0, 0, -1};
-            camera.orientation = .{};
-
-            camera.type = .ORTHOGRAPHIC;
-
-            //environment = load_texture_from_file("data/envmap/golden_gate_hills_2k.hdr");
-            environment = create_constant_texture(.{1, 1, 1});
-            exposure = 1;
-
-            //config.flat_background = true;
-
-            radius  := 0.25;
-            spacing := 2 * radius + 0.1;
-            start_x := -2.8;
-            start_y :=  1.6;
-
-            // Backdrop
-            {
-                checker := create_lambertian_material(scene, create_checkerboard_texture(Vector3.{1, 1, 1}, .{0.1, 0.1, 0.1}, .{40, 40}));
-                add_box(scene, Matrix4_Identity, .{-6, -6, 0.5}, .{6, 6, 0.6}, checker); // back
-            }
-
-            for h:0..TEST_SPHERES_HEIGHT-1
-            {
-                color         := Vector3.{0.337, 0.604, 0.886};
-                specular_tint := Vector3.{0.886, 0.922, 0.973};
-                center  := Vector3.{start_x, start_y, 0.0};
-                start_y -= spacing;
-
-                for 0..TEST_SPHERES_WIDTH-1
-                {
-                    roughness := it.(float) / (TEST_SPHERES_WIDTH - 1).(float);
-                    specular  := lerp(0.02, 1.0, h.(float) / (TEST_SPHERES_HEIGHT - 1).(float));
-
-                    id, material                 := create_material(scene);
-                    material.color                = create_constant_texture(color);
-                    material.metallic             = create_constant_texture(0.0);
-                    material.transmission         = create_constant_texture(1.0);
-                    material.specular_tint        = create_constant_texture(specular_tint);
-                    material.specular_roughness   = create_constant_texture(roughness);
-                    material.specular_anisotropic = create_constant_texture(0.0);
-                    material.specular_ior         = create_constant_texture(specular);
-                    material.absorption           = create_constant_texture(.{1, 1, 1});
-                    material.absorption_strength  = create_constant_texture(3.0);
-
-                    add_sphere(scene, center, radius, id);
-                    center.x += spacing;
-                }
-            }
+            test_scene(scene, transmission_material_parameter);
 
         case .envmap_test;
             camera.fov         = 45.0 / 360.0;
@@ -1456,8 +1405,8 @@ create_material :: (scene: *Scene) -> MaterialID, *Material
     material.diffuse_roughness = create_constant_texture(0.0);
     material.specular_tint = create_constant_texture(Vector3.{1, 1, 1});
     material.specular_ior = create_constant_texture(0.5);
-    material.specular_weight = create_constant_texture(1.0);
-    material.specular_roughness = create_constant_texture(0.3);
+    material.specular_weight = create_constant_texture(0.0);
+    material.specular_roughness = create_constant_texture(0.0);
     material.specular_anisotropic = create_constant_texture(0.0);
     material.transmission = create_constant_texture(0.0);
     material.absorption_strength = create_constant_texture(0.0);
@@ -2334,7 +2283,7 @@ CommandLineArgs :: struct
 {
     width       := 1920;
     height      := 1080;
-    scene       := SceneType.metallic_test;
+    scene       := SceneType.conductor_test;
     save_first  := false;
     num_threads := 0;
 }
@@ -2350,8 +2299,6 @@ Display_Type :: enum
 
 main :: ()
 {
-    //compute_metallic_lookup_tables(true);
-
     init();
 
     success, args := parse_arguments(CommandLineArgs);
@@ -2363,30 +2310,6 @@ main :: ()
         want_screenshot = true;
     }
 
-    // test code
-  //  N :: 200000;
-  //  errors : [..]float;
-  //  roughness := 0.7;
-
-  //  V := Vector3.{0, 0, 1};
-
-  //  for 0..N
-  //  {
-    //      u1 := random_get_zero_to_one_open();
-    //      u2 := random_get_zero_to_one_open();
-  //      sample := cltc_sample(V, roughness, u1, u2);
-  //      pdf_a  := cltc_pdf(V, sample.L, roughness);
-  //      array_add(*errors, (sample.pdf - pdf_a) / max(pdf_a, 1.0e-9));
-  //  }
-
-  //  mean := 0.0;
-  //  for errors
-  //  {
-  //      mean += it * it;
-  //  }
-  //  mean /= errors.count.(float);
-  //  print("RMS : %\n", sqrt(mean));
-
     MSAA :: 8;
 
     render_width  = args.width;
@@ -2397,7 +2320,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=64, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=256, max_depth=15);
     load_scene(*scene, args.scene);
 
     prepare_for_rendering(*scene);

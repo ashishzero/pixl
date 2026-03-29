@@ -2,259 +2,208 @@
 #load "common.jai";
 #load "noise.jai";
 #load "microfacet.jai";
+#load "bxdf_shared.jai";
 
-compute_metallic_k_ms_table :: ()
+main :: ()
 {
-    wave: Thread_Wave;
-    thread_wave_start(*wave, compute_metallic_k_ms_lut_thread, used_threads = 4);
-    thread_wave_join(*wave);
-}
-
-compute_metallic_E_avg_table :: ()
-{
-    wave: Thread_Wave;
-    thread_wave_start(*wave, compute_metallic_E_avg_lut_thread, used_threads = 4);
-    thread_wave_join(*wave);
-}
-
-dump_computed_tables :: (path: string)
-{
-    write_entire_file(path, *shared_builder);
-}
-
-#scope_file
-
-sample_metallic_brdf :: (V: Vector3, roughness: float, anisotropic: float, u: Vector2) -> float
-{
-    anisotropic := 0.0;
-    roughness    = max(roughness, 1.0e-4);
-    alpha       := microfacet_alpha(roughness, anisotropic);
-    H           := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
-    L           := reflect(-V, H);
-    if (L.z > 0.0)
-    {
-        NoV       := V.z;
-        NoL       := L.z;
-        G         := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
-        G1        := microfacet_ggx_mask(NoV, alpha);
-        f         := G / max(G1, 1.0e-6);
-        return f;
-    }
-    return 0.0;
-}
-
-power5 :: inline (x: float) -> float
-{
-    x2 := x * x;
-    y  := x2 * x2 * x;
-    return y;
-}
-
-f_schlick_dielectric :: (mu: float, ior: float) -> float
-{
-    r  := (1 - ior) / (1 + ior);
-    r2 := r * r;
-    f  := r2 + (1.0 - r2) * power5(1.0 - mu);
-    return f;
-}
-
-sample_specular_brdf :: (V: Vector3, roughness: float, ior: float, p: float, u: Vector2) -> float
-{
-    r   := f_schlick_dielectric(V.z, ior);
-    P_r := r;
-    P_t := 1.0 - P_r;
-
-    anisotropic := 0.0;
-    roughness    = max(roughness, 1.0e-4);
-    alpha       := microfacet_alpha(roughness, anisotropic);
-    H           := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
-
-    if (p < P_r)
-    {
-        L := reflect(-V, H);
-        if (L.z > 0.0)
-        {
-            NoV       := V.z;
-            NoL       := L.z;
-            G         := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
-            G1        := microfacet_ggx_mask(NoV, alpha);
-            f         := r * G / max(G1, 1.0e-6);
-            return f;
-        }
-        return 0.0;
-    }
-    else
-    {
-        L := refract(-V, H, ior);
-        if (L.z < 0.0)
-        {
-            NoV        := V.z;
-            NoL        := abs(L.z);
-            G          := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
-            G1         := microfacet_ggx_mask(NoV, alpha);
-            f          := ((1.0 - r) * G) / max(NoL * G1, 1.0e-4);
-            return f;
-        }
-        return 0.0;
-    }
-}
-
-METALLIC_K_MS_LUT_SIZE      :: 32;
-METALLIC_E_AVG_LUT_SIZE     :: 32;
-METALLIC_K_MS_SAMPLE_COUNT  :: 1 << 24;
-METALLIC_E_AVG_SAMPLE_COUNT :: 1 << 26;
-
-MAX_BUFFER_SIZE   :: #run -> int
-{
-    N := METALLIC_K_MS_LUT_SIZE * METALLIC_K_MS_LUT_SIZE;
-
-    if (METALLIC_E_AVG_LUT_SIZE * METALLIC_E_AVG_LUT_SIZE > N)
-    {
-        N = METALLIC_E_AVG_LUT_SIZE * METALLIC_E_AVG_LUT_SIZE;
-    }
-
-    return N;
+    prepare_batch(compute_metallic_E, 1 << 24, 32, 32, 1, "metallic_E");
+    prepare_batch(compute_metallic_E_avg, 1 << 26, 32, 1, 1, "metallic_E_avg");
+    execute_batches("bxdf_gen_tables.jai");
 }
 
 //------------------------------------------------------------------------
-shared_index   : int;
-shared_buffer  : [MAX_BUFFER_SIZE]float;
-shared_builder : String_Builder;
+// Compute Functions
 
-compute_metallic_k_ms_lut_thread :: (thread: *Thread) -> s64
+compute_metallic_E :: (x: int, y: int, z: int, n_x: int, n_y: int, n_z: int, n_samples: int, seed: u32) -> float
 {
-    sync_and_reset("\rComputing metallic k ms...");
+    if (x == 0)
+    {
+        return 1.0;
+    }
+
+    cosine    := y.(float) / (n_y - 1).(float);
+    sine      := sqrt(1.0 - cosine * cosine);
+    V         := Vector3.{sine, 0.0, cosine};
+    roughness := x.(float) / (n_x - 1).(float);
+    alpha     := microfacet_alpha(roughness, 0.0);
+
+    E_ss : float64 = 0.0;
+    for 0..n_samples-1
+    {
+        u     := random_v4(it, seed);
+        H     := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
+        L     := reflect(-V, H);
+        if (L.z > 0.0)
+        {
+            brdf := f_specular_brdf(V, L, H, alpha);
+            if (brdf.pdf >= FLOAT_EPS)
+            {
+                E_ss += brdf.f.x * abs(L.z) / brdf.pdf;
+            }
+        }
+    }
+    E_ss = saturate(E_ss / n_samples.(float64));
+    return E_ss.(float);
+}
+
+compute_metallic_E_avg :: (x: int, y: int, z: int, n_x: int, n_y: int, n_z: int, n_samples: int, seed: u32) -> float
+{
+    if (x == 0)
+    {
+        return 1.0;
+    }
+
+    roughness := x.(float) / (n_x - 1).(float);
+    alpha     := microfacet_alpha(roughness, 0.0);
+
+    E_avg : float64 = 0.0;
+    for 0..n_samples-1
+    {
+        u         := random_v4(it, seed);
+        cosine    := u.z;
+        sine      := sqrt(1.0 - cosine * cosine);
+        V         := Vector3.{sine, 0.0, cosine};
+        H         := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
+        L         := reflect(-V, H);
+        if (L.z > 0.0)
+        {
+            brdf := f_specular_brdf(V, L, H, alpha);
+            if (brdf.pdf >= FLOAT_EPS)
+            {
+                f := brdf.f.x * abs(L.z) / brdf.pdf;
+                E_avg += 2.0 * cosine * f;
+            }
+        }
+    }
+    E_avg = saturate(E_avg / n_samples.(float64));
+    return E_avg.(float);
+}
+
+//------------------------------------------------------------------------
+
+random_v4 :: (index: int, seed: u32) -> Vector4
+{
+    u1 := sample_scrambled_sobol(index.(u32), seed, 0);
+    u2 := sample_scrambled_sobol(index.(u32), seed, 1);
+    u3 := sample_scrambled_sobol(index.(u32), seed, 2);
+    u4 := sample_scrambled_sobol(index.(u32), seed, 3);
+    u  := Vector4.{u1, u2, u3, u4};
+    return u;
+}
+
+//------------------------------------------------------------------------
+// Batch
+
+batches: [..]Batch;
+
+prepare_batch :: (proc: Batch_Proc, n_samples: int, n_x: int, n_y: int, n_z: int, name: string)
+{
+    batch: Batch;
+    batch.n_z          = n_z;
+    batch.n_y          = n_y;
+    batch.n_x          = n_x;
+    batch.n_samples    = n_samples;
+    batch.shared_index = 0;
+    batch.proc         = proc;
+    batch.name         = name;
+    array_resize(*batch.buffer, n_x * n_y * n_z);
+    array_add(*batches, batch);
+}
+
+execute_batches :: (path: string)
+{
+    for * batches
+    {
+        wave: Thread_Wave;
+        thread_wave_start(*wave, batch_execute_thread, shared = it, used_threads = 4);
+        thread_wave_join(*wave);
+    }
+
+    builder: String_Builder;
+
+    for batches
+    {
+        uname := to_upper_copy(it.name);
+        n     := it.n_x * it.n_y * it.n_z;
+
+        print_to_builder(*builder, "%_X_DIM :: %;\n", uname, it.n_x);
+        print_to_builder(*builder, "%_Y_DIM :: %;\n", uname, it.n_y);
+        print_to_builder(*builder, "%_Z_DIM :: %;\n\n", uname, it.n_z);
+
+        print_to_builder(*builder, "% : [%]float : .[\n", it.name, n);
+        for value,index: it.buffer
+        {
+            print_to_builder(*builder, "%,", FormatFloat.{value=value, width=8, zero_removal=.NO});
+            if ((index + 1) % it.n_x == 0)
+            {
+                print_to_builder(*builder, "\n");
+            }
+        }
+        print_to_builder(*builder, "];\n\n");
+
+        free(uname);
+        array_free(it.buffer);
+    }
+
+    array_reset(*batches);
+    write_entire_file(path, *builder);
+}
+
+Batch_Proc :: #type (x: int, y: int, z: int, n_x: int, n_y: int, n_z: int, n_samples: int, seed: u32) -> float;
+
+Batch :: struct
+{
+    n_z          : int;
+    n_y          : int;
+    n_x          : int;
+    n_samples    : int;
+    shared_index : int;
+    buffer       : []float;
+    proc         : Batch_Proc;
+    name         : string;
+}
+
+batch_execute_thread :: (thread: *Thread) -> s64
+{
+    batch := thread.data.(*Batch);
+    n_z   := batch.n_z;
+    n_y   := batch.n_y;
+    n_x   := batch.n_x;
+
+    n := n_x * n_y * n_z;
 
     while (true)
     {
-        captured_index := atomic_add(*shared_index, 1);
-        if (captured_index >= METALLIC_K_MS_LUT_SIZE * METALLIC_K_MS_LUT_SIZE)
+        index := atomic_add(*batch.shared_index, 1);
+        if (index >= n)
         {
             break;
         }
 
-        print("\rComputing metallic k ms... %\%", captured_index * 100 / (METALLIC_K_MS_LUT_SIZE * METALLIC_K_MS_LUT_SIZE - 1));
+        percent := (index * 100) / n;
+        print("\rComputing % ... %\%", batch.name, percent);
 
-        y  := captured_index / METALLIC_K_MS_LUT_SIZE;
-        x  := captured_index % METALLIC_K_MS_LUT_SIZE;
+        z := index / (n_x * n_y);
+        a := index % (n_x * n_y);
+        y := a / n_x;
+        x := a % n_x;
 
-        E_ss  : float64 = 0.0;
-        seed  := hash_combine(murmur_finalize32(x.(u32)), murmur_finalize32(y.(u32)));
-        index := y * METALLIC_K_MS_LUT_SIZE + x;
-
-        for 0..METALLIC_K_MS_SAMPLE_COUNT-1
-        {
-            u1        := sample_scrambled_sobol(it.(u32), seed, 0);
-            u2        := sample_scrambled_sobol(it.(u32), seed, 1);
-            cosine    := x.(float) / (METALLIC_K_MS_LUT_SIZE - 1).(float);
-            sine      := sqrt(1.0 - cosine * cosine);
-            roughness := y.(float) / (METALLIC_K_MS_LUT_SIZE - 1).(float);
-            V         := Vector3.{sine, 0.0, cosine};
-            E_ss      += sample_metallic_brdf(V, roughness, 0.0, .{u1, u2});
-        }
-        E_ss  = saturate(E_ss / METALLIC_K_MS_SAMPLE_COUNT.(float64));
-        k_ms := (1.0 - E_ss) / E_ss;
-        shared_buffer[index] = k_ms.(float);
+        seed := hash_combine(
+                hash_combine(murmur_finalize32(x.(u32)),
+                             murmur_finalize32(y.(u32))),
+                murmur_finalize32(z.(u32)));
+        batch.buffer[index] = batch.proc(x, y, z, n_x, n_y, n_z, batch.n_samples, seed);
     }
-
-    sync_and_reset();
 
     if (context.lane.index == 0)
     {
-        print("\nDone\n");
-        print_to_builder(*shared_builder, "METALLIC_K_MS_LUT_SIZE :: %;\n\n", METALLIC_K_MS_LUT_SIZE);
-        print_to_builder(*shared_builder, "k_ms_metallic : [METALLIC_K_MS_LUT_SIZE * METALLIC_K_MS_LUT_SIZE]float : .[\n");
-
-        for y:0..METALLIC_K_MS_LUT_SIZE-1
-        {
-            for x:0..METALLIC_K_MS_LUT_SIZE-1
-            {
-                value := *shared_buffer[y * METALLIC_K_MS_LUT_SIZE + x];
-                print_to_builder(*shared_builder, "0h%,", FormatInt.{value=value.(*u32).*, base=16, minimum_digits=8});
-                if ((x + 1) % 16 == 0)
-                {
-                    print_to_builder(*shared_builder, "\n");
-                }
-            }
-        }
-        print_to_builder(*shared_builder, "];\n\n");
+        print("\rComputing % ... 100\%\n", batch.name);
     }
 
     return 0;
-}
-
-compute_metallic_E_avg_lut_thread :: (thread: *Thread) -> s64
-{
-    sync_and_reset("\rComputing metallic E avg...");
-
-    while (true)
-    {
-        captured_index := atomic_add(*shared_index, 1);
-        if (captured_index >= METALLIC_E_AVG_LUT_SIZE)
-        {
-            break;
-        }
-
-        print("\rComputing metallic E avg... %\%", captured_index * 100 / (METALLIC_E_AVG_LUT_SIZE - 1));
-
-        x  := captured_index;
-
-        E_avg : float64 = 0.0;
-        seed  := murmur_finalize32(x.(u32));
-        index := x;
-
-        for 0..METALLIC_E_AVG_SAMPLE_COUNT-1
-        {
-            u1        := sample_scrambled_sobol(it.(u32), seed, 0);
-            u2        := sample_scrambled_sobol(it.(u32), seed, 1);
-            u3        := sample_scrambled_sobol(it.(u32), seed, 2);
-            cosine    := u3;
-            sine      := sqrt(1.0 - cosine * cosine);
-            roughness := x.(float) / (METALLIC_E_AVG_LUT_SIZE - 1).(float);
-            V         := Vector3.{sine, 0.0, cosine};
-            E_avg     += 2.0 * sample_metallic_brdf(V, roughness, 0.0, .{u1, u2});
-        }
-        E_avg  = saturate(E_avg / METALLIC_E_AVG_SAMPLE_COUNT.(float64));
-        shared_buffer[index] = E_avg.(float);
-    }
-
-    sync_and_reset();
-
-    if (context.lane.index == 0)
-    {
-        print("\nDone\n");
-        print_to_builder(*shared_builder, "METALLIC_E_AVG_LUT_SIZE :: %;\n\n", METALLIC_E_AVG_LUT_SIZE);
-        print_to_builder(*shared_builder, "E_avg_metallic : [METALLIC_E_AVG_LUT_SIZE]float : .[\n");
-
-        for x:0..METALLIC_E_AVG_LUT_SIZE-1
-        {
-            value := *shared_buffer[x];
-            print_to_builder(*shared_builder, "0h%,", FormatInt.{value=value.(*u32).*, base=16, minimum_digits=8});
-            if ((x + 1) % 16 == 0)
-            {
-                print_to_builder(*shared_builder, "\n");
-            }
-        }
-        print_to_builder(*shared_builder, "];\n\n");
-    }
-
-    return 0;
-}
-
-sync_and_reset :: ($msg: string = "")
-{
-    lane_sync();
-    if (context.lane.index == 0)
-    {
-        atomic_write(*shared_index, 0);
-        if (msg.count)
-        {
-            print(msg);
-        }
-    }
-    lane_sync();
 }
 
 #import "Atomics";
 #import "Basic";
 #import "File";
+#import "String";

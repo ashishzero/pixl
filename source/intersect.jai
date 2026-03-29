@@ -76,14 +76,6 @@ Material :: struct
     absorption           : Texture2D;
     emission_strength    : Texture2D;
     emission_color       : Texture2D;
-
-    //specular        : Texture2D(float);
-    //ior             : Texture2D(float);
-    //subsurface      : Texture2D(float);
-    //sheen           : Texture2D(float);
-    //sheen_tint      : Texture2D(float);
-    //clearcoat       : Texture2D(float);
-    //clearcoat_gloss : Texture2D(float);
 }
 
 PathTracerConfig :: struct

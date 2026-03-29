@@ -36,6 +36,7 @@
 				<BuildFileCommand></BuildFileCommand>
 				<CleanCommand></CleanCommand>
 				<BuildWorkingDirectory></BuildWorkingDirectory>
+				<FileSyntaxCheckCommand></FileSyntaxCheckCommand>
 				<CancelBuild></CancelBuild>
 				<Exe></Exe>
 				<Args></Args>
@@ -54,6 +55,7 @@
 				<BuildFileCommand></BuildFileCommand>
 				<CleanCommand></CleanCommand>
 				<BuildWorkingDirectory></BuildWorkingDirectory>
+				<FileSyntaxCheckCommand></FileSyntaxCheckCommand>
 				<CancelBuild></CancelBuild>
 				<Exe></Exe>
 				<Args></Args>
@@ -77,6 +79,7 @@
 				<Name>x64</Name>
 				<Defines></Defines>
 			</Platform>
+			<TerminalDirectory></TerminalDirectory>
 		</ConfigProperties>
 		<Children></Children>
 	</Workspace>
