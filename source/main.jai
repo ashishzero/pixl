@@ -1087,8 +1087,8 @@ load_scene :: (using scene: *Scene, type: SceneType)
             add_box(scene, Matrix4_Identity, .{0, 0, 555}, .{555, 555, 555.01}, white); // back
             add_box(scene, Matrix4_Identity, .{0, 555, 0}, .{555, 555.01, 555}, white); // top
 
-            dragon_material := create_lambertian_material(scene, create_constant_texture(.{0.7, 0.7, 0.1}));
-            dragon, xform   := load_monkey();
+            dragon_material := create_plastic_material(scene, create_constant_texture(.{1, 1, 1}));
+            dragon, xform   := load_dragon();
 
             add_mesh(scene, xform, dragon, dragon_material);
 
@@ -1405,6 +1405,15 @@ create_lambertian_material :: (scene: *Scene, color: Texture2D, roughness := 0.0
     material.color = color;
     material.diffuse_roughness = create_constant_texture(roughness);
     material.specular_ior = create_constant_texture(0.0);
+    return id, material;
+}
+
+create_plastic_material :: (scene: *Scene, color: Texture2D, specular_tint := Vector3.{1, 1, 1}, ior := 0.5) -> MaterialID, *Material
+{
+    id, material := create_material(scene);
+    material.color = color;
+    material.specular_tint = create_constant_texture(specular_tint);
+    material.specular_ior = create_constant_texture(ior);
     return id, material;
 }
 
@@ -2304,7 +2313,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=64, max_depth=5);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=256, max_depth=15);
     load_scene(*scene, args.scene);
 
     prepare_for_rendering(*scene);

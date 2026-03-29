@@ -222,7 +222,7 @@ intersect_triangle :: (v0: Vertex3, v1: Vertex3, v2: Vertex3, origin: Vector3, d
 
     det := dot(edge1, pvec);
 
-    if (abs(det) < FLOAT_EPS)
+    if (abs(det) <= 0.0)
         return info;
     inv_det := 1.0 / det;
 
