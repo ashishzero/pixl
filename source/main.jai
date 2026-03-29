@@ -933,21 +933,6 @@ load_backdrop :: () -> Primitive_Mesh, Matrix4
     return backdrop, xform;
 }
 
-load_dragon_origin :: () -> Primitive_Mesh, Matrix4
-{
-    scale := 10.0;
-    position := Vector3.{0, 5, 0};
-    theta := -90.0 / 360.0 * 2 * PI;
-
-    orientation: Quaternion;
-    set_from_axis_and_angle(*orientation, 0, 1, 0, theta);
-
-    dragon := load_obj_model("data/dragon/dragon.obj");
-    xform    := make_translation_matrix4(position) * rotation_matrix(Matrix4, orientation) * make_scale_matrix4(.{scale, scale, scale});
-
-    return dragon, xform;
-}
-
 load_shaderball :: () -> Primitive_Mesh, Primitive_Mesh, Matrix4
 {
     scale := 0.5;
@@ -1086,26 +1071,26 @@ load_scene :: (using scene: *Scene, type: SceneType)
             camera.fov           = 40.0 / 360.0;
             camera.position      = .{278, 278, -800};
 
-            //environment = create_constant_texture(.{0, 0, 0});
-            environment          = create_constant_texture(.{0.3, 0.2, 0.7});
-            exposure    = 1;
+            environment = create_constant_texture(.{0, 0, 0});
+            //environment          = create_constant_texture(.{0.3, 0.2, 0.7});
+            exposure    = 2;
 
             red   := create_lambertian_material(scene, create_constant_texture(.{0.65, 0.05, 0.05}));
             white := create_lambertian_material(scene, create_constant_texture(.{0.73, 0.73, 0.73}));
             green := create_lambertian_material(scene, create_constant_texture(.{0.12, 0.45, 0.15}));
             light := create_emission_material(scene, create_constant_texture(.{15, 15, 15}));
 
-            //add_box(scene, Matrix4_Identity, .{213, 554, 227}, .{343, 554.01, 332}, light);
-            //add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{0.01, 555, 555}, green); // left
-            //add_box(scene, Matrix4_Identity, .{555, 0, 0}, .{555.01, 555, 555}, red); // right
-            //add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{555, 0.01, 555}, white); // bottom
-            //add_box(scene, Matrix4_Identity, .{0, 0, 555}, .{555, 555, 555.01}, white); // back
+            add_box(scene, Matrix4_Identity, .{213, 554, 227}, .{343, 554.01, 332}, light);
+            add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{0.01, 555, 555}, green); // left
+            add_box(scene, Matrix4_Identity, .{555, 0, 0}, .{555.01, 555, 555}, red); // right
+            add_box(scene, Matrix4_Identity, .{0, 0, 0}, .{555, 0.01, 555}, white); // bottom
+            add_box(scene, Matrix4_Identity, .{0, 0, 555}, .{555, 555, 555.01}, white); // back
             add_box(scene, Matrix4_Identity, .{0, 555, 0}, .{555, 555.01, 555}, white); // top
 
-            dragon_material := create_lambertian_material(scene, create_constant_texture(.{1, 1, 1}));
-            dragon, xform   := load_dragon();
+            dragon_material := create_lambertian_material(scene, create_constant_texture(.{0.7, 0.7, 0.1}));
+            dragon, xform   := load_monkey();
 
-            //add_mesh(scene, xform, dragon, dragon_material);
+            add_mesh(scene, xform, dragon, dragon_material);
 
         case .cornell_monkey;
             camera.fov           = 40.0 / 360.0;
@@ -1192,8 +1177,7 @@ load_scene :: (using scene: *Scene, type: SceneType)
             textured   := create_lambertian_material(scene, earth);
 
             backdrop, backdrop_xform     := load_backdrop();
-            //internals, externals, shaderball_xform := load_shaderball();
-            dragon, dragon_xform := load_dragon_origin();
+            internals, externals, shaderball_xform := load_shaderball();
 
             //add_box(scene, Matrix4_Identity, .{ -5, 10, -15 }, .{ -1, 10.01, -11 }, light);
             //add_box(scene, Matrix4_Identity, .{  1, 10, -15 }, .{  5, 10.01, -11 }, light);
@@ -1202,9 +1186,8 @@ load_scene :: (using scene: *Scene, type: SceneType)
 
             add_mesh(scene, backdrop_xform, backdrop, checker);
             //add_sphere(scene, Vector3.{0, 2, 0}, 2, id);
-            //add_mesh(scene, shaderball_xform, internals, black);
-            //add_mesh(scene, shaderball_xform, externals, id);
-            add_mesh(scene, dragon_xform, dragon, id);
+            add_mesh(scene, shaderball_xform, internals, black);
+            add_mesh(scene, shaderball_xform, externals, id);
 
         case .sphere_test;
             camera.fov         = 45.0 / 360.0;
@@ -1421,6 +1404,7 @@ create_lambertian_material :: (scene: *Scene, color: Texture2D, roughness := 0.0
     id, material := create_material(scene);
     material.color = color;
     material.diffuse_roughness = create_constant_texture(roughness);
+    material.specular_ior = create_constant_texture(0.0);
     return id, material;
 }
 
@@ -2320,7 +2304,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=256, max_depth=15);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=64, max_depth=5);
     load_scene(*scene, args.scene);
 
     prepare_for_rendering(*scene);
