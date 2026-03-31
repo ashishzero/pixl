@@ -20,6 +20,8 @@ build_program :: (outpath: string, name: string, src: string)
         add_build_string("ENABLE_RAD_DEBUGGER :: false;", w);
     }
 
+    add_build_string("RT_DEBUG :: true;", w);
+
     add_build_file(src, w);
 
     message_loop();

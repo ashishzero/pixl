@@ -212,13 +212,18 @@ refract :: inline (I: Vector3, N: Vector3, ior: float) -> Vector3, bool
     return .{}, false;
 }
 
-exp :: (s: Spectrum) -> Spectrum
+exp :: inline (s: Spectrum) -> Spectrum
 {
     r : Spectrum = ---;
     r.x = exp(s.x);
     r.y = exp(s.y);
     r.z = exp(s.z);
     return r;
+}
+
+average :: inline (s: Spectrum) -> float
+{
+    return (s.x + s.y + s.z) / 3.0;
 }
 
 sdiv :: inline (x: float, y: float) -> float
