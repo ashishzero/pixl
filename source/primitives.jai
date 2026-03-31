@@ -1,5 +1,3 @@
-#load "common.jai";
-
 // @todo: add support for plane/quads and bilinear patch...and bezier curves -- maybe?
 Primitive_Type :: enum u32
 {

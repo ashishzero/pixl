@@ -1,4 +1,4 @@
-#load "primitives.jai";
+Simp :: #import "Simp";
 
 Primitive_Sphere :: struct
 {
@@ -126,6 +126,8 @@ Scene :: struct
 
     statistics_mem : *void;
     statistics : []Path_Statistics;
+
+    cancel_rendering := false;
 }
 
 Hit_Face :: enum u32
