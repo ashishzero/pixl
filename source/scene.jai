@@ -749,8 +749,6 @@ generate_ray :: (pixel: Vector2, camera: Camera, lens_uv: Vector2) -> Ray
 
     ray.origin = origin;
     ray.dir    = normalize(target - origin);
-    ray.tmin   = 0.0;
-    ray.tmax   = FLOAT32_INFINITY;
 
     return ray;
 }
@@ -1333,17 +1331,21 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, 
 {
     radiance   := Spectrum.{0, 0, 0};
     throughput := Spectrum.{1, 1, 1};
-    ray        := primary;
-    ray_type   := Ray_Type.PRIMARY;
+
+    origin     := primary.origin;
+    dir        := primary.dir;
+    type       := Ray_Type.PRIMARY;
+    tmin       := 0.0;
+    tmax       := FLOAT32_INFINITY;
 
     for 0..depth
     {
         hit         := Hit_Info.{ t = -1 };
         num_visited : u32 = 0;
 
-        if (!scene.config.flat_background || ray_type == .PRIMARY)
+        if (!scene.config.flat_background || type == .PRIMARY)
         {
-            hit, num_visited = intersect_scene(scene, ray.origin, ray.dir, ray.tmin, ray.tmax);
+            hit, num_visited = intersect_scene(scene, origin, dir, tmin, tmax);
         }
 
         stats.n_bvh_visits += num_visited;
@@ -1374,7 +1376,7 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, 
             p      := random_sample_1D(rng, .LOBE);
             u      := random_sample_3D(rng, .BxDF);
 
-            V      := forward_transform(inv_TBN, -ray.dir);
+            V      := forward_transform(inv_TBN, -dir);
             sample := sample_surface_bsdf(V, surface, p, u);
 
             if (is_nan_or_inf(sample.bxdf.f))
@@ -1411,17 +1413,17 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, 
 
             //------------------------------------------------------------------------
             // Next ray
-            ray.origin = hit.p;
-            ray.dir    = inverse_transform(inv_TBN, sample.L);
-            ray.tmin   = 1.0e-3;
-            ray.tmax   = FLOAT32_MAX;
-            ray_type   = .SECONDARY;
+            origin = hit.p;
+            dir    = inverse_transform(inv_TBN, sample.L);
+            tmin   = 1.0e-3;
+            tmax   = FLOAT32_MAX;
+            type   = .SECONDARY;
         }
         else
         {
-            if (!scene.config.flat_background || ray_type == .SECONDARY)
+            if (!scene.config.flat_background || type == .SECONDARY)
             {
-                uv  := EncodeSphericalUV(ray.dir);
+                uv  := EncodeSphericalUV(dir);
                 env := SampleTexture(scene.environment, uv.x, uv.y);
 
                 // @todo: is this where exposure goes??

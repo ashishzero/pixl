@@ -32,9 +32,7 @@ Vertex3 :: struct
 Ray :: struct
 {
     origin : Vector3;
-    tmin   : float;
     dir    : Vector3;
-    tmax   : float;
 }
 
 BVH_Node :: struct

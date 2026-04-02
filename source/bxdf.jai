@@ -32,7 +32,7 @@ Surface :: struct
 
 Lobe_Weights :: [MAX_LOBE_INDEX]float;
 
-BxDF_Sample :: struct
+Surface_Interaction :: struct
 {
     using bxdf : BxDF;
     L          : Vector3;
@@ -105,7 +105,7 @@ pdf_f82_conductor_brdf :: (V: Vector3, L: Vector3, surface: Surface) -> float
     return 0.0;
 }
 
-sample_f82_conductor_brdf :: (V: Vector3, surface: Surface, u: Vector3) -> BxDF_Sample
+sample_f82_conductor_brdf :: (V: Vector3, surface: Surface, u: Vector3) -> Surface_Interaction
 {
     alpha := surface.microfacet_alpha;
     if (is_rough(alpha))
@@ -287,7 +287,7 @@ pdf_diffuse_eon_brdf :: (V: Vector3, L: Vector3, surface: Surface) -> float
     return 0.0;
 }
 
-sample_diffuse_eon_brdf :: (V: Vector3, surface: Surface, u: Vector3) -> BxDF_Sample
+sample_diffuse_eon_brdf :: (V: Vector3, surface: Surface, u: Vector3) -> Surface_Interaction
 {
     NoV       := V.z;
     P_u       := pow(surface.roughness, 0.1) * (0.162925 + NoV * (-0.372058 + (0.538233 - 0.290822 * NoV) * NoV));
@@ -382,7 +382,7 @@ pdf_dielectric_bsdf :: (V: Vector3, L: Vector3, surface: Surface) -> float
     return 0.0;
 }
 
-sample_dielectric_bsdf :: (V: Vector3, surface: Surface, u: Vector3) -> BxDF_Sample
+sample_dielectric_bsdf :: (V: Vector3, surface: Surface, u: Vector3) -> Surface_Interaction
 {
     H := microfacet_ggx_sample_normal(V, surface.microfacet_alpha, u.x, u.y);
     R := effective_fresnel_weight(surface, V, H);
@@ -430,7 +430,7 @@ pdf_transparent_btdf :: (V: Vector3, L: Vector3, surface: Surface) -> float
     return 0.0;
 }
 
-sample_transparent_btdf :: (V: Vector3, surface: Surface, u: Vector3) -> BxDF_Sample
+sample_transparent_btdf :: (V: Vector3, surface: Surface, u: Vector3) -> Surface_Interaction
 {
     L   := -V;
     mu  := abs(L.z);
@@ -533,31 +533,31 @@ pdf_surface_bsdf :: (V: Vector3, L: Vector3, surface: Surface, weights: Lobe_Wei
     return pdf;
 }
 
-sample_surface_bsdf :: (V: Vector3, surface: Surface, p: float, u: Vector3) -> BxDF_Sample
+sample_surface_bsdf :: (V: Vector3, surface: Surface, p: float, u: Vector3) -> Surface_Interaction
 {
     weights := calculate_lobe_weights(surface);
     picked  := pick_lobe(p, weights);
 
-    sample  : BxDF_Sample = ---;
+    si : Surface_Interaction = ---;
 
     if #complete picked ==
     {
         case .DIFFUSE;
-            sample = sample_diffuse_eon_brdf(V, surface, u);
+            si = sample_diffuse_eon_brdf(V, surface, u);
         case .CONDUCTOR;
-            sample = sample_f82_conductor_brdf(V, surface, u);
+            si = sample_f82_conductor_brdf(V, surface, u);
         case .DIELECTRIC;
-            sample = sample_dielectric_bsdf(V, surface, u);
+            si = sample_dielectric_bsdf(V, surface, u);
         case .TRANSPARENT;
-            sample = sample_transparent_btdf(V, surface, u);
+            si = sample_transparent_btdf(V, surface, u);
     }
 
-    if (sample.bxdf.pdf == 0.0)
+    if (si.bxdf.pdf == 0.0)
     {
         return .{};
     }
 
-    L := sample.L;
+    L := si.L;
 
     bsdf : BxDF;
     for 0..MAX_LOBE_INDEX-1
@@ -571,8 +571,8 @@ sample_surface_bsdf :: (V: Vector3, surface: Surface, p: float, u: Vector3) -> B
         }
     }
 
-    bsdf.f   += weights[picked] * sample.bxdf.f;
-    bsdf.pdf += weights[picked] * sample.bxdf.pdf;
+    bsdf.f   += weights[picked] * si.bxdf.f;
+    bsdf.pdf += weights[picked] * si.bxdf.pdf;
 
     return .{bsdf, L};
 }

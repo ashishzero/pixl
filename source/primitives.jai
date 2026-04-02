@@ -166,7 +166,7 @@ intersect_disk :: (radius: float, origin: Vector3, dir: Vector3, tmin: float, tm
     radius2 := radius * radius;
     normal := Vector3.{0, 0, -1};
 
-    denom := dir.z; // DotProduct(normal, ray.direction)
+    denom := dir.z; // DotProduct(normal, ray.dir)
 
     if (abs(denom) == 0.0)
         return info;
