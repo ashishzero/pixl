@@ -37,6 +37,7 @@ build :: ()
     build_program(output_path, "PixL", "source/main.jai");
     build_program(output_path, "PixL_bxdf_gen", "source/bxdf_meta.jai");
     build_program(output_path, "PixL_test_renders", "source/test_renders.jai");
+    build_program(output_path, "PixL_test_bxdf", "source/test_bxdf.jai");
 
     set_build_options_dc(.{do_output=false});
 }

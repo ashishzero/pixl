@@ -1,0 +1,22 @@
+
+
+- Test framework
+- Lights
+- MIS (Multiple Importance Sampling)
+- Direct light sampling
+- Shadow rays
+- Russian Roulette termination
+- Environment lighting (HDRI)
+- Cone Tracing
+- Volumetric Rendering
+- Texture Coordinate Mapping
+- Mipmap Generation/Antialiasing
+- Dielectric energy conservation (multi-scattering compensation)
+- Exporting videos/animations
+- Dispersion (prisms, glass)
+- Robust camera
+    - depth of field (thin lens)
+    - motion blur (time dimension)
+    - aperture shapes
+- GPU rendering
+- Denoising

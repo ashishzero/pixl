@@ -113,6 +113,22 @@ Spectrum_One  :: Spectrum.{1, 1, 1};
 Spectrum_Zero :: Spectrum.{0, 0, 0};
 
 //------------------------------------------------------------------------
+// Sampling
+
+Uniform_PDF :: 1.0 / (2.0 * PI);
+
+sample_uniform_lobe :: (u1: float, u2: float) -> Vector3
+{
+    sintheta := sqrt(1.0 - u1 * u1);
+    phi      := 2.0 * PI * u2;
+    L : Vector3 = ---;
+    L.x = sintheta * cos(phi);
+    L.y = sintheta * sin(phi);
+    L.z = u1;
+    return L;
+}
+
+//------------------------------------------------------------------------
 // Hash
 
 hash_combine :: inline (seed: u32, v: u32) -> u32

@@ -218,17 +218,6 @@ pdf_cltc :: (V_local: Vector3, L_local: Vector3, roughness: float) -> float
     return pdf;
 }
 
-sample_uniform_lobe :: (u1: float, u2: float) -> Vector3
-{
-    sintheta := sqrt(1.0 - u1 * u1);
-    phi      := 2.0 * PI * u2;
-    L : Vector3 = ---;
-    L.x = sintheta * cos(phi);
-    L.y = sintheta * sin(phi);
-    L.z = u1;
-    return L;
-}
-
 f_diffuse_eon_eval_brdf :: (V: Vector3, L: Vector3, surface: Surface) -> Spectrum
 {
     if (L.z > 0.0)
@@ -434,7 +423,7 @@ sample_transparent_btdf :: (V: Vector3, surface: Surface, u: Vector3) -> Surface
 {
     L   := -V;
     mu  := abs(L.z);
-    f   := Spectrum_One * (surface.ior * surface.ior) / max(mu, 1.0e-6);
+    f   := Spectrum_One / max(mu, 1.0e-6);
     pdf := 1.0;
     return .{.{f, pdf}, L};
 }
@@ -475,6 +464,8 @@ calculate_lobe_weights :: (using surface: Surface) -> Lobe_Weights
     return weights;
 }
 
+#scope_export
+
 f_surface_bxdf_lobe :: (V: Vector3, L: Vector3, surface: Surface, index: Lobe_Index) -> BxDF
 {
     if #complete index ==
@@ -505,7 +496,20 @@ pdf_surface_bxdf_lobe :: (V: Vector3, L: Vector3, surface: Surface, index: Lobe_
     }
 }
 
-#scope_export
+sample_surface_bxdf_lobe :: (V: Vector3, surface: Surface, u: Vector3, index: Lobe_Index) -> Surface_Interaction
+{
+    if #complete index ==
+    {
+        case .DIFFUSE;
+            return sample_diffuse_eon_brdf(V, surface, u);
+        case .CONDUCTOR;
+            return sample_f82_conductor_brdf(V, surface, u);
+        case .DIELECTRIC;
+            return sample_dielectric_bsdf(V, surface, u);
+        case .TRANSPARENT;
+            return sample_transparent_btdf(V, surface, u);
+    }
+}
 
 f_surface_bsdf :: (V: Vector3, L: Vector3, surface: Surface) -> BxDF
 {
@@ -537,20 +541,7 @@ sample_surface_bsdf :: (V: Vector3, surface: Surface, p: float, u: Vector3) -> S
 {
     weights := calculate_lobe_weights(surface);
     picked  := pick_lobe(p, weights);
-
-    si : Surface_Interaction = ---;
-
-    if #complete picked ==
-    {
-        case .DIFFUSE;
-            si = sample_diffuse_eon_brdf(V, surface, u);
-        case .CONDUCTOR;
-            si = sample_f82_conductor_brdf(V, surface, u);
-        case .DIELECTRIC;
-            si = sample_dielectric_bsdf(V, surface, u);
-        case .TRANSPARENT;
-            si = sample_transparent_btdf(V, surface, u);
-    }
+    si      := sample_surface_bxdf_lobe(V, surface, u, picked);
 
     if (si.bxdf.pdf == 0.0)
     {
