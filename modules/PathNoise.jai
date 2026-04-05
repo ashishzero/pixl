@@ -1,7 +1,6 @@
+#scope_export
 
-NOISE_PCG :: false;
-
-Path_Random_State :: struct
+Path_State :: struct
 {
     index  : u32;
     bounce : u32;
@@ -20,85 +19,50 @@ Path_Dimension :: enum u32
 MAX_BOUNCE :: 16;
 
 // Based on: https://psychopath.io/post/2022_07_24_owen_scrambling_based_dithered_blue_noise_sampling
-path_random_state :: (x: u32, y: u32, sample: u32, spp: u32, seed: u32) -> Path_Random_State
+path_state :: (x: u32, y: u32, sample: u32, spp: u32, seed: u32) -> Path_State
 {
     morton_index := morton2(x, y);
     sample_index := fast_owen_scramble4(morton_index, seed) * spp.(u64);
     index        := (sample_index + sample).(u32, no_check);
-    rng          := Path_Random_State.{index=index.(u32), bounce=0, seed=seed};
+    rng          := Path_State.{index=index.(u32), bounce=0, seed=seed};
     return rng;
 }
 
-#if NOISE_PCG
+sample_1D :: (rng: Path_State, dim: Path_Dimension) -> float
 {
-    random_sample_1D :: (rng: Path_Random_State, dim: Path_Dimension) -> float
-    {
-        x := random_get_zero_to_one_open();
-        return x;
-    }
-
-    random_sample_2D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector2
-    {
-        x := random_get_zero_to_one_open();
-        y := random_get_zero_to_one_open();
-        return .{x, y};
-    }
-
-    random_sample_3D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector3
-    {
-        x := random_get_zero_to_one_open();
-        y := random_get_zero_to_one_open();
-        z := random_get_zero_to_one_open();
-        return .{x, y, z};
-    }
-
-    random_sample_4D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector4
-    {
-        x := random_get_zero_to_one_open();
-        y := random_get_zero_to_one_open();
-        z := random_get_zero_to_one_open();
-        w := random_get_zero_to_one_open();
-        return .{x, y, z, w};
-    }
-}
-else
-{
-    random_sample_1D :: (rng: Path_Random_State, dim: Path_Dimension) -> float
-    {
-        seed := hash_dimension(rng, dim);
-        x    := sample_scrambled_sobol(rng.index, seed, 0);
-        return x;
-    }
-
-    random_sample_2D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector2
-    {
-        seed := hash_dimension(rng, dim);
-        x    := sample_scrambled_sobol(rng.index, seed, 0);
-        y    := sample_scrambled_sobol(rng.index, seed, 1);
-        return .{x, y};
-    }
-
-    random_sample_3D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector3
-    {
-        seed := hash_dimension(rng, dim);
-        x    := sample_scrambled_sobol(rng.index, seed, 0);
-        y    := sample_scrambled_sobol(rng.index, seed, 1);
-        z    := sample_scrambled_sobol(rng.index, seed, 2);
-        return .{x, y, z};
-    }
-
-    random_sample_4D :: (rng: Path_Random_State, dim: Path_Dimension) -> Vector4
-    {
-        seed := hash_dimension(rng, dim);
-        x    := sample_scrambled_sobol(rng.index, seed, 0);
-        y    := sample_scrambled_sobol(rng.index, seed, 1);
-        z    := sample_scrambled_sobol(rng.index, seed, 2);
-        w    := sample_scrambled_sobol(rng.index, seed, 3);
-        return .{x, y, z, w};
-    }
+    seed := hash_dimension(rng, dim);
+    x    := sample_scrambled_sobol(rng.index, seed, 0);
+    return x;
 }
 
-next_bounce :: (rng: *Path_Random_State)
+sample_2D :: (rng: Path_State, dim: Path_Dimension) -> Vector2
+{
+    seed := hash_dimension(rng, dim);
+    x    := sample_scrambled_sobol(rng.index, seed, 0);
+    y    := sample_scrambled_sobol(rng.index, seed, 1);
+    return .{x, y};
+}
+
+sample_3D :: (rng: Path_State, dim: Path_Dimension) -> Vector3
+{
+    seed := hash_dimension(rng, dim);
+    x    := sample_scrambled_sobol(rng.index, seed, 0);
+    y    := sample_scrambled_sobol(rng.index, seed, 1);
+    z    := sample_scrambled_sobol(rng.index, seed, 2);
+    return .{x, y, z};
+}
+
+sample_4D :: (rng: Path_State, dim: Path_Dimension) -> Vector4
+{
+    seed := hash_dimension(rng, dim);
+    x    := sample_scrambled_sobol(rng.index, seed, 0);
+    y    := sample_scrambled_sobol(rng.index, seed, 1);
+    z    := sample_scrambled_sobol(rng.index, seed, 2);
+    w    := sample_scrambled_sobol(rng.index, seed, 3);
+    return .{x, y, z, w};
+}
+
+next_bounce :: (rng: *Path_State)
 {
     rng.bounce += MAX_BOUNCE;
 }
@@ -113,13 +77,13 @@ SOBOL_MATRIX_DIMENSION :: 4;
 sample_scrambled_sobol :: inline (index: u32, seed: u32, dim: u32) -> float
 {
     v := scrambled_sobol(index, seed, dim);
-    return min(v.(float) * SOBOL_INV_RESOLUTION, 1.0 - FLOAT_EPS);
+    return min(v.(float) * SOBOL_INV_RESOLUTION, 1.0 - FLOAT32_EPSILON);
 }
 
 sample_sobol :: inline (index: u32, dim: u32) -> float
 {
     v := sobol(index, dim);
-    return min(v.(float) * SOBOL_INV_RESOLUTION, 1.0 - FLOAT_EPS);
+    return min(v.(float) * SOBOL_INV_RESOLUTION, 1.0 - FLOAT32_EPSILON);
 }
 
 #scope_file
@@ -184,7 +148,7 @@ reverse_bits :: inline (x: u32) -> u32
     return ((x >> 16) | (x << 16));
 }
 
-hash_dimension :: (rng: Path_Random_State, set: Path_Dimension) -> u32
+hash_dimension :: (rng: Path_State, set: Path_Dimension) -> u32
 {
     Hash :: (n: u32) -> u32
     {
@@ -202,6 +166,30 @@ hash_dimension :: (rng: Path_Random_State, set: Path_Dimension) -> u32
     seed  := rng.seed ^ Hash(dim);
     return seed;
 }
+
+split2 :: (x: u32) -> u32
+{
+    // Based on: https://fgiesen.wordpress.com/2009/12/13/decoding-morton-codes/
+    x &= 0X0000FFFF;
+    x = (x ^ (x <<  8)) & 0X00FF00FF;
+    x = (x ^ (x <<  4)) & 0X0F0F0F0F;
+    x = (x ^ (x <<  2)) & 0X33333333;
+    x = (x ^ (x <<  1)) & 0X55555555;
+    return x;
+}
+
+morton2 :: (x: u32, y: u32) -> u32
+{
+    x_split := split2(x);
+    y_split := split2(y);
+    code    := (x_split << 1) | y_split;
+    return code;
+}
+
+FLOAT32_EPSILON        :: 0h34000000;
+
+//------------------------------------------------------------------------
+// Sobol Table
 
 SOBOL_MATRIX_SIZE      :: 32;
 SOBOL_INV_RESOLUTION   :: 0h2f800000;
@@ -243,3 +231,6 @@ SobolDirectionLUT : [SOBOL_MATRIX_DIMENSION * SOBOL_MATRIX_SIZE]u32 : .[
     0x58800080, 0xe54000c0, 0x79e00020, 0xb6d00050,
     0x800800f8, 0xc00c0074, 0x200200a2, 0x50050093,
 ];
+
+#import "Math";
+#import "Common";

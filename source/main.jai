@@ -549,8 +549,8 @@ InitializeRandomSamples :: ()
     {
         x   := it_index % SAMPLES_PER_AXIS;
         y   := it_index / SAMPLES_PER_AXIS;
-        rng := path_random_state(x.(u32), y.(u32), 0, 1, seed);
-        p   := random_sample_2D(rng, .FILTER);
+        rng := path_state(x.(u32), y.(u32), 0, 1, seed);
+        p   := sample_2D(rng, .FILTER);
         it.* = p;
     }
 }

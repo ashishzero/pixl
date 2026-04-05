@@ -1,11 +1,4 @@
 
-//------------------------------------------------------------------------
-
-INV_PI    :: 1.0 / PI;
-PI_OVER_4 :: PI / 4;
-PI_OVER_2 :: PI / 2;
-
-FLOAT_EPS :: 0h34000000;
 
 //------------------------------------------------------------------------
 
@@ -107,65 +100,20 @@ Camera :: struct
     filter_lut         : [FILTER_SIZE]float;
 }
 
-Spectrum :: #type,isa Vector3;
-
-Spectrum_One  :: Spectrum.{1, 1, 1};
-Spectrum_Zero :: Spectrum.{0, 0, 0};
 
 //------------------------------------------------------------------------
-// Sampling
+// IOR Mapping: IOR = 1 + 2 * sqr(specular)
 
-Uniform_PDF :: 1.0 / (2.0 * PI);
-
-sample_uniform_lobe :: (u1: float, u2: float) -> Vector3
+ior_relative_to_physical :: (specular: float) -> float
 {
-    sintheta := sqrt(1.0 - u1 * u1);
-    phi      := 2.0 * PI * u2;
-    L : Vector3 = ---;
-    L.x = sintheta * cos(phi);
-    L.y = sintheta * sin(phi);
-    L.z = u1;
-    return L;
+    ior := 1.0 + 2 * specular * specular;
+    return ior;
 }
 
-//------------------------------------------------------------------------
-// Hash
-
-hash_combine :: inline (seed: u32, v: u32) -> u32
+ior_physical_to_relative :: (ior: float) -> float
 {
-    return seed ^ (v + (seed << 6) + (seed >> 2));
-}
-
-murmur_finalize32 :: inline (x: u32) -> u32
-{
-    x ^= x >> 16;
-    x *= 0x85ebca6b;
-    x ^= x >> 13;
-    x *= 0xc2b2ae35;
-    x ^= x >> 16;
-    return x;
-}
-
-//------------------------------------------------------------------------
-// Morton codes
-// Based on: https://fgiesen.wordpress.com/2009/12/13/decoding-morton-codes/
-
-split2 :: (x: u32) -> u32
-{
-    x &= 0X0000FFFF;
-    x = (x ^ (x <<  8)) & 0X00FF00FF;
-    x = (x ^ (x <<  4)) & 0X0F0F0F0F;
-    x = (x ^ (x <<  2)) & 0X33333333;
-    x = (x ^ (x <<  1)) & 0X55555555;
-    return x;
-}
-
-morton2 :: (x: u32, y: u32) -> u32
-{
-    x_split := split2(x);
-    y_split := split2(y);
-    code    := (x_split << 1) | y_split;
-    return code;
+    specular := sqrt((ior - 1.0) * 0.5);
+    return specular;
 }
 
 //------------------------------------------------------------------------
@@ -208,24 +156,6 @@ mix :: (x: $T, y: T, t: float) -> T
     return x * (1.0 - t) + y * t;
 }
 
-reflect :: inline (I: Vector3, N: Vector3) -> Vector3
-{
-    return I - 2.0 * dot(N, I) * N;
-}
-
-refract :: inline (I: Vector3, N: Vector3, ior: float) -> Vector3, bool
-{
-    cos_i := -dot(N, I);
-    sin_t := ior * ior * (1.0 - cos_i * cos_i);
-    if (sin_t <= 1.0)
-    {
-        k := 1.0 - sin_t;
-        R := ior * I + (ior * cos_i - sqrt(k)) * N;
-        return R, true;
-    }
-    return .{}, false;
-}
-
 exp :: inline (s: Spectrum) -> Spectrum
 {
     r : Spectrum = ---;
@@ -238,15 +168,6 @@ exp :: inline (s: Spectrum) -> Spectrum
 average :: inline (s: Spectrum) -> float
 {
     return (s.x + s.y + s.z) / 3.0;
-}
-
-sdiv :: inline (x: float, y: float) -> float
-{
-    if (y != 0.0)
-    {
-        return x/y;
-    }
-    return 0.0;
 }
 
 //------------------------------------------------------------------------

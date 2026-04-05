@@ -1,4 +1,6 @@
 
+#scope_export
+
 //------------------------------------------------------------------------
 // Microfacet Model
 // Trowbridge–Reitz (GGX) model
@@ -72,17 +74,17 @@ microfacet_ggx_sample_normal :: (V: Vector3, alpha: Vector2, u1: float, u2: floa
     x   := r * cos(phi);
     y   := r * sin(phi);
     s   := 0.5 * (1.0 + N.z);
-    y    = (1.0 - s) * sqrt(max(0.0, 1.0 - x * x)) + s * y;
+    y    = (1.0 - s) * sqrt(1.0 - x * x) + s * y;
     
     H   := x * X + y * Y + sqrt(max(0.0, 1.0 - x * x - y * y)) * N;
     H.x *= alpha.x;
     H.y *= alpha.y;
-    H.z  = max(1.0e-6, H.z);
+    H.z  = max(0.0, H.z);
     H    = normalize(H);
     return H;
 }
 
-ROUGHNESS_THRESHOLD :: 1.0e-3;
+ROUGHNESS_THRESHOLD :: 1.0e-4;
 
 microfacet_alpha :: (roughness: float, anisotropic: float) -> Vector2
 {

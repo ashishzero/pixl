@@ -8,7 +8,7 @@ build_program :: (outpath: string, name: string, src: string)
     options.output_path = outpath;
 
     set_build_options(options, w);
-    
+
     compiler_begin_intercept(w);
 
     if options.backend == .X64
@@ -35,9 +35,10 @@ build :: ()
     make_directory_if_it_does_not_exist(output_path);
 
     build_program(output_path, "PixL", "source/main.jai");
-    build_program(output_path, "PixL_bxdf_gen", "source/bxdf_meta.jai");
-    build_program(output_path, "PixL_test_renders", "source/test_renders.jai");
-    build_program(output_path, "PixL_test_bxdf", "source/test_bxdf.jai");
+    build_program(output_path, "PixL_bsdf_gen_tables", "modules/BxDF/ms_gen_tables.jai");
+    //build_program(output_path, "PixL_bxdf_gen", "source/bxdf_meta.jai");
+    //build_program(output_path, "PixL_test_renders", "source/test_renders.jai");
+    //build_program(output_path, "PixL_test_bxdf", "source/test_bxdf.jai");
 
     set_build_options_dc(.{do_output=false});
 }
@@ -59,3 +60,4 @@ message_loop :: ()
 
 #import "Compiler";
 #import "File";
+#import "Basic";

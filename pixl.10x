@@ -50,8 +50,8 @@
 			</ConfigAndPlatform>
 			<ConfigAndPlatform>
 				<Name>Release:x64</Name>
-				<BuildCommand>jai -quiet -natvis -release first.jai</BuildCommand>
-				<RebuildCommand>jai -quiet -natvis -release first.jai</RebuildCommand>
+				<BuildCommand>jai -quiet -natvis -optimized_debug first.jai</BuildCommand>
+				<RebuildCommand>jai -quiet -natvis -optimized_debug first.jai</RebuildCommand>
 				<BuildFileCommand></BuildFileCommand>
 				<CleanCommand></CleanCommand>
 				<BuildWorkingDirectory></BuildWorkingDirectory>

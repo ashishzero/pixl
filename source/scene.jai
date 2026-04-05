@@ -14,13 +14,13 @@
 #import "Random";
 #import "Arena";
 
+#import "BxDF";
+#import "PathNoise";
 
 #load "common.jai";
 #load "intersect.jai";
 #load "primitives.jai";
-#load "bxdf.jai";
 #load "async.jai";
-#load "noise.jai";
 
 load_bunny :: () -> Primitive_Mesh, Matrix4
 {
@@ -843,14 +843,6 @@ triangle_bbox :: (p: Vector3, q: Vector3, r: Vector3) -> Box3
 
 // https://fgiesen.wordpress.com/2009/12/13/decoding-morton-codes/
 
-encode_morton2 :: (x: u32, y: u32) -> u32
-{
-    x_split := split2(x);
-    y_split := split2(y);
-    code    := (y_split << 1) | x_split;
-    return code;
-}
-
 split3 :: (x: u32) -> u32
 {
     x &= 0x000003ff;
@@ -912,7 +904,9 @@ build_bvh_sah_binned_recursive :: (builder: *SAHBuilder, root: u32, lo: s64, hi:
         }
     }
 
-    if max_delta <= FLOAT_EPS || half_area(node_bbox) <= FLOAT_EPS
+    EPS :: 1.0e-6;
+
+    if max_delta <= EPS || half_area(node_bbox) <= EPS
     {
         node.bbox                     = node_bbox;
         node.first_child_or_primitive = lo.(u32);
@@ -1327,7 +1321,7 @@ is_nan_or_inf :: (s: Spectrum) -> bool
     return is_nan_or_inf(s.x) || is_nan_or_inf(s.y) || is_nan_or_inf(s.z);
 }
 
-trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, stats: *Path_Statistics) -> Vector3
+trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_State, stats: *Path_Statistics) -> Vector3
 {
     radiance   := Spectrum.{0, 0, 0};
     throughput := Spectrum.{1, 1, 1};
@@ -1338,7 +1332,7 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, 
     tmin       := 0.0;
     tmax       := FLOAT32_INFINITY;
 
-    for 0..depth
+    for 0..depth-1
     {
         hit         := Hit_Info.{ t = -1 };
         num_visited : u32 = 0;
@@ -1373,15 +1367,15 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, 
             next_bounce(rng);
             stats.n_bounces += 1;
 
-            p      := random_sample_1D(rng, .LOBE);
-            u      := random_sample_3D(rng, .BxDF);
+            p      := sample_1D(rng, .LOBE);
+            u      := sample_3D(rng, .BxDF);
 
             V      := forward_transform(inv_TBN, -dir);
-            sample := sample_surface_bsdf(V, surface, p, u);
+            sample := sample_surface(V, surface, p, u);
 
-            if (is_nan_or_inf(sample.bxdf.f))
+            if (is_nan_or_inf(sample.f))
             {
-                print(" --------------- brdf nan/inf(%): internal error, needs debugging\n", sample.bxdf.f);
+                print(" --------------- brdf nan/inf(%): internal error, needs debugging\n", sample.f);
                 break;
             }
 
@@ -1390,9 +1384,11 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, 
                 throughput *= exp(-hit.t * surface.absorption);
             }
 
-            radiance += throughput * surface.emission;
+            // todo: clamping before adding??
+            contrib := throughput * surface.emission;
+            radiance += contrib;
 
-            if (sample.bxdf.pdf < 1.0e-6)
+            if (sample.pdf <= 0.0)
             {
                 break;
             }
@@ -1403,7 +1399,7 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_Random_State, 
             //          }
 
             cosine := abs(sample.L.z);
-            throughput *= cosine * sample.bxdf.f / sample.bxdf.pdf;
+            throughput *= cosine * sample.f / sample.pdf;
 
             // TODO: add checks properly
             //if (isnan(throughput.x) || isnan(throughput.y) || isnan(throughput.z))
@@ -1605,16 +1601,16 @@ RenderPixel :: (scene: Scene, x: u32, y: u32, frame: u32, stats: *Path_Statistic
 
     for 0..spp-1
     {
-        rng        := path_random_state(x, y, it.(u32), spp, seed);
+        rng        := path_state(x, y, it.(u32), spp, seed);
 
-        filter_uv  := random_sample_2D(rng, .FILTER);
+        filter_uv  := sample_2D(rng, .FILTER);
         subpixel   := SampleCameraFilter(scene.camera, filter_uv);
         sample     := origin + subpixel;
 
         // To NDC
         pixel      := sample * scale + shift;
 
-        lens_uv    := random_sample_2D(rng, .LENS);
+        lens_uv    := sample_2D(rng, .LENS);
         ray        := generate_ray(pixel, scene.camera, lens_uv);
         radiance   += trace_path(scene, ray, scene.config.max_depth, *rng, stats);
     }
