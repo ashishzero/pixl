@@ -62,6 +62,39 @@ sample_4D :: (rng: Path_State, dim: Path_Dimension) -> Vector4
     return .{x, y, z, w};
 }
 
+sample_random_1D :: (index: u32, seed: u32) -> float
+{
+    u := sample_scrambled_sobol(index, seed, 0);
+    return u;
+}
+
+sample_random_2D :: (index: u32, seed: u32) -> Vector2
+{
+    u1 := sample_scrambled_sobol(index, seed, 0);
+    u2 := sample_scrambled_sobol(index, seed, 1);
+    u  := Vector2.{u1, u2};
+    return u;
+}
+
+sample_random_3D :: (index: u32, seed: u32) -> Vector3
+{
+    u1 := sample_scrambled_sobol(index, seed, 0);
+    u2 := sample_scrambled_sobol(index, seed, 1);
+    u3 := sample_scrambled_sobol(index, seed, 2);
+    u  := Vector3.{u1, u2, u3};
+    return u;
+}
+
+sample_random_4D :: (index: u32, seed: u32) -> Vector4
+{
+    u1 := sample_scrambled_sobol(index, seed, 0);
+    u2 := sample_scrambled_sobol(index, seed, 1);
+    u3 := sample_scrambled_sobol(index, seed, 2);
+    u4 := sample_scrambled_sobol(index, seed, 3);
+    u  := Vector4.{u1, u2, u3, u4};
+    return u;
+}
+
 next_bounce :: (rng: *Path_State)
 {
     rng.bounce += MAX_BOUNCE;
@@ -77,13 +110,17 @@ SOBOL_MATRIX_DIMENSION :: 4;
 sample_scrambled_sobol :: inline (index: u32, seed: u32, dim: u32) -> float
 {
     v := scrambled_sobol(index, seed, dim);
-    return min(v.(float) * SOBOL_INV_RESOLUTION, 1.0 - FLOAT32_EPSILON);
+    r := v.(float) * SOBOL_INV_RESOLUTION;
+    if (r < 1.0) return r;
+    return 1.0 - FLOAT32_EPSILON;
 }
 
 sample_sobol :: inline (index: u32, dim: u32) -> float
 {
     v := sobol(index, dim);
-    return min(v.(float) * SOBOL_INV_RESOLUTION, 1.0 - FLOAT32_EPSILON);
+    r := v.(float) * SOBOL_INV_RESOLUTION;
+    if (r < 1.0) return r;
+    return 1.0 - FLOAT32_EPSILON;
 }
 
 #scope_file
@@ -233,4 +270,4 @@ SobolDirectionLUT : [SOBOL_MATRIX_DIMENSION * SOBOL_MATRIX_SIZE]u32 : .[
 ];
 
 #import "Math";
-#import "Common";
+#import "Hashing";

@@ -316,7 +316,7 @@ load_test_scene :: (using scene: *Scene, type: Test_Scene)
                 material.color              = create_constant_texture(color);
                 material.specular_tint      = create_constant_texture(specular_tint);
                 material.specular_roughness = create_constant_texture(roughness);
-                material.alpha              = create_constant_texture(alpha);
+                material.opacity            = create_constant_texture(alpha);
             }
             test_scene(scene, diffuse_parameter);
 
@@ -489,7 +489,7 @@ create_material :: (scene: *Scene) -> MaterialID, *Material
     material.specular_roughness = create_constant_texture(0.0);
     material.specular_anisotropic = create_constant_texture(0.0);
     material.transmission = create_constant_texture(0.0);
-    material.alpha = create_constant_texture(1.0);
+    material.opacity = create_constant_texture(1.0);
     material.absorption_strength = create_constant_texture(0.0);
     material.absorption = create_constant_texture(.{1.0, 1.0, 1.0});
     material.emission_strength = create_constant_texture(0.0);
@@ -1259,7 +1259,7 @@ material_surface :: (material: Material, hit: Hit_Info) -> Surface
     surface.fresnel.F90      = SampleTextureSpectrum(material.specular_tint, hit.u, hit.v);
     surface.microfacet_alpha = microfacet_alpha(specular_roughness, specular_anisotropic);
     surface.transmission     = SampleAlpha(material.transmission, hit.u, hit.v);
-    surface.alpha            = SampleAlpha(material.alpha, hit.u, hit.v);
+    surface.opacity          = SampleAlpha(material.opacity, hit.u, hit.v);
     surface.absorption       = absorption_strength * absorption;
     surface.emission         = emission_strength * emission_color;
 
@@ -1371,7 +1371,7 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_State, stats: 
             u      := sample_3D(rng, .BxDF);
 
             V      := forward_transform(inv_TBN, -dir);
-            sample := sample_surface(V, surface, p, u);
+            sample := sample_principled(V, surface, p, u);
 
             if (is_nan_or_inf(sample.f))
             {

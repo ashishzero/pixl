@@ -72,7 +72,7 @@ Material :: struct
     specular_anisotropic : Texture2D;
     specular_tint        : Texture2D;
     transmission         : Texture2D;
-    alpha                : Texture2D;
+    opacity              : Texture2D;
     absorption_strength  : Texture2D;
     absorption           : Texture2D;
     emission_strength    : Texture2D;

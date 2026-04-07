@@ -66,7 +66,7 @@ compute_conductor_E :: (roughness: float, cosine: float, ior: float, u: Vector3)
         fresnel          = .{.{1, 1, 1}, .{1, 1, 1}},
         microfacet_alpha = alpha,
         transmission     = 0.0,
-        alpha            = 1.0,
+        opacity          = 1.0,
         absorption       = .{0, 0, 0},
         emission         = .{0, 0, 0}
     };
@@ -74,7 +74,7 @@ compute_conductor_E :: (roughness: float, cosine: float, ior: float, u: Vector3)
     sine := sqrt(1.0 - cosine * cosine);
     V    := Vector3.{sine, 0.0, cosine};
 
-    sample := sample_surface_lobe(V, surface, u, .CONDUCTOR);
+    sample := sample_conductor(V, surface, u);
     if (sample.pdf > 0.0)
     {
         E := average(sample.f) * abs(sample.L.z) / sample.pdf;
@@ -88,18 +88,6 @@ compute_conductor_E_avg :: (roughness: float, cosine: float, ior: float, u: Vect
 {
     E := compute_conductor_E(roughness, cosine, ior, u);
     return 2.0 * cosine * E;
-}
-
-//------------------------------------------------------------------------
-
-sample_random_4D :: (index: int, seed: u32) -> Vector4
-{
-    u1 := sample_scrambled_sobol(index.(u32), seed, 0);
-    u2 := sample_scrambled_sobol(index.(u32), seed, 1);
-    u3 := sample_scrambled_sobol(index.(u32), seed, 2);
-    u4 := sample_scrambled_sobol(index.(u32), seed, 3);
-    u  := Vector4.{u1, u2, u3, u4};
-    return u;
 }
 
 //------------------------------------------------------------------------
@@ -137,22 +125,11 @@ push_work :: (proc: Compute_Proc, n: int, x: int, y: int, z: int, name: string)
     array_add(*compute_queue, work);
 }
 
-murmur_finalize32 :: inline (x: u32) -> u32
-{
-    x ^= x >> 16;
-    x *= 0x85ebca6b;
-    x ^= x >> 13;
-    x *= 0xc2b2ae35;
-    x ^= x >> 16;
-    return x;
-}
-
 hash :: (x: int, y: int) -> u32
 {
-    Common :: #import "Common";
     xh := murmur_finalize32(x.(u32));
     yh := murmur_finalize32(y.(u32));
-    return Common.hash_combine(xh, yh);
+    return hash_combine(xh, yh);
 }
 
 execute :: ()
@@ -253,7 +230,7 @@ compute_thread :: (thread: *Thread) -> s64
 
             for sample:0..it.n-1
             {
-                random    := sample_random_4D(sample, seed);
+                random    := sample_random_4D(sample.(u32), seed);
 
                 roughness := ifx it.x > 1 then x.(float) / (it.x - 1).(float) else 0.0;
                 cosine    := ifx it.y > 1 then y.(float) / (it.y - 1).(float) else random.w;
@@ -279,8 +256,9 @@ compute_thread :: (thread: *Thread) -> s64
     return 0;
 }
 
-#import "BxDF"()(MULTISCATTER_ENERGY_PRESERVATION=false);
+#import "BxDF"()(PRESERVE_MS_ENERGY=false);
 #import "PathNoise";
+#import "Hashing";
 
 #import "Atomics";
 #import "Basic";
