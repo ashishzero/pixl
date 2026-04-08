@@ -219,7 +219,7 @@ sample_conductor :: (V: Vector3, surface: Surface, u: Vector3) -> Sampled_BSDF
     {
         H := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
         L := reflect(-V, H);
-        if (L.z > 0.0)
+        if (V.z * L.z > 0.0)
         {
             NoV       := V.z;
             VoH       := dot(V, H);
@@ -293,7 +293,7 @@ microfacet_ggx_metallic_multiscatter_energy_preservation_factor :: inline (F_ss:
 
 evaluate_dielectric :: (V: Vector3, L: Vector3, surface: Surface) -> BSDF
 {
-    if (L.z > 0.0)
+    if (V.z * L.z > 0.0)
     {
         H    := normalize(V + L);
         R    := effective_fresnel_weight(surface, V, H);
@@ -303,7 +303,7 @@ evaluate_dielectric :: (V: Vector3, L: Vector3, surface: Surface) -> BSDF
         pdf  := R * brdf.pdf;
         return .{f, pdf};
     }
-    else if (L.z < 0.0)
+    else if (V.z * L.z < 0.0)
     {
         H    := refracted_normal(V, L, surface.ior);
         R    := effective_fresnel_weight(surface, V, H);
@@ -337,7 +337,7 @@ sample_dielectric :: (V: Vector3, surface: Surface, u: Vector3) -> Sampled_BSDF
     }
 
     L := reflect(-V, H);
-    if (L.z > 0.0)
+    if (V.z * L.z > 0.0)
     {
         brdf := evaluate_ggx_specular_reflect(V, L, H, surface.microfacet_alpha);
         f    := R * surface.fresnel.F90 * brdf.f;
@@ -409,50 +409,47 @@ sample_opacity :: (V: Vector3, surface: Surface, u: Vector3) -> Sampled_BSDF
 //------------------------------------------------------------------------
 // Microfacet Model
 // Trowbridge–Reitz (GGX) model
+// https://jcgt.org/published/0003/02/03/
 
 #scope_module
 
-microfacet_ggx_distribution :: (NoH: float, alpha: Vector2) -> float
+microfacet_ggx_distribution :: (H: Vector3, alpha: Vector2) -> float
 {
-    alpha_x2 := alpha.x * alpha.x;
-    alpha_y2 := alpha.y * alpha.y;
-    cos2     := max(NoH * NoH, 1.0e-6);
-    sin2     := 1 - cos2;
-    tan2     := sin2 / cos2;
-    cos4     := cos2 * cos2;
-    f        := 1.0 + tan2 * (cos2 / alpha_x2 + sin2 / alpha_y2);
-    inv_D    := PI * alpha.x * alpha.y * cos4 * f * f;
-    D        := 1.0 / max(1.0e-6, inv_D);
+    Hs           := H / Vector3.{alpha.x, alpha.y, 1.0};
+    lensq        := length_squared(Hs);
+    inv_D        := PI * alpha.x * alpha.y * lensq * lensq;
+    D            := 1.0 / inv_D;
     return D;
 }
 
-microfacet_ggx_mask :: (mu: float, alpha: Vector2) -> float
+microfacet_ggx_lambda :: inline (N: Vector3, alpha: Vector2) -> float
 {
-    cos_mu    := saturate(mu);
-    cos2      := max(cos_mu * cos_mu, 1.0e-6);
-    sin2      := 1.0 - cos2;
-    sin_mu    := sqrt(sin2);
-    alpha2    := square(alpha.x * cos_mu) + square(alpha.y * sin_mu);
-    lambda    := 0.5 * (sqrt(1.0 + alpha2 * sin2 / cos2) - 1.0);
-    G         := 1.0 / (1.0 + lambda);
-    return G;
+    cos_theta    := N.z;
+    cos_theta_sq := cos_theta * cos_theta;
+    sin_theta_sq := 1.0 - cos_theta_sq;
+    sin_theta    := sqrt(sin_theta_sq);
+    tan_theta_sq := sin_theta_sq / cos_theta_sq;
+    cos_phi      := ifx (sin_theta == 0.0) then 1.0 else clamp(N.x / sin_theta, -1.0, 1.0);
+    sin_phi      := ifx (sin_theta == 0.0) then 0.0 else clamp(N.y / sin_theta, -1.0, 1.0);
+    alpha_x      := alpha.x * cos_phi;
+    alpha_y      := alpha.y * sin_phi;
+    alpha_sq     := alpha_x * alpha_x + alpha_y * alpha_y;
+    lambda       := 0.5 * (sqrt(1.0 + alpha_sq * tan_theta_sq) - 1.0);
+    return lambda;
 }
 
-microfacet_ggx_mask_shadow :: (NoV: float, NoL: float, alpha: Vector2) -> float
+microfacet_ggx_mask :: (N: Vector3, alpha: Vector2) -> float
 {
-    cosV      := saturate(NoV);
-    cosL      := saturate(NoL);
-    cosV2     := max(cosV * cosV, 1.0e-6);
-    cosL2     := max(cosL * cosL, 1.0e-6);
-    sinV2     := 1.0 - cosV2;
-    sinL2     := 1.0 - cosL2;
-    sinV      := sqrt(sinV2);
-    sinL      := sqrt(sinL2);
-    alphaV2   := square(alpha.x * cosV) + square(alpha.y * sinV);
-    alphaL2   := square(alpha.x * cosL) + square(alpha.y * sinL);
-    GV        := 0.5 * (sqrt(1.0 + alphaV2 * sinV2 / cosV2) - 1.0);
-    GL        := 0.5 * (sqrt(1.0 + alphaL2 * sinL2 / cosL2) - 1.0);
-    G         := 1.0 / (1.0 + GL + GV);
+    lambda := microfacet_ggx_lambda(N, alpha);
+    G1     := 1.0 / (1.0 + lambda);
+    return G1;
+}
+
+microfacet_ggx_mask_shadow :: (V: Vector3, L: Vector3, alpha: Vector2) -> float
+{
+    lambda_V := microfacet_ggx_lambda(V, alpha);
+    lambda_L := microfacet_ggx_lambda(L, alpha);
+    G        := 1.0 / (1.0 + lambda_V + lambda_L);
     return G;
 }
 
@@ -507,6 +504,11 @@ microfacet_alpha :: (roughness: float, anisotropic: float) -> Vector2
     alpha_x := r2 * (1.0 + aspect);
     alpha_y := r2 * (1.0 - aspect);
     alpha   := Vector2.{alpha_x, alpha_y};
+    if microfacet_is_rough(alpha)
+    {
+        alpha.x = max(alpha.x, MICROFACET_ALPHA_THRESHOLD);
+        alpha.y = max(alpha.y, MICROFACET_ALPHA_THRESHOLD);
+    }
     return alpha;
 }
 
@@ -517,14 +519,13 @@ microfacet_alpha :: (roughness: float, anisotropic: float) -> Vector2
 
 evaluate_ggx_specular_reflect :: (V: Vector3, L: Vector3, H: Vector3, alpha: Vector2) -> BSDF
 {
-    NoV   := V.z;
-    NoL   := L.z;
-    NoH   := max(H.z, 0.0);
-    D     := microfacet_ggx_distribution(NoH, alpha);
-    G     := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
-    G1    := microfacet_ggx_mask(NoV, alpha);
-    f     := (D * G) / max(4 * NoL * NoV, 1.0e-6);
-    pdf   := (D * G1) / max(4 * NoV, 1.0e-6);
+    NoV := V.z;
+    NoL := L.z;
+    D   := microfacet_ggx_distribution(H, alpha);
+    G   := microfacet_ggx_mask_shadow(V, L, alpha);
+    G1  := microfacet_ggx_mask(V, alpha);
+    f   := (D * G) / (4 * NoL * NoV);
+    pdf := (D * G1) / (4 * NoV);
     return .{.{f, f, f}, pdf};
 }
 
@@ -532,17 +533,16 @@ evaluate_ggx_specular_transmit :: (V: Vector3, L: Vector3, H: Vector3, ior: floa
 {
     NoV     := V.z;
     NoL     := abs(L.z);
-    NoH     := H.z;
     VoH     := dot(V, H);
     LoH     := -dot(L, H);
-    D       := microfacet_ggx_distribution(NoH, alpha);
-    G       := microfacet_ggx_mask_shadow(NoV, NoL, alpha);
-    G1      := microfacet_ggx_mask(NoV, alpha);
+    D       := microfacet_ggx_distribution(H, alpha);
+    G       := microfacet_ggx_mask_shadow(V, L, alpha);
+    G1      := microfacet_ggx_mask(V, alpha);
     dL_sqrt := LoH + VoH / ior;
     dL      := dL_sqrt * dL_sqrt;
     VoLoH   := VoH * LoH;
-    f       := (D * G * VoLoH) / max(dL * NoL * NoV, 1.0e-6);
-    pdf     := (D * G1 * VoLoH) / max(dL * NoV, 1.0e-6);
+    f       := (D * G * VoLoH) / (dL * NoL * NoV);
+    pdf     := (D * G1 * VoLoH) / (dL * NoV);
     return .{.{f, f, f}, pdf};
 }
 

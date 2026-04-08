@@ -1,6 +1,6 @@
 
-N_VIEWS   :: 512;
-N_SAMPLES :: 8192;
+N_VIEWS   :: 32;
+N_SAMPLES :: 16384;
 
 BSDF_Test_State :: enum u32
 {
@@ -93,6 +93,7 @@ BSDF_Test_Context :: struct
     n_passed : int;
     n_failed : int;
     dump     : *String_Builder;
+    buff     : []float;
 }
 
 bsdf_tests            : [..]BSDF_Test;
@@ -292,6 +293,15 @@ print_test_summary :: ()
     print("\n\n");
 }
 
+scratch_buffer :: inline () -> []float
+{
+    if !context.bsdf_test.buff
+    {
+        array_resize(*context.bsdf_test.buff, N_SAMPLES);
+    }
+    return context.bsdf_test.buff;
+}
+
 init_dump :: inline ()
 {
     if !context.bsdf_test.dump
@@ -340,12 +350,73 @@ assert_true :: (expr: bool, $fmt: string, args: ..Any)
     }
 }
 
-assert_bsdf :: (bsdf: BSDF, $fmt: string, args: ..Any)
+assert_bsdf :: (bsdf: BSDF)
 {
+    F_THRESHOLD   :: 1.0e4;
+    PDF_THRESHOLD :: 1.0e6;
+
+    if (isnan(bsdf.f.x) || isnan(bsdf.f.y) || isnan(bsdf.f.z) || isnan(bsdf.pdf) ||
+        isinf(bsdf.f.x) || isinf(bsdf.f.y) || isinf(bsdf.f.z) || isinf(bsdf.pdf))
+    {
+        assert_true(false, "NaN/Inf detected: f=% pdf=%", bsdf.f, bsdf.pdf);
+    }
+
     if (bsdf.f.x < 0.0 || bsdf.f.y < 0.0 || bsdf.f.z < 0.0 || bsdf.pdf < 0.0)
     {
-        assert_true(false, fmt, ..args);
+        assert_true(false, "Negative BSDF: f=% pdf=%", bsdf.f, bsdf.pdf);
     }
+
+    if (bsdf.f.x > F_THRESHOLD || bsdf.f.y > F_THRESHOLD || bsdf.f.z > F_THRESHOLD)
+    {
+        assert_true(false, "BSDF too large: f=%", bsdf.f);
+    }
+
+    if (bsdf.pdf > PDF_THRESHOLD)
+    {
+        assert_true(false, "PDF too large: pdf=%", bsdf.pdf);
+    }
+
+    if (bsdf.pdf == 0.0)
+    {
+        if (bsdf.f.x > 0.0 || bsdf.f.y > 0.0 || bsdf.f.z > 0.0)
+        {
+            assert_true(false, "Non-zero f with zero pdf: f=% pdf=%", bsdf.f, bsdf.pdf);
+        }
+    }
+}
+
+assert_samples :: (samples: []float, V: Vector3, name: string) -> float64
+{
+    ABS_TOLERANCE : float64 : 1.0e-6;
+
+    n   := samples.count.(float64);
+    sum : float64 = 0.0;
+
+    for samples
+    {
+        sum += it;
+    }
+
+    mean := sum / n;
+    sq_diff_sum : float64 = 0.0;
+
+    for samples
+    {
+        diff := it - mean;
+        sq_diff_sum += diff * diff;
+    }
+
+    variance := sq_diff_sum / (n - 1);
+    std_dev  := sqrt(variance);
+    std_err  := std_dev / sqrt(n);
+
+    // 95% Confidence Interval (Z = 1.96)
+    tolerance := max(1.96 * std_err, ABS_TOLERANCE);
+    diff      := abs(mean - 1.0);
+
+    assert_true(diff <= tolerance, "%: mean % is outside 95\% tolerance % for V=%", name, mean, tolerance, V);
+
+    return mean;
 }
 
 //------------------------------------------------------------------------
@@ -355,12 +426,12 @@ pdf_integration_test :: (surface: Surface, type: Lobe_Type, $principled: bool)
 {
     seed1 := random_get();
     seed2 := random_get();
+    buff  := scratch_buffer();
 
     for 0..N_VIEWS-1
     {
-        p    := sample_random_2D(it.(u32), seed1.(u32, no_check));
-        V    := sample_uniform_lobe(p.x, p.y);
-        sum  : float64 = 0.0;
+        p     := sample_random_2D(it.(u32), seed1.(u32, no_check));
+        V     := sample_uniform_lobe(p.x, p.y);
 
         for 0..N_SAMPLES-1
         {
@@ -370,13 +441,11 @@ pdf_integration_test :: (surface: Surface, type: Lobe_Type, $principled: bool)
                 bsdf := evaluate_principled(V, L, surface);
             else
                 bsdf := evaluate_principled_lobe(V, L, surface, type);
-            assert_bsdf(bsdf, "invalid bsdf: %", bsdf);
-            sum += bsdf.pdf * (2.0 * PI);
+            assert_bsdf(bsdf);
+            buff[it] = bsdf.pdf * (2.0 * PI);
         }
 
-        pdf_avg   := sum / N_SAMPLES.(float64);
-        tolerance := 1.0 / sqrt(N_SAMPLES.(float64));
-        assert_true(abs(pdf_avg - 1.0) < tolerance, "pdf integration failed. average pdf = %, tolerance = %.", pdf_avg, tolerance);
+        assert_samples(buff, V, "PDF integration failed");
     }
 }
 
@@ -384,16 +453,15 @@ energy_conservation_test :: (surface: Surface, type: Lobe_Type, $principled: boo
 {
     seed1 := random_get();
     seed2 := random_get();
-
-    e_hem : float64 = 0.0;
     e_max := FLOAT32_MIN;
     e_min := FLOAT32_MAX;
+    e_avg : float64 = 0.0;
+    buff  := scratch_buffer();
 
     for 0..N_VIEWS-1
     {
         p     := sample_random_2D(it.(u32), seed1.(u32, no_check));
         V     := sample_uniform_lobe(p.x, p.y);
-        e_sum : float64 = 0.0;
 
         for 0..N_SAMPLES-1
         {
@@ -406,26 +474,24 @@ energy_conservation_test :: (surface: Surface, type: Lobe_Type, $principled: boo
             {
                 sample := sample_principled_lobe(V, surface, .{u.x, u.y, u.z}, type);
             }
-            assert_bsdf(sample.bsdf, "invalid bsdf: ", sample.bsdf);
+            assert_bsdf(sample.bsdf);
             if (sample.pdf > 0.0)
             {
-                cosine := abs(sample.L.z);
-                f      := sample.f * cosine / sample.pdf;
-                e      := (f.x + f.y + f.z) / 3.0;
-                e_sum  += e;
-                e_min   = min(e_min, e);
-                e_max   = max(e_max, e);
+                cosine   := abs(sample.L.z);
+                f        := sample.f * cosine / sample.pdf;
+                e        := (f.x + f.y + f.z) / 3.0;
+                buff[it]  = e;
+                e_min     = min(e_min, e);
+                e_max     = max(e_max, e);
             }
         }
 
-        e_avg     := e_sum / N_SAMPLES.(float64);
-        e_hem     += e_avg;
-        tolerance := 1.0 / sqrt(N_SAMPLES.(float64));
-        assert_true(abs(e_avg - 1.0) < tolerance, "energy integration failed. average energy = %, tolerance = %", e_avg, tolerance);
+        mean := assert_samples(buff, V, "Energy integration failed");
+        e_avg += mean;
     }
 
-    e_avg := e_hem / N_VIEWS.(float64);
-    info("  average energy: %, max energy: %, min energy: %", e_avg, e_max, e_min);
+    e_avg /= N_VIEWS.(float64);
+    info("  Mean f: %, Max f: %, Min f: %", e_avg, e_max, e_min);
 }
 
 reciprocity_test :: (surface: Surface, type: Lobe_Type, $principled: bool)
@@ -452,16 +518,17 @@ reciprocity_test :: (surface: Surface, type: Lobe_Type, $principled: bool)
             bsdf2 := evaluate_principled_lobe(L, V, surface, type);
         }
 
-        assert_bsdf(bsdf1, "invalid bsdf value: ", bsdf1);
-        assert_bsdf(bsdf2, "invalid bsdf value: ", bsdf2);
+        assert_bsdf(bsdf1);
+        assert_bsdf(bsdf2);
 
-        mag       := max(length(bsdf1.f),  length(bsdf2.f), 1.0e-8);
-        diff      := bsdf1.f - bsdf2.f;
-        rel_diff  := diff / mag;
-        tolerance := 1.0e-4;
+        f1        := bsdf1.f;
+        f2        := bsdf2.f;
+        diff      := abs(f1 - f2) / max(abs(f1), abs(f2));
+        tolerance := 1.0e-6;
 
-        assert_true(abs(rel_diff.x) < tolerance && abs(rel_diff.y) < tolerance && abs(rel_diff.z) < tolerance,
-              "reciprocity failed. V = %, L = %, f(V, L) = %, f(L, V) = %", V, L, bsdf1, bsdf2);
+        assert_true(diff.x < tolerance && diff.y < tolerance && diff.z < tolerance,
+                    "Reciprocity failed: V = %, L = %, f(V, L) = %, f(L, V) = %, diff = %",
+                    V, L, f1, f2, diff);
     }
 }
 
