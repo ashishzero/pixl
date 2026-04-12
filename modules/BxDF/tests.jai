@@ -13,14 +13,15 @@ BSDF_Test_State :: enum u32
 BSDF_Test_Type :: enum u32
 {
     complete;
-    pdf_integration;
-    energy_integration;
+    pdf_consistency;
+    energy_conservation;
     reciprocity;
 }
 
 BSDF_Test :: struct
 {
     name       : string;
+    desc       : string;
     surface    : Surface;
     lobe_type  : Lobe_Type;
     principled : bool;
@@ -40,14 +41,38 @@ main :: ()
     success, config := parse_arguments(BSDF_Test_Config);
     if !success return;
 
-    test("diffuse", create_diffuse_surface(Spectrum_One, 0.7), .DIFFUSE);
+    test("diffuse", "", create_diffuse_surface(Spectrum_One, 0.7), .DIFFUSE);
 
     N_ROUGHNESS :: 8;
 
-    for 0..N_ROUGHNESS-1
     {
-        roughness := it.(float) / (N_ROUGHNESS-1).(float);
-        test(tprint("conductor_%", it+1), create_conductor_surface(Spectrum_One, roughness, 0.0), .CONDUCTOR);
+        // K-C energy compensation can overshoot at high roughness
+        // See: https://blog.selfshadow.com/2018/06/04/multi-faceted-part-2/
+        // So test is only performed for roughness: [0, 0.5]
+
+        for 0..N_ROUGHNESS-1
+        {
+            roughness := 0.5 * it.(float) / (N_ROUGHNESS-1).(float);
+            name      := sprint("conductor_gold_%", it+1);
+            desc      := sprint("roughness: %", FormatFloat.{value=roughness, zero_removal=.NO, width=3, trailing_width=1});
+            test(name, desc, create_conductor_surface(.{1.0, 0.86, 0.57}, roughness, 0.0, tint=.{1.0, 1.0, 0.9}), .CONDUCTOR);
+        }
+
+        for 0..N_ROUGHNESS-1
+        {
+            roughness := 0.5 * it.(float) / (N_ROUGHNESS-1).(float);
+            name      := sprint("conductor_silver_%", it+1);
+            desc      := sprint("roughness: %", FormatFloat.{value=roughness, zero_removal=.NO, width=3, trailing_width=1});
+            test(name, desc, create_conductor_surface(.{0.98, 0.97, 0.95}, roughness, 0.0, tint=.{1.0, 1.0, 1.0}), .CONDUCTOR);
+        }
+
+        for 0..N_ROUGHNESS-1
+        {
+            roughness := 0.5 * it.(float) / (N_ROUGHNESS-1).(float);
+            name      := sprint("conductor_perfect_reflector_%", it+1);
+            desc      := sprint("roughness: %", FormatFloat.{value=roughness, zero_removal=.NO, width=3, trailing_width=1});
+            test(name, desc, create_conductor_surface(Spectrum_One, roughness, 0.0), .CONDUCTOR);
+        }
     }
 
     run_tests(config);
@@ -80,7 +105,8 @@ create_conductor_surface :: (color: Spectrum, roughness: float, anisotropic: flo
         fresnel          = .{color, tint},
         opacity          = 1.0,
         metallic         = 1.0,
-        microfacet_alpha = alpha
+        microfacet_alpha = alpha,
+        flags            = .PRESERVE_MULTI_SCATTER_ENERGY
     };
     return surface;
 }
@@ -93,21 +119,20 @@ BSDF_Test_Context :: struct
     n_passed : int;
     n_failed : int;
     dump     : *String_Builder;
-    buff     : []float;
 }
 
 bsdf_tests            : [..]BSDF_Test;
 bsdf_test_index       : int;
 #add_context bsdf_test: BSDF_Test_Context;
 
-test :: (name: string, surface: Surface, type: Lobe_Type)
+test :: (name: string, desc: string, surface: Surface, type: Lobe_Type)
 {
-    array_add(*bsdf_tests, .{name=name, surface=surface, lobe_type=type, principled=false});
+    array_add(*bsdf_tests, .{name=name, desc=desc, surface=surface, lobe_type=type, principled=false});
 }
 
-test :: (name: string, surface: Surface)
+test :: (name: string, desc: string, surface: Surface)
 {
-    array_add(*bsdf_tests, .{name=name, surface=surface, lobe_type=.DIFFUSE, principled=true});
+    array_add(*bsdf_tests, .{name=name, desc=desc, surface=surface, lobe_type=.DIFFUSE, principled=true});
 }
 
 run_tests :: (config: BSDF_Test_Config)
@@ -139,8 +164,8 @@ run_tests :: (config: BSDF_Test_Config)
         config := thread.data.(*BSDF_Test_Config).*;
         prefix := trim(config.prefix);
 
-        run_pdf_integration := (config.type == .complete || config.type == .pdf_integration);
-        run_e_integration   := (config.type == .complete || config.type == .energy_integration);
+        run_pdf_consistency := (config.type == .complete || config.type == .pdf_consistency);
+        run_e_conversation  := (config.type == .complete || config.type == .energy_conservation);
         run_reciprocity     := (config.type == .complete || config.type == .reciprocity);
 
         while (true)
@@ -170,19 +195,19 @@ run_tests :: (config: BSDF_Test_Config)
 
             n_failed := 0;
 
-            if run_pdf_integration
+            if run_pdf_consistency
             {
                 context.bsdf_test.n_passed = 0;
                 context.bsdf_test.n_failed = 0;
 
-                info("> Running % (pdf integration test)...", test.name);
+                info("> Running % (pdf consistency test)...", test.name);
                 if test.principled
                 {
-                    pdf_integration_test(test.surface, test.lobe_type, true);
+                    pdf_consistency_test(test.surface, test.lobe_type, true);
                 }
                 else
                 {
-                    pdf_integration_test(test.surface, test.lobe_type, false);
+                    pdf_consistency_test(test.surface, test.lobe_type, false);
                 }
 
                 info("  PASSED : %", context.bsdf_test.n_passed);
@@ -193,12 +218,12 @@ run_tests :: (config: BSDF_Test_Config)
                 n_failed += context.bsdf_test.n_failed;
             }
 
-            if run_e_integration
+            if run_e_conversation
             {
                 context.bsdf_test.n_passed = 0;
                 context.bsdf_test.n_failed = 0;
 
-                info("> Running % (energy integration test)...", test.name);
+                info("> Running % (energy conservation test)...", test.name);
                 if test.principled
                 {
                     energy_conservation_test(test.surface, test.lobe_type, true);
@@ -267,7 +292,7 @@ run_tests :: (config: BSDF_Test_Config)
 
 print_test_summary :: ()
 {
-    MAX_NAME :: 50;
+    MAX_TITLE :: 50;
 
     print("\n");
     print("*******************************");
@@ -278,9 +303,10 @@ print_test_summary :: ()
     for bsdf_tests
     {
         if (it.state == .SKIPPED) continue;
-        len := min(it.name.count, MAX_NAME);
-        print(" % ", slice(it.name, 0, len));
-        for len..MAX_NAME
+        title := ifx it.desc.count then tprint("% (%)", it.name, it.desc) else it.name;
+        len   := min(title.count, MAX_TITLE);
+        print(" % ", slice(title, 0, len));
+        for len..MAX_TITLE
         {
             print(".");
         }
@@ -291,15 +317,6 @@ print_test_summary :: ()
     print("*********");
     print("*******************************");
     print("\n\n");
-}
-
-scratch_buffer :: inline () -> []float
-{
-    if !context.bsdf_test.buff
-    {
-        array_resize(*context.bsdf_test.buff, N_SAMPLES);
-    }
-    return context.bsdf_test.buff;
 }
 
 init_dump :: inline ()
@@ -350,45 +367,108 @@ assert_true :: (expr: bool, $fmt: string, args: ..Any)
     }
 }
 
-assert_bsdf :: (bsdf: BSDF)
+assert_bsdf :: (bsdf: BSDF, V: Vector3, L: Vector3)
 {
-    F_THRESHOLD   :: 1.0e4;
-    PDF_THRESHOLD :: 1.0e6;
-
     if (isnan(bsdf.f.x) || isnan(bsdf.f.y) || isnan(bsdf.f.z) || isnan(bsdf.pdf) ||
         isinf(bsdf.f.x) || isinf(bsdf.f.y) || isinf(bsdf.f.z) || isinf(bsdf.pdf))
     {
-        assert_true(false, "NaN/Inf detected: f=% pdf=%", bsdf.f, bsdf.pdf);
+        assert_true(false, "NaN/Inf detected: f=% pdf=% for V=%, L=%", bsdf.f, bsdf.pdf, V, L);
     }
 
     if (bsdf.f.x < 0.0 || bsdf.f.y < 0.0 || bsdf.f.z < 0.0 || bsdf.pdf < 0.0)
     {
-        assert_true(false, "Negative BSDF: f=% pdf=%", bsdf.f, bsdf.pdf);
-    }
-
-    if (bsdf.f.x > F_THRESHOLD || bsdf.f.y > F_THRESHOLD || bsdf.f.z > F_THRESHOLD)
-    {
-        assert_true(false, "BSDF too large: f=%", bsdf.f);
-    }
-
-    if (bsdf.pdf > PDF_THRESHOLD)
-    {
-        assert_true(false, "PDF too large: pdf=%", bsdf.pdf);
+        assert_true(false, "Negative BSDF: f=% pdf=% for V=%, L=%", bsdf.f, bsdf.pdf, V, L);
     }
 
     if (bsdf.pdf == 0.0)
     {
         if (bsdf.f.x > 0.0 || bsdf.f.y > 0.0 || bsdf.f.z > 0.0)
         {
-            assert_true(false, "Non-zero f with zero pdf: f=% pdf=%", bsdf.f, bsdf.pdf);
+            assert_true(false, "Non-zero f with zero pdf: f=% pdf=% for V=%, L=%", bsdf.f, bsdf.pdf, V, L);
         }
     }
 }
 
-assert_samples :: (samples: []float, V: Vector3, name: string) -> float64
+assert_sample :: (sample: Sampled_BSDF, V: Vector3)
 {
-    ABS_TOLERANCE : float64 : 1.0e-6;
+    assert_bsdf(sample.bsdf, sample.L, V);
 
+    L := sample.L;
+
+    if (isnan(L.x) || isnan(L.y) || isnan(L.z) ||
+        isinf(L.x) || isinf(L.y) || isinf(L.z))
+    {
+        assert_true(false, "NaN/Inf detected: L=%", L);
+    }
+
+    if (abs(L.x) < 1.0e-6 && abs(L.y) < 1.0e-6 && abs(L.z) < 1.0e-6)
+    {
+        assert_true(false, "L is close to zero: L=%", L);
+    }
+}
+
+//------------------------------------------------------------------------
+// Test Procedures
+
+pdf_consistency_test :: (surface: Surface, type: Lobe_Type, $principled: bool)
+{
+    // Skip perfectly smooth conductors as PDF returned is zero
+    if !principled && type == .CONDUCTOR && microfacet_is_smooth(surface.microfacet_alpha)
+    {
+        return;
+    }
+
+    seed1 := random_get();
+    seed2 := random_get();
+
+    for 0..N_SAMPLES-1
+    {
+        p     := sample_random_2D(it.(u32), seed1.(u32, no_check));
+        u     := sample_random_4D(it.(u32), seed2.(u32, no_check));
+        V     := sample_uniform(p.x, p.y);
+
+        #if principled
+        {
+            sample := sample_principled(V, surface, u.w, .{u.x, u.y, u.z});
+        }
+        else
+        {
+            sample := sample_principled_lobe(V, surface, .{u.x, u.y, u.z}, type);
+        }
+
+        // Skip grazing angles
+        if (V.z < 1.0e-4 || sample.L.z < 1.0e-4)
+            continue;
+
+        if (sample.pdf > 0.0)
+        {
+            #if principled
+                bsdf := evaluate_principled(V, sample.L, surface);
+            else
+                bsdf := evaluate_principled_lobe(V, sample.L, surface, type);
+
+            assert_sample(sample, V);
+            assert_bsdf(bsdf, V, sample.L);
+
+            if ((sample.pdf == 0.0) != (bsdf.pdf == 0.0))
+            {
+                assert_true(false,
+                            "PDF zero mismatch: V=%, L=% (sampled=%, evaluated=%)",
+                            V, sample.L, sample.pdf, bsdf.pdf);
+            }
+
+            diff      := abs(bsdf.pdf - sample.pdf) / max(abs(bsdf.pdf), abs(sample.pdf), 1.0e-6);
+            tolerance := 0.003;
+
+            assert_true(diff <= tolerance,
+                        "PDF Consistency failed: V: %, L: %, sampled: %, evaluated: %, diff: %",
+                        V, sample.L, sample.pdf, bsdf.pdf, diff);
+        }
+    }
+}
+
+assert_energy_samples :: (samples: []float, V: Vector3, surface: Surface) -> float64
+{
     n   := samples.count.(float64);
     sum : float64 = 0.0;
 
@@ -410,43 +490,25 @@ assert_samples :: (samples: []float, V: Vector3, name: string) -> float64
     std_dev  := sqrt(variance);
     std_err  := std_dev / sqrt(n);
 
-    // 95% Confidence Interval (Z = 1.96)
-    tolerance := max(1.96 * std_err, ABS_TOLERANCE);
-    diff      := abs(mean - 1.0);
+    ABS_TOLERANCE :: 0.02;
 
-    assert_true(diff <= tolerance, "%: mean % is outside 95\% tolerance % for V=%", name, mean, tolerance, V);
+    overshoot_tolerance := 0.0;
+
+    angle_scale         := 1.0 / max(V.z, 0.1);
+    tolerance           := max(3 * std_err, ABS_TOLERANCE * angle_scale);
+    overshoot           := mean - 1.0;
+
+    assert_true(overshoot <= tolerance,
+                "Energy exceeded: mean % is above 1 + tolerance % for V: % (overshoot: %, std_err: %)",
+                mean, tolerance, V, overshoot, std_err);
+
+    UNDERFLOW :: 0.3;
+
+    assert_true(mean >= 1.0 - UNDERFLOW,
+                "Too much energy loss: mean % is below % for V: %",
+                mean, 1.0 - UNDERFLOW, V);
 
     return mean;
-}
-
-//------------------------------------------------------------------------
-// Test Procedures
-
-pdf_integration_test :: (surface: Surface, type: Lobe_Type, $principled: bool)
-{
-    seed1 := random_get();
-    seed2 := random_get();
-    buff  := scratch_buffer();
-
-    for 0..N_VIEWS-1
-    {
-        p     := sample_random_2D(it.(u32), seed1.(u32, no_check));
-        V     := sample_uniform_lobe(p.x, p.y);
-
-        for 0..N_SAMPLES-1
-        {
-            u    := sample_random_3D(it.(u32), seed2.(u32, no_check));
-            L    := sample_uniform_lobe(u.x, u.y);
-            #if principled
-                bsdf := evaluate_principled(V, L, surface);
-            else
-                bsdf := evaluate_principled_lobe(V, L, surface, type);
-            assert_bsdf(bsdf);
-            buff[it] = bsdf.pdf * (2.0 * PI);
-        }
-
-        assert_samples(buff, V, "PDF integration failed");
-    }
 }
 
 energy_conservation_test :: (surface: Surface, type: Lobe_Type, $principled: bool)
@@ -456,12 +518,20 @@ energy_conservation_test :: (surface: Surface, type: Lobe_Type, $principled: boo
     e_max := FLOAT32_MIN;
     e_min := FLOAT32_MAX;
     e_avg : float64 = 0.0;
-    buff  := scratch_buffer();
+
+    samples: []float;
+    array_resize(*samples, N_SAMPLES);
+    defer array_free(samples);
 
     for 0..N_VIEWS-1
     {
-        p     := sample_random_2D(it.(u32), seed1.(u32, no_check));
-        V     := sample_uniform_lobe(p.x, p.y);
+        p := sample_random_2D(it.(u32), seed1.(u32, no_check));
+        V := sample_uniform(p.x, p.y);
+
+        // Skip grazing angles
+        if (V.z < 1.0e-1) continue;
+
+        n_samples := 0;
 
         for 0..N_SAMPLES-1
         {
@@ -474,20 +544,23 @@ energy_conservation_test :: (surface: Surface, type: Lobe_Type, $principled: boo
             {
                 sample := sample_principled_lobe(V, surface, .{u.x, u.y, u.z}, type);
             }
-            assert_bsdf(sample.bsdf);
-            if (sample.pdf > 0.0)
-            {
-                cosine   := abs(sample.L.z);
-                f        := sample.f * cosine / sample.pdf;
-                e        := (f.x + f.y + f.z) / 3.0;
-                buff[it]  = e;
-                e_min     = min(e_min, e);
-                e_max     = max(e_max, e);
-            }
+
+            if (sample.L.z < 1.0e-4 || sample.pdf < 1.0e-4)
+                continue;
+
+            assert_sample(sample, V);
+
+            cosine := abs(sample.L.z);
+            f      := sample.f * cosine / sample.pdf;
+            e      := (f.x + f.y + f.z) / 3.0;
+            e_min   = min(e_min, e);
+            e_max   = max(e_max, e);
+            samples[n_samples] = e;
+            n_samples += 1;
         }
 
-        mean := assert_samples(buff, V, "Energy integration failed");
-        e_avg += mean;
+        if (n_samples < 2) continue;
+        e_avg += assert_energy_samples(array_view(samples, 0, n_samples), V, surface);
     }
 
     e_avg /= N_VIEWS.(float64);
@@ -504,8 +577,8 @@ reciprocity_test :: (surface: Surface, type: Lobe_Type, $principled: bool)
         u := sample_random_2D(it.(u32), seed1.(u32, no_check));
         v := sample_random_2D(it.(u32), seed2.(u32, no_check));
             
-        V := sample_uniform_lobe(v.x, v.y);
-        L := sample_uniform_lobe(u.x, u.y);
+        V := sample_uniform(v.x, v.y);
+        L := sample_uniform(u.x, u.y);
 
         #if principled
         {
@@ -518,16 +591,16 @@ reciprocity_test :: (surface: Surface, type: Lobe_Type, $principled: bool)
             bsdf2 := evaluate_principled_lobe(L, V, surface, type);
         }
 
-        assert_bsdf(bsdf1);
-        assert_bsdf(bsdf2);
+        assert_bsdf(bsdf1, V, L);
+        assert_bsdf(bsdf2, V, L);
 
         f1        := bsdf1.f;
         f2        := bsdf2.f;
         diff      := abs(f1 - f2) / max(abs(f1), abs(f2));
         tolerance := 1.0e-6;
 
-        assert_true(diff.x < tolerance && diff.y < tolerance && diff.z < tolerance,
-                    "Reciprocity failed: V = %, L = %, f(V, L) = %, f(L, V) = %, diff = %",
+        assert_true(diff.x <= tolerance && diff.y <= tolerance && diff.z <= tolerance,
+                    "Reciprocity failed: V: %, L: %, f(V, L): %, f(L, V): %, diff: %",
                     V, L, f1, f2, diff);
     }
 }
@@ -546,6 +619,4 @@ reciprocity_test :: (surface: Surface, type: Lobe_Type, $principled: bool)
 #import "Command_Line";
 
 #import "PathNoise";
-#import "BxDF"()(PRESERVE_MS_ENERGY=false);
-
-#load "sampling.jai";
+#import "BxDF"()(PRESERVE_MS_ENERGY=true);

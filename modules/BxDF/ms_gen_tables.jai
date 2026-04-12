@@ -56,31 +56,15 @@ average :: inline (s: Spectrum) -> float
 
 compute_conductor_E :: (roughness: float, cosine: float, ior: float, u: Vector3) -> float
 {
-    alpha := microfacet_alpha(roughness, 0.0);
-    surface := Surface.{
-        color            = .{1, 1, 1},
-        roughness        = 0.0,
-        ior              = ior,
-        specular         = 0.0,
-        metallic         = 1.0,
-        fresnel          = .{.{1, 1, 1}, .{1, 1, 1}},
-        microfacet_alpha = alpha,
-        transmission     = 0.0,
-        opacity          = 1.0,
-        absorption       = .{0, 0, 0},
-        emission         = .{0, 0, 0}
-    };
-
-    sine := sqrt(1.0 - cosine * cosine);
-    V    := Vector3.{sine, 0.0, cosine};
-
-    sample := sample_conductor(V, surface, u);
+    alpha  := microfacet_alpha(roughness, 0.0);
+    sine   := sqrt(1.0 - cosine * cosine);
+    V      := Vector3.{sine, 0.0, cosine};
+    sample := sample_ggx_specular_reflect(V, alpha, .{u.x, u.y});
     if (sample.pdf > 0.0)
     {
-        E := average(sample.f) * abs(sample.L.z) / sample.pdf;
+        E := sample.f.x * abs(sample.L.z) / sample.pdf;
         return E;
     }
-
     return 0.0;
 }
 
