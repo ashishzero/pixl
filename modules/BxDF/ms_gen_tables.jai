@@ -1,9 +1,13 @@
 
 main :: ()
 {
-    push_work(compute_conductor_E, 1 << 23, 32, 32, 1, "conductor_E");
-    push_work(compute_conductor_E_avg, 1 << 26, 32, 1, 1, "conductor_E_avg");
-
+    //push_work(compute_metal_E, 1 << 23, 32, 32, 1, "metal_E");
+    //push_work(compute_metal_E_avg, 1 << 26, 32, 1, 1, "metal_E_avg");
+    push_work(compute_dielectric_E, 1 << 23, 16, 16, 16, "dielectric_E");
+    push_work(compute_dielectric_E_avg, 1 << 26, 16, 1, 16, "dielectric_E_avg");
+    push_work(compute_dielectric_inv_E, 1 << 23, 16, 16, 16, "dielectric_inv_E");
+    push_work(compute_dielectric_inv_E_avg, 1 << 26, 16, 1, 16, "dielectric_inv_E_avg");
+    
     args    := get_command_line_arguments();
     program := args[0];
     args     = array_view(args, 1, args.count - 1);
@@ -49,17 +53,12 @@ main :: ()
 //------------------------------------------------------------------------
 // Compute Functions
 
-average :: inline (s: Spectrum) -> float
-{
-    return (s.x + s.y + s.z) / 3.0;
-}
-
-compute_conductor_E :: (roughness: float, cosine: float, ior: float, u: Vector3) -> float
+compute_metal_E :: (roughness: float, cosine: float, ior: float, u: Vector2) -> float
 {
     alpha  := microfacet_alpha(roughness, 0.0);
     sine   := sqrt(1.0 - cosine * cosine);
     V      := Vector3.{sine, 0.0, cosine};
-    sample := sample_ggx_specular_reflect(V, alpha, .{u.x, u.y});
+    sample := sample_ggx_specular_reflect(V, alpha, u);
     if (sample.pdf > 0.0)
     {
         E := sample.f.x * abs(sample.L.z) / sample.pdf;
@@ -68,28 +67,62 @@ compute_conductor_E :: (roughness: float, cosine: float, ior: float, u: Vector3)
     return 0.0;
 }
 
-compute_conductor_E_avg :: (roughness: float, cosine: float, ior: float, u: Vector3) -> float
+compute_metal_E_avg :: (roughness: float, cosine: float, ior: float, u: Vector2) -> float
 {
-    E := compute_conductor_E(roughness, cosine, ior, u);
+    E := compute_metal_E(roughness, cosine, ior, u);
+    return 2.0 * cosine * E;
+}
+
+compute_dielectric_E :: (roughness: float, cosine: float, ior: float, u: Vector2) -> float
+{
+    alpha  := microfacet_alpha(roughness, 0.0);
+    sine   := sqrt(1.0 - cosine * cosine);
+    V      := Vector3.{sine, 0.0, cosine};
+    sample := sample_ggx_specular_reflect(V, alpha, u);
+    if (sample.pdf > 0.0)
+    {
+        H    := sample.H;
+        F    := fresnel_dielectric(ior, dot(V, H));
+        E    := F * sample.f.x * abs(sample.L.z) / sample.pdf;
+        return E;
+    }
+    return 0.0;
+}
+
+compute_dielectric_E_avg :: (roughness: float, cosine: float, ior: float, u: Vector2) -> float
+{
+    E := compute_dielectric_E(roughness, cosine, ior, u);
+    return 2.0 * cosine * E;
+}
+
+compute_dielectric_inv_E :: (roughness: float, cosine: float, ior: float, u: Vector2) -> float
+{
+    inv_ior := 1.0 / ior;
+    return compute_dielectric_E(roughness, cosine, inv_ior, u);
+}
+
+compute_dielectric_inv_E_avg :: (roughness: float, cosine: float, ior: float, u: Vector2) -> float
+{
+    E := compute_dielectric_inv_E(roughness, cosine, ior, u);
     return 2.0 * cosine * E;
 }
 
 //------------------------------------------------------------------------
 // Compute
 
-Compute_Proc :: #type (x: float, y: float, z: float, u: Vector3) -> float;
+Compute_Proc :: #type (x: float, y: float, z: float, u: Vector2) -> float;
 
 Compute_Work :: struct
 {
-    z       : int;
-    y       : int;
-    x       : int;
-    n       : int;
-    si      : int;
-    data    : []float;
-    proc    : Compute_Proc;
-    name    : string;
-    compute : bool;
+    dim_z     : int;
+    dim_y     : int;
+    dim_x     : int;
+    n_samples : int;
+    sample_it : int;
+    data      : []float;
+    proc      : Compute_Proc;
+    name      : string;
+    compute   : bool;
 }
 
 compute_queue : [..]Compute_Work;
@@ -97,14 +130,14 @@ compute_queue : [..]Compute_Work;
 push_work :: (proc: Compute_Proc, n: int, x: int, y: int, z: int, name: string)
 {
     work: Compute_Work;
-    work.z       = z;
-    work.y       = y;
-    work.x       = x;
-    work.n       = n;
-    work.si      = 0;
-    work.proc    = proc;
-    work.name    = name;
-    work.compute = false;
+    work.dim_z     = z;
+    work.dim_y     = y;
+    work.dim_x     = x;
+    work.n_samples = n;
+    work.sample_it = 0;
+    work.proc      = proc;
+    work.name      = name;
+    work.compute   = false;
     array_resize(*work.data, x * y * z);
     array_add(*compute_queue, work);
 }
@@ -146,23 +179,27 @@ execute :: ()
 
         print("// Generated at % by ms_gen_table.exe\n", date);
 
-        if (it.z == 1)
+        n_dim := 1;
+
+        if (it.dim_z != 1 && it.dim_z != it.dim_x)
         {
-            if (it.x == it.y || it.y == 1)
-            {
-                print("%_SIZE : u32 : %;\n", uname, it.x);
-            }
-            else
-            {
-                print("%_SIZE_X : u32 : %;\n", uname, it.x);
-                print("%_SIZE_Y : u32 : %;\n", uname, it.y);
-            }
+            print("%_SIZE_Z : s32 : %;\n", uname, it.dim_z);
+            n_dim += 1;
+        }
+
+        if (it.dim_y != 1 && it.dim_y != it.dim_x)
+        {
+            print("%_SIZE_Y : s32 : %;\n", uname, it.dim_y);
+            n_dim += 1;
+        }
+
+        if (n_dim == 1)
+        {
+            print("%_SIZE : s32 : %;\n", uname, it.dim_x);
         }
         else
         {
-            print("%_SIZE_X : u32 : %;\n", uname, it.x);
-            print("%_SIZE_Y : u32 : %;\n", uname, it.y);
-            print("%_SIZE_Z : u32 : %;\n", uname, it.z);
+            print("%_SIZE_X : s32 : %;\n", uname, it.dim_x);
         }
 
         print("% : [%]float : .[\n", it.name, it.data.count);
@@ -170,11 +207,7 @@ execute :: ()
         for value,index: it.data
         {
             print("%,", FormatFloat.{value=value, width=8, zero_removal=.NO});
-            if ((index + 1) % it.x == 0)
-            {
-                print("\n");
-            }
-            if ((index + 1) % it.y == 0 && it.z > 1)
+            if ((index + 1) % it.dim_x == 0)
             {
                 print("\n");
             }
@@ -200,35 +233,36 @@ compute_thread :: (thread: *Thread) -> s64
 
         while (true)
         {
-            index := atomic_add(*it.si, 1);
+            index := atomic_add(*it.sample_it, 1);
             if (index >= it.data.count)
                 break;
 
-            z    := index / (it.x * it.y);
-            a    := index % (it.x * it.y);
-            y    := a / it.x;
-            x    := a % it.x;
+            z    := index / (it.dim_x * it.dim_y);
+            a    := index % (it.dim_x * it.dim_y);
+            y    := a / it.dim_x;
+            x    := a % it.dim_x;
 
             seed := hash(x, y);
             acc  : float64 = 0.0;
 
-            for sample:0..it.n-1
+            for sample:0..it.n_samples-1
             {
-                random    := sample_random_4D(sample.(u32), seed);
+                random    := sample_random_3D(sample.(u32), seed);
 
-                roughness := ifx it.x > 1 then x.(float) / (it.x - 1).(float) else 0.0;
-                cosine    := ifx it.y > 1 then y.(float) / (it.y - 1).(float) else random.w;
-                ior       := ifx it.z > 1 then z.(float) / (it.z - 1).(float) else 0.0;
+                roughness := ifx it.dim_x > 1 then x.(float) / (it.dim_x - 1).(float) else 0.0;
+                cosine    := ifx it.dim_y > 1 then y.(float) / (it.dim_y - 1).(float) else random.z;
+                t         := ifx it.dim_z > 1 then z.(float) / (it.dim_z - 1).(float) else 0.0;
 
-                roughness = clamp(roughness, 1.0e-4, 1.0);
-                cosine    = clamp(cosine, 1.0e-4, 1.0);
-                ior       = clamp(ior, 0.0, 1.0);
+                roughness  = clamp(roughness, 1.0e-4, 1.0);
+                cosine     = clamp(cosine, 1.0e-4, 1.0);
+                t          = clamp(t, 1.0e-4, 0.999999);
+                ior       := ior_parametrization(t);
 
-                E := it.proc(roughness, cosine, ior, random.xyz);
+                E := it.proc(roughness, cosine, ior, random.xy);
                 acc += E.(float64);
             }
 
-            it.data[index] = saturate(acc / it.n.(float64)).(float);
+            it.data[index] = saturate(acc / it.n_samples.(float64)).(float);
         }
 
         if (thread_index == 0)
@@ -240,7 +274,10 @@ compute_thread :: (thread: *Thread) -> s64
     return 0;
 }
 
-#import "BxDF"()(PRESERVE_MS_ENERGY=false);
+#load "microfacet.jai";
+#load "fresnel.jai";
+#load "surface.jai";
+
 #import "PathNoise";
 #import "Hashing";
 

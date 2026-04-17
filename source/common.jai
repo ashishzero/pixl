@@ -100,22 +100,6 @@ Camera :: struct
     filter_lut         : [FILTER_SIZE]float;
 }
 
-
-//------------------------------------------------------------------------
-// IOR Mapping: IOR = 1 + 2 * sqr(specular)
-
-ior_relative_to_physical :: (specular: float) -> float
-{
-    ior := 1.0 + 2 * specular * specular;
-    return ior;
-}
-
-ior_physical_to_relative :: (ior: float) -> float
-{
-    specular := sqrt((ior - 1.0) * 0.5);
-    return specular;
-}
-
 //------------------------------------------------------------------------
 
 transform_box :: (t: Matrix4x3, box: Box3) -> Box3

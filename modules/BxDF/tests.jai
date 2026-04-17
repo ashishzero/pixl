@@ -86,11 +86,10 @@ main :: ()
 create_diffuse_surface :: (color: Spectrum, roughness: float, opacity := 1.0) -> Surface
 {
     surface := Surface.{
-        color     = color,
-        roughness = roughness,
-        ior       = 1.5,
-        fresnel   = .{.{1, 1, 1}, .{1, 1, 1}},
-        opacity   = opacity,
+        color             = color,
+        diffuse_roughness = roughness,
+        specular_ior      = 1.5,
+        opacity           = opacity,
     };
     return surface;
 }
@@ -99,14 +98,15 @@ create_conductor_surface :: (color: Spectrum, roughness: float, anisotropic: flo
 {
     alpha   := microfacet_alpha(roughness, anisotropic);
     surface := Surface.{
-        color            = color,
-        roughness        = roughness,
-        ior              = 1.5,
-        fresnel          = .{color, tint},
-        opacity          = 1.0,
-        metallic         = 1.0,
-        microfacet_alpha = alpha,
-        flags            = .PRESERVE_MULTI_SCATTER_ENERGY
+        color             = color,
+        diffuse_roughness = roughness,
+        specular_ior      = 1.5,
+        reflectance       = color,
+        edge_tint         = tint,
+        falloff           = Spectrum_Zero,
+        opacity           = 1.0,
+        metallic          = 1.0,
+        microfacet_alpha  = alpha,
     };
     return surface;
 }
@@ -413,7 +413,7 @@ assert_sample :: (sample: Sampled_BSDF, V: Vector3)
 pdf_consistency_test :: (surface: Surface, type: Lobe_Type, $principled: bool)
 {
     // Skip perfectly smooth conductors as PDF returned is zero
-    if !principled && type == .CONDUCTOR && microfacet_is_smooth(surface.microfacet_alpha)
+    if !principled && type == .CONDUCTOR && microfacet_is_delta(surface.microfacet_alpha)
     {
         return;
     }

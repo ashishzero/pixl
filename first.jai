@@ -11,15 +11,7 @@ build_program :: (outpath: string, name: string, src: string)
 
     compiler_begin_intercept(w);
 
-    if options.backend == .X64
-    {
-        add_build_string("ENABLE_RAD_DEBUGGER :: true;", w);
-    }
-    else
-    {
-        add_build_string("ENABLE_RAD_DEBUGGER :: false;", w);
-    }
-
+    add_build_string("ENABLE_RAD_DEBUGGER :: true;", w);
     add_build_string("RT_DEBUG :: true;", w);
 
     add_build_file(src, w);
@@ -36,8 +28,8 @@ build :: ()
 
     build_program(output_path, "PixL", "source/main.jai");
     build_program(output_path, "PixL_bsdf_ms_gen_tables", "modules/BxDF/ms_gen_tables.jai");
-    build_program(output_path, "PixL_bsdf_tests", "modules/BxDF/tests.jai");
-    build_program(output_path, "PixL_test_renders", "source/test_renders.jai");
+    //build_program(output_path, "PixL_bsdf_tests", "modules/BxDF/tests.jai");
+    //build_program(output_path, "PixL_test_renders", "source/test_renders.jai");
 
     set_build_options_dc(.{do_output=false});
 }

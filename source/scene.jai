@@ -133,7 +133,7 @@ test_scene :: (using scene: *Scene, $parameterize_material : #type(m: *Material,
     checkerboard_texture  := create_checkerboard_texture(Vector3.{1, 1, 1}, .{0.1, 0.1, 0.1}, .{40, 40});
     checkerboard_material := create_lambertian_material(scene, checkerboard_texture);
 
-    add_box(scene, Matrix4_Identity, .{-6, -6, 0.5}, .{6, 6, 0.6}, checkerboard_material);
+    //add_box(scene, Matrix4_Identity, .{-6, -6, 0.5}, .{6, 6, 0.6}, checkerboard_material);
 
     for y:0..TEST_SPHERES_HEIGHT-1
     {
@@ -483,8 +483,9 @@ create_material :: (scene: *Scene) -> MaterialID, *Material
     material.color = create_constant_texture(Vector3.{0.8, 0.8, 0.8});
     material.metallic = create_constant_texture(0.0);
     material.diffuse_roughness = create_constant_texture(0.0);
+    material.falloff = create_constant_texture(Vector3.{0, 0, 0});
     material.specular_tint = create_constant_texture(Vector3.{1, 1, 1});
-    material.specular_ior = create_constant_texture(0.5);
+    material.specular_ior = create_constant_texture(1.5);
     material.specular_weight = create_constant_texture(0.0);
     material.specular_roughness = create_constant_texture(0.0);
     material.specular_anisotropic = create_constant_texture(0.0);
@@ -506,7 +507,7 @@ create_lambertian_material :: (scene: *Scene, color: Texture2D, roughness := 0.0
     return id, material;
 }
 
-create_plastic_material :: (scene: *Scene, color: Texture2D, specular_tint := Vector3.{1, 1, 1}, specular_weight := 0.5, ior := 0.5, roughness := 0.3) -> MaterialID, *Material
+create_plastic_material :: (scene: *Scene, color: Texture2D, specular_tint := Vector3.{1, 1, 1}, specular_weight := 0.5, ior := 1.5, roughness := 0.3) -> MaterialID, *Material
 {
     id, material := create_material(scene);
     material.color = color;
@@ -1248,24 +1249,25 @@ material_surface :: (material: Material, hit: Hit_Info) -> Surface
     emission_strength    := SampleAlpha(material.emission_strength, hit.u, hit.v);
     emission_color       := SampleTextureSpectrum(material.emission_color, hit.u, hit.v);
 
-    surface: Surface = ---;
+    surface: Surface;
 
-    surface.color            = SampleTextureSpectrum(material.color, hit.u, hit.v);
-    surface.roughness        = SampleAlpha(material.diffuse_roughness, hit.u, hit.v);
-    surface.ior              = ior_relative_to_physical(specular_ior);
-    surface.specular         = specular_weight;
-    surface.metallic         = SampleAlpha(material.metallic, hit.u, hit.v);
-    surface.fresnel.F0       = surface.color;
-    surface.fresnel.F90      = SampleTextureSpectrum(material.specular_tint, hit.u, hit.v);
-    surface.microfacet_alpha = microfacet_alpha(specular_roughness, specular_anisotropic);
-    surface.transmission     = SampleAlpha(material.transmission, hit.u, hit.v);
-    surface.opacity          = SampleAlpha(material.opacity, hit.u, hit.v);
-    surface.absorption       = absorption_strength * absorption;
-    surface.emission         = emission_strength * emission_color;
+    surface.color               = SampleTextureSpectrum(material.color, hit.u, hit.v);
+    surface.diffuse_roughness   = SampleAlpha(material.diffuse_roughness, hit.u, hit.v);
+    surface.specular_ior        = specular_ior;
+    surface.specular_weight     = specular_weight;
+    surface.metallic            = SampleAlpha(material.metallic, hit.u, hit.v);
+    surface.reflectance         = surface.color;
+    surface.edge_tint           = SampleTextureSpectrum(material.specular_tint, hit.u, hit.v);
+    surface.falloff             = SampleTextureSpectrum(material.falloff, hit.u, hit.v);
+    surface.microfacet_alpha    = microfacet_alpha(specular_roughness, specular_anisotropic);
+    surface.transmission_weight = SampleAlpha(material.transmission, hit.u, hit.v);
+    surface.geometry_opacity    = SampleAlpha(material.opacity, hit.u, hit.v);
+    surface.absorption          = absorption_strength * absorption;
+    surface.emission            = emission_strength * emission_color;
 
     if (hit.face == .BACK)
     {
-        surface.ior = 1.0 / surface.ior;
+        surface.specular_ior = 1.0 / surface.specular_ior;
     }
 
     return surface;
@@ -1368,14 +1370,20 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_State, stats: 
             stats.n_bounces += 1;
 
             p      := sample_1D(rng, .LOBE);
-            u      := sample_3D(rng, .BxDF);
+            u      := sample_2D(rng, .BxDF);
 
             V      := forward_transform(inv_TBN, -dir);
-            sample := sample_principled(V, surface, p, u);
+            sample := sample_principled_bsdf(V, surface, p, u);
 
-            if (is_nan_or_inf(sample.f))
+            if is_nan_or_inf(sample.f)
             {
-                print(" --------------- brdf nan/inf(%): internal error, needs debugging\n", sample.f);
+                print("Internal BSDF error: f Nan/Inf(%) - %\n", sample.f, sample.label);
+                break;
+            }
+
+            if is_nan_or_inf(sample.pdf)
+            {
+                print("Internal BSDF error: pdf Nan/Inf(%) - %\n", sample.pdf, sample.label);
                 break;
             }
 

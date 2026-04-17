@@ -66,6 +66,10 @@ Material :: struct
     color                : Texture2D;
     metallic             : Texture2D;
     diffuse_roughness    : Texture2D;
+    // TODO:
+    // remove specular_tint for specular/dielectric
+    // introduce reflectance and edge_tint for metals separately
+    falloff              : Texture2D;
     specular_ior         : Texture2D;
     specular_weight      : Texture2D;
     specular_roughness   : Texture2D;

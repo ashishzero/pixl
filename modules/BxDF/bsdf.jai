@@ -1,96 +1,3 @@
-#scope_export
-
-Spectrum :: #type,isa Vector3;
-
-Spectrum_One  :: Spectrum.{1, 1, 1};
-Spectrum_Zero :: Spectrum.{0, 0, 0};
-
-Fresnel :: struct
-{
-    reflectivity : Spectrum;
-    edge_tint    : Spectrum;
-}
-
-Surface_Flags :: enum u32
-{
-    PRESERVE_MULTI_SCATTER_ENERGY :: 0x1;
-}
-
-Surface :: struct
-{
-    color            : Spectrum;
-    roughness        : float;
-    ior              : float;
-    specular         : float;
-    metallic         : float;
-    fresnel          : Fresnel;
-    microfacet_alpha : Vector2;
-    transmission     : float;
-    opacity          : float;
-    absorption       : Spectrum;
-    emission         : Spectrum;
-    flags            : Surface_Flags;
-}
-
-BSDF_Flags :: enum_flags
-{
-    DIFFUSE                  :: 0x1;
-    CONDUCTOR                :: 0x2; // TODO: Combine CONDUCTOR AND DIELECTRIC to SPECULAR
-    DIELECTRIC_REFLECTION    :: 0x4;
-    DIELECTRIC_REFRACTION    :: 0x8;
-    TRANSMISSION             :: 0x10;
-}
-
-BSDF :: struct
-{
-    f     : Spectrum;
-    pdf   : float;
-    flags : BSDF_Flags; // TODO: Handle this properly in principled BSDF
-}
-
-Sampled_BSDF :: struct
-{
-    using bsdf : BSDF;
-    L          : Vector3;
-}
-
-//------------------------------------------------------------------------
-// Sampling
-
-#scope_export
-
-sample_uniform :: (u1: float, u2: float) -> Vector3
-{
-    sintheta := sqrt(1.0 - u1 * u1);
-    phi      := 2.0 * PI * u2;
-    L : Vector3 = ---;
-    L.x = sintheta * cos(phi);
-    L.y = sintheta * sin(phi);
-    L.z = u1;
-    return L;
-}
-
-pdf_uniform :: () -> float
-{
-    return 1.0 / (2.0 * PI);
-}
-
-sample_cosine :: (u1: float, u2: float) -> Vector3
-{
-    ct  := sqrt(u1);
-    st  := sqrt(1.0 - u1);
-    phi := 2.0 * PI * u2;
-    x   := st * cos(phi);
-    y   := st * sin(phi);
-    z   := ct;
-    return .{x, y, z};
-}
-
-pdf_cosine :: (L: Vector3) -> float
-{
-    return L.z * INV_PI;
-}
-
 //------------------------------------------------------------------------
 // Diffuse EON BxDF
 
@@ -99,26 +6,28 @@ pdf_cosine :: (L: Vector3) -> float
 
 #scope_export
 
-evaluate_diffuse :: (V: Vector3, L: Vector3, surface: Surface) -> BSDF
+evaluate_diffuse :: (V: Vector3, L: Vector3, surface: Surface, label: BSDF_Label) -> BSDF
 {
-    if (L.z > 0.0)
+    if (L.z > 0.0 && (label & .REFLECTION))
     {
+        r     := surface.diffuse_roughness;
         NoV   := V.z;
         f     := evaluate_diffuse_eon(V, L, surface);
-        P_u   := pow(surface.roughness, 0.1) * (0.162925 + NoV * (-0.372058 + (0.538233 - 0.290822 * NoV) * NoV));
+        P_u   := pow(r, 0.1) * (0.162925 + NoV * (-0.372058 + (0.538233 - 0.290822 * NoV) * NoV));
         P_c   := 1.0 - P_u;
-        pdf_c := pdf_cltc(V, L, surface.roughness);
+        pdf_c := pdf_cltc(V, L, r);
         pdf_u := pdf_uniform();
         pdf   := P_u * pdf_u + P_c * pdf_c;
-        return .{f, pdf, .DIFFUSE};
+        return .{f, pdf};
     }
     return .{};
 }
 
-sample_diffuse :: (V: Vector3, surface: Surface, u: Vector3) -> Sampled_BSDF
+sample_diffuse :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> Sampled_BSDF
 {
+    r         := surface.diffuse_roughness;
     NoV       := V.z;
-    P_u       := pow(surface.roughness, 0.1) * (0.162925 + NoV * (-0.372058 + (0.538233 - 0.290822 * NoV) * NoV));
+    P_u       := pow(r, 0.1) * (0.162925 + NoV * (-0.372058 + (0.538233 - 0.290822 * NoV) * NoV));
     P_c       := 1.0 - P_u; // probability of CLTC sample
 
     L         : Vector3 = ---;
@@ -127,23 +36,23 @@ sample_diffuse :: (V: Vector3, surface: Surface, u: Vector3) -> Sampled_BSDF
     u1        := u.x;
     u2        := u.y;
 
-    if (u.z < P_u)
+    if (p < P_u)
     {
         L     = sample_uniform(u1, u2); // sample L from uniform lobe
-        pdf_c = pdf_cltc(V, L, surface.roughness); // evaluate CLTC PDF at L
+        pdf_c = pdf_cltc(V, L, r); // evaluate CLTC PDF at L
     }
     else
     {
-        L, pdf_c = sample_cltc(V, surface.roughness, u1, u2); // sample L from CLTC lobe
+        L, pdf_c = sample_cltc(V, r, u1, u2); // sample L from CLTC lobe
     }
 
     f     := evaluate_diffuse_eon(V, L, surface);
     pdf_u := pdf_uniform();
     pdf   := P_u * pdf_u + P_c * pdf_c; // MIS PDF of L
-    return .{.{f, pdf, .DIFFUSE}, L};
+    return .{.{f, pdf}, L, .DIFFUSE_REFLECTION};
 }
 
-#scope_module
+#scope_file
 
 FON1 :: 0.5 - 2.0 / (3.0 * PI);
 FON2 :: 2.0 / 3.0 - 28.0 / (15.0 * PI);
@@ -223,20 +132,20 @@ evaluate_diffuse_eon :: (V: Vector3, L: Vector3, surface: Surface) -> Spectrum
     if (L.z > 0.0)
     {
         color     := surface.color;
-        roughness := surface.roughness;
+        roughness := surface.diffuse_roughness;
         NoV       := V.z;
         NoL       := L.z;
         VoL       := dot(V, L);
         s         := VoL - NoL * NoV;
         s_over_t  := ifx (s > 0.0) then (s / max(max(NoL, NoV), 1.0e-4)) else s; // FON s/t
         AF        := 1.0 / (1.0 + FON1 * roughness);                             // FON A coeff
-        f_ss      := (color * INV_PI) * AF * (1.0 + roughness * s_over_t);       // single-scatter
+        f_ss      := (color / PI) * AF * (1.0 + roughness * s_over_t);           // single-scatter
         EFo       := e_fon_approx(NoV, roughness);                               // FON V albedo
         EFi       := e_fon_approx(NoL, roughness);                               // FON L albedo
         avgEF     := AF * (1.0 + FON2 * roughness);                              // average albedo
         rho_ms    := (color * color) * avgEF / (Vector3.{1, 1, 1} - color * (1.0 - avgEF));
         eps       := 1.0e-6;
-        f_ms      := (rho_ms * INV_PI) * max(eps, 1.0 - EFo) * max(eps, 1.0 - EFi) / max(eps, 1.0 - avgEF); // multi-scatterlobe
+        f_ms      := (rho_ms / PI) * max(eps, 1.0 - EFo) * max(eps, 1.0 - EFi) / max(eps, 1.0 - avgEF); // multi-scatterlobe
         f         := f_ss + f_ms;
         return f;
     }
@@ -244,64 +153,43 @@ evaluate_diffuse_eon :: (V: Vector3, L: Vector3, surface: Surface) -> Spectrum
 }
 
 //------------------------------------------------------------------------
-// Conductor BRDF
+// Metal BRDF
 
 #scope_export
 
-evaluate_conductor :: (V: Vector3, L: Vector3, surface: Surface) -> BSDF
+evaluate_metal :: (V: Vector3, L: Vector3, surface: Surface, label: BSDF_Label) -> BSDF
 {
     alpha := surface.microfacet_alpha;
-    if (microfacet_is_rough(alpha) && L.z > 0.0)
+    if !microfacet_is_delta(alpha) && L.z > 0.0 && (label & .REFLECTION)
     {
-        H      := normalize(V + L);
-        NoV    := V.z;
-        NoL    := L.z;
-        VoH    := dot(V, H);
-        brdf   := evaluate_ggx_specular_reflect(V, L, H, alpha);
-        F_ss   := fresnel_conductor(surface.fresnel.reflectivity, surface.fresnel.edge_tint, VoH);
-        f_ss   := brdf.f * F_ss;
-        f_ms   := evaluate_conductor_multi_scatter(surface, NoV, NoL);
-        pdf_ss := brdf.pdf;
-        pdf_ms := pdf_cosine(L);
-        f      := f_ss + f_ms;
-        pdf    := 0.5 * (pdf_ss + pdf_ms);
-        return .{f, pdf, .CONDUCTOR};
+        H    := normalize(V + L);
+        VoH  := dot(V, H);
+        brdf := evaluate_ggx_specular_reflect(V, L, H, alpha);
+        F_ss := fresnel_metal(surface.reflectance, surface.edge_tint, surface.falloff, VoH);
+        f_ss := F_ss * brdf.f;
+        f_ms := multiscatter_compensation_metal(surface, V.z, L.z);
+        f    := f_ss + f_ms;
+        pdf  := brdf.pdf;
+        return .{f, pdf};
     }
     return .{};
 }
 
-sample_conductor :: (V: Vector3, surface: Surface, u: Vector3) -> Sampled_BSDF
+sample_metal :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> Sampled_BSDF
 {
     alpha := surface.microfacet_alpha;
-    if (microfacet_is_rough(alpha))
+    if !microfacet_is_delta(alpha)
     {
-        L, H: Vector3;
-
-        if (u.z < 0.5)
+        sample := sample_ggx_specular_reflect(V, alpha, .{u.x, u.y});
+        if (sample.L.z > 0.0)
         {
-            H = microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
-            L = reflect(-V, H);
-        }
-        else
-        {
-            L = sample_cosine(u.x, u.y);
-            H = normalize(V + L);
-        }
-
-        if (L.z > 0.0)
-        {
-            NoV      := V.z;
-            NoL      := L.z;
-            VoH      := dot(V, H);
-            ggx_brdf := evaluate_ggx_specular_reflect(V, L, H, alpha);
-            F_ss     := fresnel_conductor(surface.fresnel.reflectivity, surface.fresnel.edge_tint, VoH);
-            f_ms     := evaluate_conductor_multi_scatter(surface, NoV, NoL);
-            pdf_ms   := pdf_cosine(L);
-            f_ss     := ggx_brdf.f * F_ss;
-            pdf_ss   := ggx_brdf.pdf;
-            f        := f_ss + f_ms;
-            pdf      := 0.5 * (pdf_ss + pdf_ms);
-            return .{.{f, pdf, .CONDUCTOR}, L};
+            VoH  := dot(V, sample.H);
+            F_ss := fresnel_metal(surface.reflectance, surface.edge_tint, surface.falloff, VoH);
+            f_ss := F_ss * sample.f;
+            f_ms := multiscatter_compensation_metal(surface, V.z, sample.L.z);
+            f    := f_ss + f_ms;
+            pdf  := sample.pdf;
+            return .{.{f, pdf}, sample.L, .SPECULAR_REFLECTION};
         }
         return .{};
     }
@@ -310,154 +198,209 @@ sample_conductor :: (V: Vector3, surface: Surface, u: Vector3) -> Sampled_BSDF
         L   := Vector3.{-V.x, -V.y, V.z};
         pdf := 1.0;
         mu  := L.z;
-        f   := fresnel_conductor(surface.fresnel.reflectivity, surface.fresnel.edge_tint, mu) / max(mu, 1.0e-6);
-        return .{.{f, pdf, .CONDUCTOR}, L};
+        f   := fresnel_metal(surface.reflectance, surface.edge_tint, surface.falloff, mu) / max(mu, 1.0e-6);
+        return .{.{f, pdf}, L, .SPECULAR_REFLECTION};
     }
 }
 
-#scope_export
+#scope_file
 
-// Conductor Fresnel is based on Gulbrandsen, 2014
-// https://jcgt.org/published/0003/04/03/paper.pdf
-
-fresnel_conductor :: (reflectivity: Spectrum, edge_tint: Spectrum, VoH: float) -> Spectrum
-{
-    r      := reflectivity;
-    r.x     = clamp(r.x, 0.0, 0.99);
-    r.y     = clamp(r.y, 0.0, 0.99);
-    r.z     = clamp(r.z, 0.0, 0.99);
-
-    g      := edge_tint;
-    r_sqrt := Spectrum.{sqrt(r.x), sqrt(r.y), sqrt(r.z)};
-
-    n_min  := (Spectrum_One - r) / (Spectrum_One + r);
-    n_max  := (Spectrum_One + r_sqrt) / (Spectrum_One - r_sqrt);
-
-    n      := n_min * g + (Spectrum_One - g) * n_max;
-    n1     := n + Spectrum_One;
-    n2     := n - Spectrum_One;
-
-    nr     := n1 * n1 * r - n2 * n2;
-    k2     := nr / (Spectrum_One - r);
-
-    c      := VoH;
-    c_sq   := c * c;
-    nn     := n * n;
-    cc     := Spectrum.{c_sq, c_sq, c_sq};
-    nc     := n * c;
-
-    nnk2   := nn + k2;
-    t1     := nnk2 + cc;
-    t2     := 2 * nc;
-    t3     := nnk2 * cc + Spectrum_One;
-    t4     := 2 * nc;
-
-    rs_num := t1 - t2;
-    rs_den := t1 + t2;
-    rs     := rs_num / rs_den;
-
-    rp_num := t3 - t4;
-    rp_den := t3 + t4;
-    rp     := rp_num / rp_den;
-
-    F      := 0.5 * (rs + rp);
-
-    return F;
-}
-
-fresnel_average_conductor :: (reflectivity: Spectrum, edge_tint: Spectrum) -> Spectrum
-{
-    r     := reflectivity;
-    r.x    = clamp(r.x, 0.0, 0.99);
-    r.y    = clamp(r.y, 0.0, 0.99);
-    r.z    = clamp(r.z, 0.0, 0.99);
-    g     := edge_tint;
-    g2    := g * g;
-    g3    := g2 * g;
-    r2    := r * r;
-    r3    := r2 * r;
-    F_avg := Spectrum.{0.087237, 0.087237, 0.087237} + 0.0230685 * g - 0.0864902 * g2 + 0.0774594 * g3
-            + 0.782654 * r - 0.136432 * r2 + 0.278708 * r3 + 0.19744 * g * r
-            + 0.0360605 * g2 * r - 0.2586 * g * r2;
-    return F_avg;
-}
-
-evaluate_conductor_multi_scatter :: inline (surface: Surface, NoV: float, NoL: float) -> Spectrum
+multiscatter_compensation_metal :: (surface: Surface, NoV: float, NoL: float) -> Spectrum
 {
     #if PRESERVE_MS_ENERGY
     {
-        if (surface.flags & .PRESERVE_MULTI_SCATTER_ENERGY)
+        // Based on: https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_slides_v2.pdf
+        alpha := surface.microfacet_alpha;
+        r     := sqrt(sqrt(alpha.x * alpha.y));
+        E_avg := read_table_1D(metal_E_avg, METAL_E_SIZE, r);
+
+        if (E_avg < 1.0)
         {
-            // Based on: https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_slides_v2.pdf
+            E_l   := read_table_2D(metal_E, METAL_E_SIZE, METAL_E_SIZE, r, NoL);
+            E_v   := read_table_2D(metal_E, METAL_E_SIZE, METAL_E_SIZE, r, NoV);
+            f_ms  := (1.0 - E_l) * (1.0 - E_v) / (PI * (1.0 - E_avg));
 
-            alpha := surface.microfacet_alpha;
-            r     := sqrt(sqrt(alpha.x * alpha.y));
-            E_avg := read_table_1D(conductor_E_avg, CONDUCTOR_E_SIZE, r);
+            // Fresnel adjustment is done based on the following blog:
+            // https://blog.selfshadow.com/2018/06/04/multi-faceted-part-2/
 
-            if (E_avg < 1.0)
-            {
-                E_l   := read_table_2D(conductor_E, CONDUCTOR_E_SIZE, CONDUCTOR_E_SIZE, r, NoL);
-                E_v   := read_table_2D(conductor_E, CONDUCTOR_E_SIZE, CONDUCTOR_E_SIZE, r, NoV);
-                f_ms  := (1.0 - E_l) * (1.0 - E_v) / (PI * (1.0 - E_avg));
+            F_avg := fresnel_average_metal(surface.reflectance, surface.edge_tint, surface.falloff);
+            F_ms  := F_avg * F_avg  * E_avg / (Spectrum_One - F_avg * (1.0 - E_avg));
 
-                // Fresnel adjustment is done based on the following blog:
-                // https://blog.selfshadow.com/2018/06/04/multi-faceted-part-2/
-
-                F_avg := fresnel_average_conductor(surface.fresnel.reflectivity, surface.fresnel.edge_tint);
-                F_ms  := F_avg * F_avg  * E_avg / (Spectrum_One - F_avg * (1.0 - E_avg));
-
-                return F_ms * f_ms;
-            }
+            return F_ms * f_ms;
         }
     }
     return Spectrum_Zero;
 }
 
 //------------------------------------------------------------------------
-// Dielectric BSDF
+// Glossy Diffuse
 
-evaluate_dielectric :: (V: Vector3, L: Vector3, surface: Surface) -> BSDF
+evaluate_glossy_diffuse :: (V: Vector3, L: Vector3, surface: Surface, label: BSDF_Label) -> BSDF
 {
-    if (L.z > 0.0)
+    if (L.z > 0.0 && (label & .REFLECTION))
     {
-        H    := normalize(V + L);
-        R    := effective_fresnel_weight(surface, V, H);
-        brdf := evaluate_ggx_specular_reflect(V, L, H, surface.microfacet_alpha);
-        NoV  := abs(V.z);
-        f    := R * surface.fresnel.edge_tint * brdf.f;
-        pdf  := R * brdf.pdf;
-        return .{f, pdf, .DIELECTRIC_REFLECTION};
-    }
-    else if (L.z < 0.0)
-    {
-        H    := refracted_normal(V, L, surface.ior);
-        R    := effective_fresnel_weight(surface, V, H);
-        btdf := evaluate_ggx_specular_transmit(V, L, H, surface.microfacet_alpha, surface.ior);
-        f    := (Spectrum_One - R * surface.fresnel.edge_tint) * btdf.f;
-        pdf  := (1.0 - R) * btdf.pdf;
-        return .{f, pdf, .DIELECTRIC_REFRACTION};
+        H         := normalize(V + L);
+        VoH       := dot(V, H);
+        F         := fresnel_dielectric(surface.specular_ior, VoH);
+        specular  := evaluate_ggx_specular_reflect(V, L, H, surface.microfacet_alpha);
+        diffuse   := evaluate_diffuse(V, L, surface, label);
+        E_diffuse := multiscatter_glossy_diffuse_compensation(surface, V.z, L.z);
+        f         := F * specular.f * surface.specular_weight + E_diffuse * (1.0 - surface.specular_weight) * diffuse.f;
+        P_s       := glossy_diffuse_specular_weight(surface);
+        P_d       := 1.0 - P_s;
+        pdf       := P_s * specular.pdf + P_d * diffuse.pdf;
+        return .{f, pdf};
     }
     return .{};
 }
 
-sample_dielectric :: (V: Vector3, surface: Surface, u: Vector3) -> Sampled_BSDF
+sample_glossy_diffuse :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> Sampled_BSDF
+{
+    alpha := surface.microfacet_alpha;
+    P_s   := glossy_diffuse_specular_weight(surface);
+    P_d   := 1.0 - P_s;
+
+    if (p < P_s)
+    {
+        specular := sample_ggx_specular_reflect(V, alpha, .{u.x, u.y});
+        if (specular.L.z > 0.0)
+        {
+            L         := specular.L;
+            H         := specular.H;
+            VoH       := dot(V, H);
+            F         := fresnel_dielectric(surface.specular_ior, VoH);
+            diffuse   := evaluate_diffuse(V, L, surface, specular.label);
+            E_diffuse := multiscatter_glossy_diffuse_compensation(surface, V.z, L.z);
+            f         := F * specular.f * surface.specular_weight + E_diffuse * (1.0 - surface.specular_weight) * diffuse.f;
+            pdf       := P_s * specular.pdf + P_d * diffuse.pdf;
+            return .{.{f, pdf}, L, .SPECULAR_REFLECTION};
+        }
+    }
+    else
+    {
+        p        = (p - P_s) / P_d;
+        diffuse := sample_diffuse(V, surface, p, u);
+        if (diffuse.L.z > 0.0)
+        {
+            L         := diffuse.L;
+            H         := normalize(V + L);
+            VoH       := dot(V, H);
+            F         := fresnel_dielectric(surface.specular_ior, VoH);
+            specular  := evaluate_ggx_specular_reflect(V, L, H, alpha);
+            E_diffuse := multiscatter_glossy_diffuse_compensation(surface, V.z, L.z);
+            f         := F * specular.f * surface.specular_weight + E_diffuse * (1.0 - surface.specular_weight) * diffuse.f;
+            pdf       := P_s * specular.pdf + P_d * diffuse.pdf;
+            return .{.{f, pdf}, L, .DIFFUSE_REFLECTION};
+        }
+    }
+
+    return .{};
+}
+
+#scope_file
+
+glossy_diffuse_specular_weight :: (surface: Surface) -> float
+{
+    ior         := surface.specular_ior;
+    E_avg_table := dielectric_E_avg;
+
+    if ior < 1.0
+    {
+        ior         = 1.0 / ior;
+        E_avg_table = dielectric_inv_E_avg;
+    }
+
+    alpha := surface.microfacet_alpha;
+    r     := sqrt(sqrt(alpha.x * alpha.y));
+    t     := ior_inverse_parametrization(ior);
+    E_avg := read_table_2D(E_avg_table, DIELECTRIC_E_AVG_SIZE, DIELECTRIC_E_AVG_SIZE, r, t);
+    E_map := E_avg * 0.9 + 0.05;
+    P_s   := surface.specular_weight * E_map;
+    return P_s;
+}
+
+multiscatter_glossy_diffuse_compensation :: (surface: Surface, NoV: float, NoL: float) -> float
+{
+    #if PRESERVE_MS_ENERGY
+    {
+        // Based on: https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_slides_v2.pdf
+
+        ior         := surface.specular_ior;
+        E_avg_table := dielectric_E_avg;
+        E_table     := dielectric_E;
+
+        if ior < 1.0
+        {
+            ior         = 1.0 / ior;
+            E_avg_table = dielectric_inv_E_avg;
+            E_table     = dielectric_inv_E;
+        }
+
+        alpha := surface.microfacet_alpha;
+        r     := sqrt(sqrt(alpha.x * alpha.y));
+        t     := ior_inverse_parametrization(ior);
+        E_avg := read_table_2D(E_avg_table, DIELECTRIC_E_AVG_SIZE, DIELECTRIC_E_AVG_SIZE, r, t);
+
+        if (E_avg < 1.0)
+        {
+            E_l       := read_table_3D(E_table, DIELECTRIC_E_SIZE, DIELECTRIC_E_SIZE, DIELECTRIC_E_SIZE, r, NoL, t);
+            E_v       := read_table_3D(E_table, DIELECTRIC_E_SIZE, DIELECTRIC_E_SIZE, DIELECTRIC_E_SIZE, r, NoV, t);
+            E_diffuse := (1.0 - E_l) * (1.0 - E_v) / (1.0 - E_avg);
+            return E_diffuse;
+        }
+    }
+    return 0.0;
+}
+
+//------------------------------------------------------------------------
+// Dielectric Translucent
+
+evaluate_dielectric :: (V: Vector3, L: Vector3, surface: Surface, label: BSDF_Label) -> BSDF
+{
+    if (L.z > 0.0)
+    {
+        H    := normalize(V + L);
+        VoH  := dot(V, H);
+        F    := fresnel_dielectric(surface.specular_ior, VoH);
+        brdf := evaluate_ggx_specular_reflect(V, L, H, surface.microfacet_alpha);
+        NoV  := abs(V.z);
+        f    := F * surface.edge_tint * brdf.f;
+        pdf  := F * brdf.pdf;
+        return .{f, pdf};
+    }
+    else if (L.z < 0.0)
+    {
+        n_sq := surface.specular_ior * surface.specular_ior;
+        H    := refracted_normal(V, L, surface.specular_ior);
+        VoH  := dot(V, H);
+        F    := fresnel_dielectric(surface.specular_ior, VoH);
+        btdf := evaluate_ggx_specular_refract(V, L, H, surface.microfacet_alpha, surface.specular_ior);
+        f    := (1.0 - F) * n_sq * btdf.f;
+        pdf  := (1.0 - F) * btdf.pdf;
+        return .{f, pdf};
+    }
+    return .{};
+}
+
+sample_dielectric :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> Sampled_BSDF
 {
     H := microfacet_ggx_sample_normal(V, surface.microfacet_alpha, u.x, u.y);
-    R := effective_fresnel_weight(surface, V, H);
+    F := fresnel_dielectric(surface.specular_ior, dot(V, H));
 
-    if (u.z >= R)
+    if (p >= F)
     {
-        L, refracted := refract(-V, H, surface.ior);
+        L, refracted := refract(-V, H, surface.specular_ior);
         if (refracted)
         {
-            btdf := evaluate_ggx_specular_transmit(V, L, H, surface.microfacet_alpha, surface.ior);
-            f    := (Spectrum_One - R * surface.fresnel.edge_tint) * btdf.f;
-            pdf  := (1.0 - R) * btdf.pdf;
-            return .{.{f, pdf, .DIELECTRIC_REFRACTION}, L};
+            n_sq := surface.specular_ior * surface.specular_ior;
+            btdf := evaluate_ggx_specular_refract(V, L, H, surface.microfacet_alpha, surface.specular_ior);
+            f    := (1.0 - F) * n_sq * btdf.f;
+            pdf  := (1.0 - F) * btdf.pdf;
+            return .{.{f, pdf}, L, .SPECULAR_REFLECTION};
         }
         else
         {
-            R = 1.0;
+            F = 1.0;
         }
     }
 
@@ -465,31 +408,15 @@ sample_dielectric :: (V: Vector3, surface: Surface, u: Vector3) -> Sampled_BSDF
     if (L.z > 0.0)
     {
         brdf := evaluate_ggx_specular_reflect(V, L, H, surface.microfacet_alpha);
-        f    := R * surface.fresnel.edge_tint * brdf.f;
-        pdf  := R * brdf.pdf;
-        return .{.{f, pdf, .DIELECTRIC_REFLECTION}, L};
+        f    := F * brdf.f;
+        pdf  := F * brdf.pdf;
+        return .{.{f, pdf}, L, .SPECULAR_REFRACTION};
     }
 
     return .{};
 }
 
-#scope_module
-
-effective_fresnel_dielectric :: inline (ior: float, cos_i: float) -> float
-{
-    cos_i   = saturate(cos_i);
-    sin2_i := 1.0 - cos_i * cos_i;
-    sin2_t := ior * ior * sin2_i;
-    if (sin2_t >= 1.0)
-    {
-        return 1.0;
-    }
-    cos_t := sqrt(1 - saturate(sin2_t));
-    Rs := (ior * cos_i - cos_t) / (ior * cos_i + cos_t);
-    Rp := (ior * cos_t - cos_i) / (ior * cos_t + cos_i);
-    R  := (Rs * Rs + Rp * Rp) * 0.5;
-    return R;
-}
+#scope_file
 
 refracted_normal :: inline (V: Vector3, L: Vector3, ior: float) -> Vector3
 {
@@ -501,22 +428,15 @@ refracted_normal :: inline (V: Vector3, L: Vector3, ior: float) -> Vector3
     return H;
 }
 
-effective_fresnel_weight :: (surface: Surface, V: Vector3, H: Vector3) -> float
-{
-    fresnel := effective_fresnel_dielectric(surface.ior, dot(V, H));
-    weight  := fresnel * surface.transmission + 1.0 - surface.transmission;
-    return weight;
-}
-
 //------------------------------------------------------------------------
-// Opacity BTDF
+// Geometry Transmission BTDF
 
-evaluate_opacity :: (V: Vector3, L: Vector3, surface: Surface) -> BSDF
+evaluate_ambient :: (V: Vector3, L: Vector3, surface: Surface, label: BSDF_Label) -> BSDF
 {
     return .{};
 }
 
-sample_opacity :: (V: Vector3, surface: Surface, u: Vector3) -> Sampled_BSDF
+sample_ambient :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> Sampled_BSDF
 {
     L   := -V;
     mu  := abs(L.z);
@@ -526,167 +446,7 @@ sample_opacity :: (V: Vector3, surface: Surface, u: Vector3) -> Sampled_BSDF
         f = Spectrum_One / mu;
     }
     pdf := 1.0;
-    return .{.{f, pdf, .TRANSMISSION}, L};
-}
-
-//------------------------------------------------------------------------
-// Microfacet Model
-// Trowbridge–Reitz (GGX) model
-// https://jcgt.org/published/0003/02/03/
-
-#scope_module
-
-microfacet_ggx_distribution :: (H: Vector3, alpha: Vector2) -> float
-{
-    Hs           := H / Vector3.{alpha.x, alpha.y, 1.0};
-    lensq        := length_squared(Hs);
-    inv_D        := PI * alpha.x * alpha.y * lensq * lensq;
-    D            := 1.0 / inv_D;
-    return D;
-}
-
-microfacet_ggx_lambda :: inline (N: Vector3, alpha: Vector2) -> float
-{
-    alpha_x      := alpha.x * N.x;
-    alpha_y      := alpha.y * N.y;
-    cos_theta_sq := max(N.z * N.z, 1.0e-6);
-    tan_alpha_sq := (alpha_x * alpha_x + alpha_y * alpha_y) / cos_theta_sq;
-    lambda       := 0.5 * (sqrt(1.0 + tan_alpha_sq) - 1.0);
-    return lambda;
-}
-
-microfacet_ggx_mask :: (N: Vector3, alpha: Vector2) -> float
-{
-    lambda := microfacet_ggx_lambda(N, alpha);
-    G1     := 1.0 / (1.0 + lambda);
-    return G1;
-}
-
-microfacet_ggx_mask_shadow :: (V: Vector3, L: Vector3, alpha: Vector2) -> float
-{
-    lambda_V := microfacet_ggx_lambda(V, alpha);
-    lambda_L := microfacet_ggx_lambda(L, alpha);
-    G        := 1.0 / (1.0 + lambda_V + lambda_L);
-    return G;
-}
-
-// GGX VNDF importance sampling
-// https://jcgt.org/published/0007/04/01/
-microfacet_ggx_sample_normal :: (V: Vector3, alpha: Vector2, u1: float, u2: float) -> Vector3
-{
-    N := normalize(Vector3.{alpha.x * V.x, alpha.y * V.y, V.z});
-
-    lensq := N.x * N.x + N.y * N.y;
-
-    X := ifx (lensq > 0.0)
-    {
-        inv_len := 1.0 / sqrt(lensq);
-        Vector3.{-N.y * inv_len, N.x * inv_len, 0.0};
-    }
-    else
-    {
-        Vector3.{1.0, 0.0, 0.0};
-    };
-
-    Y   := cross(N, X);
-
-    r   := sqrt(u1);
-    phi := 2.0 * PI * u2;
-    x   := r * cos(phi);
-    y   := r * sin(phi);
-    s   := 0.5 * (1.0 + N.z);
-    y    = (1.0 - s) * sqrt(1.0 - x * x) + s * y;
-
-    H   := x * X + y * Y + sqrt(max(0.0, 1.0 - x * x - y * y)) * N;
-    H.x *= alpha.x;
-    H.y *= alpha.y;
-    H.z  = max(0.0, H.z);
-    H    = normalize(H);
-    return H;
-}
-
-MICROFACET_ALPHA_THRESHOLD :: 1.0e-4;
-
-#scope_export
-
-microfacet_is_rough :: (alpha: Vector2) -> bool
-{
-    return alpha.x >= MICROFACET_ALPHA_THRESHOLD || alpha.y >= MICROFACET_ALPHA_THRESHOLD;
-}
-
-microfacet_is_smooth :: alpha => !microfacet_is_rough(alpha);
-
-microfacet_alpha :: (roughness: float, anisotropic: float) -> Vector2
-{
-    r2      := roughness * roughness;
-    aspect  := 0.9 * anisotropic;
-    alpha_x := r2 * (1.0 + aspect);
-    alpha_y := r2 * (1.0 - aspect);
-    alpha   := Vector2.{alpha_x, alpha_y};
-    if microfacet_is_rough(alpha)
-    {
-        alpha.x = max(alpha.x, MICROFACET_ALPHA_THRESHOLD);
-        alpha.y = max(alpha.y, MICROFACET_ALPHA_THRESHOLD);
-    }
-    return alpha;
-}
-
-//------------------------------------------------------------------------
-// Specular BxDF
-
-#scope_export
-
-evaluate_ggx_specular_reflect :: (V: Vector3, L: Vector3, H: Vector3, alpha: Vector2) -> BSDF
-{
-    NoV := V.z;
-    NoL := L.z;
-    D   := microfacet_ggx_distribution(H, alpha);
-    G   := microfacet_ggx_mask_shadow(V, L, alpha);
-    G1  := microfacet_ggx_mask(V, alpha);
-    f   := (D * G) / max(4 * NoL * NoV, 1.0e-6);
-    pdf := (D * G1) / max(4 * NoV, 1.0e-6);
-    return .{.{f, f, f}, pdf, 0};
-}
-
-sample_ggx_specular_reflect :: (V: Vector3, alpha: Vector2, u: Vector2) -> Sampled_BSDF
-{
-    H    := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
-    L    := reflect(-V, H);
-    if (L.z > 0.0)
-    {
-        brdf := evaluate_ggx_specular_reflect(V, L, H, alpha);
-        return .{brdf, L};
-    }
-    return .{};
-}
-
-evaluate_ggx_specular_transmit :: (V: Vector3, L: Vector3, H: Vector3, alpha: Vector2, ior: float) -> BSDF
-{
-    NoV     := V.z;
-    NoL     := abs(L.z);
-    VoH     := dot(V, H);
-    LoH     := -dot(L, H);
-    D       := microfacet_ggx_distribution(H, alpha);
-    G       := microfacet_ggx_mask_shadow(V, L, alpha);
-    G1      := microfacet_ggx_mask(V, alpha);
-    dL_sqrt := LoH + VoH / ior;
-    dL      := dL_sqrt * dL_sqrt;
-    VoLoH   := VoH * LoH;
-    f       := (D * G * VoLoH) / max(dL * NoL * NoV, 1.0e-6);
-    pdf     := (D * G1 * VoLoH) / max(dL * NoV, 1.0e-6);
-    return .{.{f, f, f}, pdf, 0};
-}
-
-sample_ggx_specular_transmit :: (V: Vector3, alpha: Vector2, ior: float, u: Vector2) -> Sampled_BSDF
-{
-    H := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
-    L, refracted := refract(-V, H, surface.ior);
-    if (refracted)
-    {
-        btdf := evaluate_ggx_specular_transmit(V, L, H, ior, alpha);
-        return .{btdf, L};
-    }
-    return .{};
+    return .{.{f, pdf}, L, .TRANSMISSION};
 }
 
 //------------------------------------------------------------------------
@@ -694,49 +454,7 @@ sample_ggx_specular_transmit :: (V: Vector3, alpha: Vector2, ior: float, u: Vect
 
 #scope_export
 
-Lobe_Type :: enum u32
-{
-    DIFFUSE;
-    CONDUCTOR;
-    DIELECTRIC;
-    OPACITY;
-}
-
-MAX_LOBE_TYPES :: #run type_info(Lobe_Type).values.count;
-
-Lobe_Weights :: [MAX_LOBE_TYPES]float;
-
-evaluate_principled_lobe :: (V: Vector3, L: Vector3, surface: Surface, type: Lobe_Type) -> BSDF
-{
-    if #complete type ==
-    {
-        case .DIFFUSE;
-            return evaluate_diffuse(V, L, surface);
-        case .CONDUCTOR;
-            return evaluate_conductor(V, L, surface);
-        case .DIELECTRIC;
-            return evaluate_dielectric(V, L, surface);
-        case .OPACITY;
-            return evaluate_opacity(V, L, surface);
-    }
-}
-
-sample_principled_lobe :: (V: Vector3, surface: Surface, u: Vector3, type: Lobe_Type) -> Sampled_BSDF
-{
-    if #complete type ==
-    {
-        case .DIFFUSE;
-            return sample_diffuse(V, surface, u);
-        case .CONDUCTOR;
-            return sample_conductor(V, surface, u);
-        case .DIELECTRIC;
-            return sample_dielectric(V, surface, u);
-        case .OPACITY;
-            return sample_opacity(V, surface, u);
-    }
-}
-
-evaluate_principled :: (V: Vector3, L: Vector3, surface: Surface) -> BSDF
+evaluate_principled_bsdf :: (V: Vector3, L: Vector3, surface: Surface) -> BSDF
 {
     weights := calculate_lobe_weights(surface);
     bsdf    : BSDF;
@@ -750,11 +468,30 @@ evaluate_principled :: (V: Vector3, L: Vector3, surface: Surface) -> BSDF
     return bsdf;
 }
 
-sample_principled :: (V: Vector3, surface: Surface, p: float, u: Vector3) -> Sampled_BSDF
+sample_principled_bsdf :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> Sampled_BSDF
 {
     weights := calculate_lobe_weights(surface);
-    picked  := pick_lobe(p, weights);
-    sample  := sample_principled_lobe(V, surface, u, picked);
+    picked  := Lobe_Type.AMBIENT;
+
+    cf: [MAX_LOBE_TYPES+1]float = ---;
+    cf[0] = 0.0;
+    cf[0] = 0.0;
+    for 0..MAX_LOBE_TYPES-1
+    {
+        cf[it + 1] = cf[it] + weights[it];
+    }
+
+    for 0..MAX_LOBE_TYPES-1
+    {
+        if (p < cf[it + 1])
+        {
+            picked = it.(Lobe_Type);
+            break;
+        }
+    }
+
+    p_lobe  := (p - cf[picked]) / (cf[picked + 1] - cf[picked]);
+    sample  := sample_lobe(V, surface, p_lobe, u, picked);
 
     if (sample.pdf > 0.0)
     {
@@ -764,71 +501,89 @@ sample_principled :: (V: Vector3, surface: Surface, p: float, u: Vector3) -> Sam
         for 0..MAX_LOBE_TYPES-1
         {
             type := it.(Lobe_Type);
-
-            if type == .DIELECTRIC continue; // TODO: fix dielectric
-
-            if (type != picked)
+            if (type != picked && weights[type] > 0.0)
             {
-                bsdf           := evaluate_principled_lobe(V, L, surface, type);
-                mixed_bsdf.f   += weights[type] * bsdf.f;
-                mixed_bsdf.pdf += weights[type] * bsdf.pdf;
+                bsdf := evaluate_lobe(V, L, surface, sample.label, type);
+                if (bsdf.pdf > 0.0)
+                {
+                    mixed_bsdf.f   += weights[type] * bsdf.f;
+                    mixed_bsdf.pdf += weights[type] * bsdf.pdf;
+                }
             }
         }
 
         mixed_bsdf.f   += weights[picked] * sample.f;
         mixed_bsdf.pdf += weights[picked] * sample.pdf;
-        mixed_bsdf.flags |= sample.flags;
 
-        return .{mixed_bsdf, L};
+        return .{mixed_bsdf, L, sample.label};
     }
 
     return .{};
 }
 
-#scope_module
+#scope_file
 
-pick_lobe :: (p: float, weights: Lobe_Weights) -> Lobe_Type
+Lobe_Type :: enum u32
 {
-    sum_p := 0.0;
-    for 0..MAX_LOBE_TYPES-1
-    {
-        sum_p += weights[it];
-        if (p < sum_p)
-        {
-            return it.(Lobe_Type);
-        }
-    }
-    return .DIFFUSE;
+    AMBIENT;
+    METALLIC;
+    GLOSSY_DIFFUSE;
+    DIELECTRIC;
 }
 
-calculate_lobe_weights :: (using surface: Surface) -> Lobe_Weights
+MAX_LOBE_TYPES :: #run type_info(Lobe_Type).values.count;
+Lobe_Weights   :: [MAX_LOBE_TYPES]float;
+
+calculate_lobe_weights :: (surface: Surface) -> Lobe_Weights
 {
-    o   := clamp(opacity, 0.0, 1.0);
-    m   := clamp(metallic, 0.0, 1.0);
-    s   := clamp(specular, 0.0, 1.0);
-    t   := clamp(transmission, 0.0, 1.0);
-    nm  := o * (1.0 - m);
+    ambient        := 1.0 - surface.geometry_opacity;
+    metallic       := surface.geometry_opacity * surface.metallic;
+    non_metallic   := 1.0 - metallic;
+    glossy_diffuse := non_metallic * (1.0 - surface.transmission_weight);
+    dielectric     := non_metallic * surface.transmission_weight;
+
     weights: Lobe_Weights;
-    weights[Lobe_Type.OPACITY]     = (1.0 - o);
-    weights[Lobe_Type.CONDUCTOR]   = o * m;
-    weights[Lobe_Type.DIFFUSE]     = nm * (1.0 - s);
-    weights[Lobe_Type.DIELECTRIC]  = nm * s;
+    weights[Lobe_Type.AMBIENT]        = ambient;
+    weights[Lobe_Type.METALLIC]       = metallic;
+    weights[Lobe_Type.GLOSSY_DIFFUSE] = glossy_diffuse;
+    weights[Lobe_Type.DIELECTRIC]     = dielectric;
+
     return weights;
+}
+
+evaluate_lobe :: (V: Vector3, L: Vector3, surface: Surface, label: BSDF_Label, type: Lobe_Type) -> BSDF
+{
+    if #complete type ==
+    {
+        case .AMBIENT;
+            return evaluate_ambient(V, L, surface, label);
+        case .METALLIC;
+            return evaluate_metal(V, L, surface, label);
+        case .GLOSSY_DIFFUSE;
+            return evaluate_glossy_diffuse(V, L, surface, label);
+        case .DIELECTRIC;
+            return evaluate_dielectric(V, L, surface, label);
+    }
+}
+
+sample_lobe :: (V: Vector3, surface: Surface, p: float, u: Vector2, type: Lobe_Type) -> Sampled_BSDF
+{
+    if #complete type ==
+    {
+        case .AMBIENT;
+            return sample_ambient(V, surface, p, u);
+        case .METALLIC;
+            return sample_metal(V, surface, p, u);
+        case .GLOSSY_DIFFUSE;
+            return sample_glossy_diffuse(V, surface, p, u);
+        case .DIELECTRIC;
+            return sample_dielectric(V, surface, p, u);
+    }
 }
 
 //------------------------------------------------------------------------
 
-#scope_module
-
-INV_PI :: 1.0 / PI;
-
-power6 :: inline (x: float) -> float
-{
-    x2 := x * x;
-    x3 := x2 * x;
-    x6 := x3 * x3;
-    return x6;
-}
+#scope_file
 
 sdiv :: inline (x: $T, y: T) -> T
 {
@@ -839,57 +594,62 @@ sdiv :: inline (x: $T, y: T) -> T
     return 0;
 }
 
-reflect :: inline (I: Vector3, N: Vector3) -> Vector3
-{
-    return I - 2.0 * dot(N, I) * N;
-}
-
-refract :: inline (I: Vector3, N: Vector3, ior: float) -> Vector3, bool
-{
-    cos_i := -dot(N, I);
-    sin_t := ior * ior * (1.0 - cos_i * cos_i);
-    if (sin_t <= 1.0)
-    {
-        k := 1.0 - sin_t;
-        R := ior * I + (ior * cos_i - sqrt(k)) * N;
-        return R, true;
-    }
-    return .{}, false;
-}
-
-read_table_1D :: inline (table: []float, $w: int, u: float) -> float
-{
-    up := u * w - 0.5;
-    i0 := floor(up).(int);
-    i1 := i0 + 1;
-    u0 := clamp(i0, 0, w - 1);
-    u1 := clamp(i1, 0, w - 1);
-    uf := up - i0;
-    x  := lerp(table[u0], table[u1], uf);
-    return x;
-}
-
-read_table_2D :: inline (table: []float, $w: int, $h: int, u: float, v: float) -> float
-{
-    up  := u * w - 0.5;
-    vp  := v * h - 0.5;
-    iu0 := floor(up).(int);
-    iv0 := floor(vp).(int);
-    iu1 := iu0 + 1;
-    iv1 := iv0 + 1;
-    u0 := clamp(iu0, 0, w - 1);
-    u1 := clamp(iu1, 0, w - 1);
-    v0 := clamp(iv0, 0, h - 1);
-    v1 := clamp(iv1, 0, h - 1);
-    uf := up - iu0;
-    vf := vp - iv0;
-    y0 := lerp(table[v0 * w + u0], table[v0 * w + u1], uf);
-    y1 := lerp(table[v1 * w + u0], table[v1 * w + u1], uf);
-    x  := lerp(y0, y1, vf);
-    return x;
-}
-
 #scope_file
 
 #import "Math";
 #import "Basic";
+
+#if PRESERVE_MS_ENERGY
+{
+    #load "ms_tables.jai";
+
+    sampler_1D :: inline (u: float, $dim: s32) -> s32, s32, float
+    {
+        up := u * (dim - 1);
+        i0 := up.(s32);
+        i1 := i0 + 1;
+        u0 := clamp(i0, 0, dim - 1);
+        u1 := clamp(i1, 0, dim - 1);
+        uf := up - i0;
+        return u0, u1, uf;
+    }
+
+    read_table_1D :: inline (table: []float, $dim_u: s32, u: float) -> float
+    {
+        u0, u1, uf := sampler_1D(u, dim_u);
+        x  := lerp(table[u0], table[u1], uf);
+        return x;
+    }
+
+    read_table_2D :: inline (table: []float, $dim_u: s32, $dim_v: s32, u: float, v: float) -> float
+    {
+        u0, u1, uf := sampler_1D(u, dim_u);
+        v0, v1, vf := sampler_1D(v, dim_v);
+        r0 := v0 * dim_u;
+        r1 := v1 * dim_u;
+        y0 := lerp(table[r0 + u0], table[r0 + u1], uf);
+        y1 := lerp(table[r1 + u0], table[r1 + u1], uf);
+        x  := lerp(y0, y1, vf);
+        return x;
+    }
+
+    read_table_3D :: inline (table: []float, $dim_u: s32, $dim_v: s32, $dim_w: s32, u: float, v: float, w: float) -> float
+    {
+        u0, u1, uf := sampler_1D(u, dim_u);
+        v0, v1, vf := sampler_1D(v, dim_v);
+        w0, w1, wf := sampler_1D(w, dim_w);
+        dim_uv := dim_u * dim_v;
+        d0     := w0 * dim_uv;
+        d1     := w1 * dim_uv;
+        r0     := v0 * dim_u;
+        r1     := v1 * dim_u;
+        z0y0   := lerp(table[d0 + r0 + u0], table[d0 + r0 + u1], uf);
+        z0y1   := lerp(table[d0 + r1 + u0], table[d0 + r1 + u1], uf);
+        z1y0   := lerp(table[d1 + r0 + u0], table[d1 + r0 + u1], uf);
+        z1y1   := lerp(table[d1 + r1 + u0], table[d1 + r1 + u1], uf);
+        z0     := lerp(z0y0, z0y1, vf);
+        z1     := lerp(z1y0, z1y1, vf);
+        return lerp(z0, z1, wf);
+    }
+
+}

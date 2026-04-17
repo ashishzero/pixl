@@ -211,7 +211,8 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=256, max_depth=15);
+    //init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=256, max_depth=15);
+    init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=64, max_depth=5);
     load_test_scene(*scene, args.scene);
 
     prepare_for_rendering(*scene);
@@ -752,4 +753,3 @@ init :: ()
 #import "Input";
 
 #import "Raddbg"()(ENABLED=ENABLE_RAD_DEBUGGER);
-
