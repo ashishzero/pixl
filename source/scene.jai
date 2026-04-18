@@ -133,7 +133,7 @@ test_scene :: (using scene: *Scene, $parameterize_material : #type(m: *Material,
     checkerboard_texture  := create_checkerboard_texture(Vector3.{1, 1, 1}, .{0.1, 0.1, 0.1}, .{40, 40});
     checkerboard_material := create_lambertian_material(scene, checkerboard_texture);
 
-    //add_box(scene, Matrix4_Identity, .{-6, -6, 0.5}, .{6, 6, 0.6}, checkerboard_material);
+    add_box(scene, Matrix4_Identity, .{-6, -6, 0.5}, .{6, 6, 0.6}, checkerboard_material);
 
     for y:0..TEST_SPHERES_HEIGHT-1
     {
@@ -503,7 +503,7 @@ create_lambertian_material :: (scene: *Scene, color: Texture2D, roughness := 0.0
     id, material := create_material(scene);
     material.color = color;
     material.diffuse_roughness = create_constant_texture(roughness);
-    material.specular_ior = create_constant_texture(0.0);
+    material.specular_ior = create_constant_texture(1.5);
     return id, material;
 }
 

@@ -27,9 +27,11 @@ MICROFACET_ALPHA_THRESHOLD :: 1.0e-4;
 
 microfacet_ggx_distribution :: (H: Vector3, alpha: Vector2) -> float
 {
-    Hs           := H / Vector3.{alpha.x, alpha.y, 1.0};
+    alpha_x      := max(alpha.x, MICROFACET_ALPHA_THRESHOLD);
+    alpha_y      := max(alpha.y, MICROFACET_ALPHA_THRESHOLD);
+    Hs           := H / Vector3.{alpha_x, alpha_y, 1.0};
     lensq        := length_squared(Hs);
-    inv_D        := PI * alpha.x * alpha.y * lensq * lensq;
+    inv_D        := PI * alpha_x * alpha_y * lensq * lensq;
     D            := 1.0 / max(inv_D, 1.0e-6);
     return D;
 }
