@@ -162,14 +162,23 @@ evaluate_metal :: (V: Vector3, L: Vector3, surface: Surface, label: BSDF_Label) 
     alpha := surface.microfacet_alpha;
     if !microfacet_is_delta(alpha) && L.z > 0.0 && (label & .REFLECTION)
     {
-        H    := normalize(V + L);
-        VoH  := dot(V, H);
-        brdf := evaluate_ggx_specular_reflect(V, L, H, alpha);
-        F_ss := fresnel_metal(surface.reflectance, surface.edge_tint, surface.falloff, VoH);
-        f_ss := F_ss * brdf.f;
-        f_ms := multiscatter_compensation_metal(surface, V.z, L.z);
-        f    := f_ss + f_ms;
-        pdf  := brdf.pdf;
+        r      := sqrt(sqrt(alpha.x * alpha.y));
+        E_avg  := metallic_average_energy(r);
+        F_avg  := fresnel_average_metal(surface.reflectance, surface.edge_tint, surface.falloff);
+
+        P_ss   := estimate_metallic(E_avg, F_avg);
+        P_ms   := 1.0 - P_ss;
+
+        H      := normalize(V + L);
+        VoH    := dot(V, H);
+        spec   := evaluate_ggx_specular_reflect(V, L, H, alpha);
+        F_ss   := fresnel_metal(surface.reflectance, surface.edge_tint, surface.falloff, VoH);
+        f_ss   := F_ss * spec.f;
+        f_ms   := multiscatter_compensation_metal(r, E_avg, F_avg, V.z, L.z);
+        pdf_ms := pdf_cosine(L);
+        pdf_ss := spec.pdf;
+        f      := f_ss + f_ms;
+        pdf    := P_ss * pdf_ss + P_ms * pdf_ms;
         return .{f, pdf};
     }
     return .{};
@@ -180,18 +189,47 @@ sample_metal :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> Sampled_
     alpha := surface.microfacet_alpha;
     if !microfacet_is_delta(alpha)
     {
-        sample := sample_ggx_specular_reflect(V, alpha, .{u.x, u.y});
-        if (sample.L.z > 0.0)
+        r     := sqrt(sqrt(alpha.x * alpha.y));
+        E_avg := metallic_average_energy(r);
+        F_avg := fresnel_average_metal(surface.reflectance, surface.edge_tint, surface.falloff);
+
+        P_ss  := estimate_metallic(E_avg, F_avg);
+        P_ms  := 1.0 - P_ss;
+
+        if (p < P_ss)
         {
-            VoH  := dot(V, sample.H);
-            F_ss := fresnel_metal(surface.reflectance, surface.edge_tint, surface.falloff, VoH);
-            f_ss := F_ss * sample.f;
-            f_ms := multiscatter_compensation_metal(surface, V.z, sample.L.z);
-            f    := f_ss + f_ms;
-            pdf  := sample.pdf;
-            return .{.{f, pdf}, sample.L, .SPECULAR_REFLECTION};
+            sample := sample_ggx_specular_reflect(V, alpha, u);
+            if (sample.L.z > 0.0)
+            {
+                VoH    := dot(V, sample.H);
+                F_ss   := fresnel_metal(surface.reflectance, surface.edge_tint, surface.falloff, VoH);
+                f_ss   := F_ss * sample.f;
+                f_ms   := multiscatter_compensation_metal(r, E_avg, F_avg, V.z, sample.L.z);
+                pdf_ms := pdf_cosine(sample.L);
+                pdf_ss := sample.pdf;
+                f      := f_ss + f_ms;
+                pdf    := P_ss * pdf_ss + P_ms * pdf_ms;
+                return .{.{f, pdf}, sample.L, .SPECULAR_REFLECTION};
+            }
         }
-        return .{};
+        else
+        {
+            L := sample_cosine(u.x, u.y);
+            if (L.z > 0.0)
+            {
+                H      := normalize(V + L);
+                VoH    := dot(V, H);
+                F_ss   := fresnel_metal(surface.reflectance, surface.edge_tint, surface.falloff, VoH);
+                spec   := evaluate_ggx_specular_reflect(V, L, H, alpha);
+                f_ss   := F_ss * spec.f;
+                f_ms   := multiscatter_compensation_metal(r, E_avg, F_avg, V.z, L.z);
+                pdf_ms := pdf_cosine(L);
+                pdf_ss := spec.pdf;
+                f      := f_ss + f_ms;
+                pdf    := P_ss * pdf_ss + P_ms * pdf_ms;
+                return .{.{f, pdf}, L, .SPECULAR_REFLECTION};
+            }
+        }
     }
     else
     {
@@ -201,19 +239,28 @@ sample_metal :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> Sampled_
         f   := fresnel_metal(surface.reflectance, surface.edge_tint, surface.falloff, mu) / max(mu, 1.0e-6);
         return .{.{f, pdf}, L, .SPECULAR_REFLECTION};
     }
+    return .{};
 }
 
 #scope_file
 
-multiscatter_compensation_metal :: (surface: Surface, NoV: float, NoL: float) -> Spectrum
+metallic_average_energy :: (r: float) -> float
+{
+    E_avg := read_table_1D(metal_E_avg, METAL_E_SIZE, r);
+    return E_avg;
+}
+
+estimate_metallic :: (E_avg: float, F_avg: Spectrum) -> float
+{
+    f := E_avg * F_avg;
+    return luminance(f);
+}
+
+multiscatter_compensation_metal :: (r: float, E_avg: float, F_avg: Spectrum, NoV: float, NoL: float) -> Spectrum
 {
     #if PRESERVE_MS_ENERGY
     {
         // Based on: https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_slides_v2.pdf
-        alpha := surface.microfacet_alpha;
-        r     := sqrt(sqrt(alpha.x * alpha.y));
-        E_avg := read_table_1D(metal_E_avg, METAL_E_SIZE, r);
-
         if (E_avg < 1.0)
         {
             E_l   := read_table_2D(metal_E, METAL_E_SIZE, METAL_E_SIZE, r, NoL);
@@ -222,8 +269,6 @@ multiscatter_compensation_metal :: (surface: Surface, NoV: float, NoL: float) ->
 
             // Fresnel adjustment is done based on the following blog:
             // https://blog.selfshadow.com/2018/06/04/multi-faceted-part-2/
-
-            F_avg := fresnel_average_metal(surface.reflectance, surface.edge_tint, surface.falloff);
             F_ms  := F_avg * F_avg  * E_avg / (Spectrum_One - F_avg * (1.0 - E_avg));
 
             return F_ms * f_ms;

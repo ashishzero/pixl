@@ -110,5 +110,27 @@ Thread_Barrier :: struct
     }
 }
 
+#if OS == .LINUX
+{
+    Posix :: #import "POSIX";
+    Thread_Barrier_Platform_Specific :: Posix.pthread_barrier_t;
+
+    thread_barrier_init :: (barrier: *Thread_Barrier, num_threads: int)
+    {
+        Posix.pthread_barrier_init(barrier.(*Posix.pthread_barrier_t), null, xx num_threads);
+    }
+
+    thread_barrier_deinit :: (barrier: *Thread_Barrier)
+    {
+        Posix.pthread_barrier_destroy(barrier.(*Posix.pthread_barrier_t));
+    }
+
+    thread_barrier_sync :: (barrier: *Thread_Barrier)
+    {
+        Posix.pthread_barrier_wait(barrier.(*Posix.pthread_barrier_t));
+    }
+
+}
+
 #import "Thread";
 #import "System";

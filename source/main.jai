@@ -211,7 +211,7 @@ main :: ()
     init_fonts();
 
     scene: Scene;
-    //init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=256, max_depth=15);
+    // init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=256, max_depth=15);
     init_scene(*scene, RAYTRACE_BITMAP_WIDTH, RAYTRACE_BITMAP_HEIGHT, multisamples=64, max_depth=5);
     load_test_scene(*scene, args.scene);
 
@@ -712,7 +712,7 @@ init_fonts :: ()
 
     pixel_height := render_height / 54;
 
-    debug_font = Simp.get_font_at_size("data/fonts/KodeMono", "KodeMono-Medium.ttf", pixel_height);
+    debug_font = Simp.get_font_at_size("/home/ashishbh/.local/share/fonts", "FiraCode-Retina.ttf", pixel_height);
     assert(debug_font != null);
 }
 

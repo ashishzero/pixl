@@ -111,3 +111,12 @@ refract :: inline (I: Vector3, N: Vector3, ior: float) -> Vector3, bool
     }
     return .{}, false;
 }
+
+luminance :: (s: Spectrum) -> float
+{
+    R :: 0.2126;
+    G :: 0.7152;
+    B :: 0.0722;
+    l := R * s.x + G * s.y + B * s.z;
+    return l;
+}
