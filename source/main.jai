@@ -74,7 +74,7 @@ CommandLineArgs :: struct
 {
     width       := 1920;
     height      := 1080;
-    scene       := Test_Scene.conductor_test;
+    scene       := Test_Scene.metal_test;
     save_first  := false;
     num_threads := 0;
 }
@@ -712,7 +712,7 @@ init_fonts :: ()
 
     pixel_height := render_height / 54;
 
-    debug_font = Simp.get_font_at_size("/home/ashishbh/.local/share/fonts", "FiraCode-Retina.ttf", pixel_height);
+    debug_font = Simp.get_font_at_size("data/fonts/KodeMono", "KodeMono-Medium.ttf", pixel_height);
     assert(debug_font != null);
 }
 

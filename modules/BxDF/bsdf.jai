@@ -258,21 +258,18 @@ estimate_metal :: (E_avg: float, F_avg: Spectrum) -> float
 
 multiscatter_compensation_metal :: (E_avg: float, F_avg: Spectrum, rough: float, NoV: float, NoL: float) -> Spectrum
 {
-    #if PRESERVE_MS_ENERGY
+    // Based on: https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_slides_v2.pdf
+    if (E_avg < 1.0)
     {
-        // Based on: https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_slides_v2.pdf
-        if (E_avg < 1.0)
-        {
-            E_l   := read_table_2D(metal_E, METAL_E_SIZE, METAL_E_SIZE, rough, NoL);
-            E_v   := read_table_2D(metal_E, METAL_E_SIZE, METAL_E_SIZE, rough, NoV);
-            f_ms  := (1.0 - E_l) * (1.0 - E_v) / (PI * (1.0 - E_avg));
+        E_l   := read_table_2D(metal_E, METAL_E_SIZE, METAL_E_SIZE, rough, NoL);
+        E_v   := read_table_2D(metal_E, METAL_E_SIZE, METAL_E_SIZE, rough, NoV);
+        f_ms  := (1.0 - E_l) * (1.0 - E_v) / (PI * (1.0 - E_avg));
 
-            // Fresnel adjustment is done based on the following blog:
-            // https://blog.selfshadow.com/2018/06/04/multi-faceted-part-2/
-            F_ms  := F_avg * F_avg  * E_avg / (Spectrum_One - F_avg * (1.0 - E_avg));
+        // Fresnel adjustment is done based on the following blog:
+        // https://blog.selfshadow.com/2018/06/04/multi-faceted-part-2/
+        F_ms  := F_avg * F_avg  * E_avg / (Spectrum_One - F_avg * (1.0 - E_avg));
 
-            return F_ms * f_ms;
-        }
+        return F_ms * f_ms;
     }
     return Spectrum_Zero;
 }
@@ -286,11 +283,11 @@ evaluate_glossy_diffuse :: (V: Vector3, L: Vector3, surface: Surface, label: BSD
     {
         alpha         := surface.microfacet_alpha;
         rough         := sqrt(sqrt(alpha.x * alpha.y));
-        specular_ior  := surface.specular_ior;
-        effective_ior := max(specular_ior, 1.0 / specular_ior);
-        param_ior     := ior_inverse_parametrization(effective_ior);
+        specular_ior  := effective_specular_ior(surface.specular_weight, surface.specular_ior);
+        physical_ior  := max(specular_ior, 1.0 / specular_ior);
+        param_ior     := ior_inverse_parametrization(physical_ior);
         E_avg         := average_energy_glossy_diffuse_specular(specular_ior, rough, param_ior);
-        P_s           := estimate_glossy_diffuse_specular(surface.specular_weight, E_avg);
+        P_s           := estimate_glossy_diffuse_specular(E_avg);
         P_d           := 1.0 - P_s;
         
         H             := normalize(V + L);
@@ -299,7 +296,7 @@ evaluate_glossy_diffuse :: (V: Vector3, L: Vector3, surface: Surface, label: BSD
         specular      := evaluate_ggx_specular_reflect(V, L, H, alpha);
         diffuse       := evaluate_diffuse(V, L, surface, label);
         E_diffuse     := multiscatter_glossy_diffuse_compensation(specular_ior, E_avg, rough, V.z, L.z, param_ior);
-        f             := F * specular.f * surface.specular_weight + E_diffuse * (1.0 - surface.specular_weight) * diffuse.f;
+        f             := F * specular.f + E_diffuse * diffuse.f;
         pdf           := P_s * specular.pdf + P_d * diffuse.pdf;
         return .{f, pdf};
     }
@@ -310,11 +307,11 @@ sample_glossy_diffuse :: (V: Vector3, surface: Surface, p: float, u: Vector2) ->
 {
     alpha         := surface.microfacet_alpha;
     rough         := sqrt(sqrt(alpha.x * alpha.y));
-    specular_ior  := surface.specular_ior;
-    effective_ior := max(specular_ior, 1.0 / specular_ior);
-    param_ior     := ior_inverse_parametrization(effective_ior);
+    specular_ior  := effective_specular_ior(surface.specular_weight, surface.specular_ior);
+    physical_ior  := max(specular_ior, 1.0 / specular_ior);
+    param_ior     := ior_inverse_parametrization(physical_ior);
     E_avg         := average_energy_glossy_diffuse_specular(specular_ior, rough, param_ior);
-    P_s           := estimate_glossy_diffuse_specular(surface.specular_weight, E_avg);
+    P_s           := estimate_glossy_diffuse_specular(E_avg);
     P_d           := 1.0 - P_s;
 
     if (p < P_s)
@@ -328,7 +325,7 @@ sample_glossy_diffuse :: (V: Vector3, surface: Surface, p: float, u: Vector2) ->
             F         := fresnel_dielectric(specular_ior, VoH);
             diffuse   := evaluate_diffuse(V, L, surface, specular.label);
             E_diffuse := multiscatter_glossy_diffuse_compensation(specular_ior, E_avg, rough, V.z, L.z, param_ior);
-            f         := F * specular.f * surface.specular_weight + E_diffuse * (1.0 - surface.specular_weight) * diffuse.f;
+            f         := F * specular.f + E_diffuse * diffuse.f;
             pdf       := P_s * specular.pdf + P_d * diffuse.pdf;
             return .{.{f, pdf}, L, .SPECULAR_REFLECTION};
         }
@@ -345,7 +342,7 @@ sample_glossy_diffuse :: (V: Vector3, surface: Surface, p: float, u: Vector2) ->
             F         := fresnel_dielectric(surface.specular_ior, VoH);
             specular  := evaluate_ggx_specular_reflect(V, L, H, alpha);
             E_diffuse := multiscatter_glossy_diffuse_compensation(specular_ior, E_avg, rough, V.z, L.z, param_ior);
-            f         := F * specular.f * surface.specular_weight + E_diffuse * (1.0 - surface.specular_weight) * diffuse.f;
+            f         := F * specular.f + E_diffuse * diffuse.f;
             pdf       := P_s * specular.pdf + P_d * diffuse.pdf;
             return .{.{f, pdf}, L, .DIFFUSE_REFLECTION};
         }
@@ -356,6 +353,15 @@ sample_glossy_diffuse :: (V: Vector3, surface: Surface, p: float, u: Vector2) ->
 
 #scope_file
 
+effective_specular_ior :: (specular_weight: float, specular_ior: float) -> float
+{
+    sgn :: x => ((0.0 < x).(float) - (x < 0.0).(float));
+    F_sqrt    := (1.0 - specular_ior) / (1.0 + specular_ior);
+    e         := sgn(specular_ior - 1.0) * sqrt(specular_weight * F_sqrt * F_sqrt);
+    effective := (1.0 + e) / (1 - e);
+    return effective;
+}
+
 average_energy_glossy_diffuse_specular :: (specular_ior: float, rough: float, param_ior: float) -> float
 {
     E_avg_table := ifx specular_ior >= 1.0 then dielectric_E_avg else dielectric_inv_E_avg;
@@ -363,26 +369,22 @@ average_energy_glossy_diffuse_specular :: (specular_ior: float, rough: float, pa
     return E_avg;
 }
 
-estimate_glossy_diffuse_specular :: (specular_weight: float, E_avg: float) -> float
+estimate_glossy_diffuse_specular :: (E_avg: float) -> float
 {
-    mapped_E := E_avg * 0.9 + 0.05;
-    P_s      := specular_weight * mapped_E;
+    P_s := E_avg * 0.9 + 0.5;
     return P_s;
 }
 
 multiscatter_glossy_diffuse_compensation :: (specular_ior: float, E_avg: float, rough: float, NoV: float, NoL: float, param_ior: float) -> float
 {
-    #if PRESERVE_MS_ENERGY
+    // Based on: https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_slides_v2.pdf
+    if (E_avg < 1.0)
     {
-        // Based on: https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_slides_v2.pdf
-        if (E_avg < 1.0)
-        {
-            E_table   := ifx specular_ior >= 1.0 then dielectric_E else dielectric_inv_E;
-            E_l       := read_table_3D(E_table, DIELECTRIC_E_SIZE, DIELECTRIC_E_SIZE, DIELECTRIC_E_SIZE, rough, NoL, param_ior);
-            E_v       := read_table_3D(E_table, DIELECTRIC_E_SIZE, DIELECTRIC_E_SIZE, DIELECTRIC_E_SIZE, rough, NoV, param_ior);
-            E_diffuse := (1.0 - E_l) * (1.0 - E_v) / (1.0 - E_avg);
-            return E_diffuse;
-        }
+        E_table   := ifx specular_ior >= 1.0 then dielectric_E else dielectric_inv_E;
+        E_l       := read_table_3D(E_table, DIELECTRIC_E_SIZE, DIELECTRIC_E_SIZE, DIELECTRIC_E_SIZE, rough, NoL, param_ior);
+        E_v       := read_table_3D(E_table, DIELECTRIC_E_SIZE, DIELECTRIC_E_SIZE, DIELECTRIC_E_SIZE, rough, NoV, param_ior);
+        E_diffuse := (1.0 - E_l) * (1.0 - E_v) / (1.0 - E_avg);
+        return E_diffuse;
     }
     return 0.0;
 }
@@ -634,57 +636,53 @@ sdiv :: inline (x: $T, y: T) -> T
 #import "Math";
 #import "Basic";
 
-#if PRESERVE_MS_ENERGY
+#load "ms_tables.jai";
+
+sampler_1D :: inline (u: float, $dim: s32) -> s32, s32, float
 {
-    #load "ms_tables.jai";
+    up := u * (dim - 1);
+    i0 := up.(s32);
+    i1 := i0 + 1;
+    u0 := clamp(i0, 0, dim - 1);
+    u1 := clamp(i1, 0, dim - 1);
+    uf := up - i0;
+    return u0, u1, uf;
+}
 
-    sampler_1D :: inline (u: float, $dim: s32) -> s32, s32, float
-    {
-        up := u * (dim - 1);
-        i0 := up.(s32);
-        i1 := i0 + 1;
-        u0 := clamp(i0, 0, dim - 1);
-        u1 := clamp(i1, 0, dim - 1);
-        uf := up - i0;
-        return u0, u1, uf;
-    }
+read_table_1D :: inline (table: []float, $dim_u: s32, u: float) -> float
+{
+    u0, u1, uf := sampler_1D(u, dim_u);
+    x  := lerp(table[u0], table[u1], uf);
+    return x;
+}
 
-    read_table_1D :: inline (table: []float, $dim_u: s32, u: float) -> float
-    {
-        u0, u1, uf := sampler_1D(u, dim_u);
-        x  := lerp(table[u0], table[u1], uf);
-        return x;
-    }
+read_table_2D :: inline (table: []float, $dim_u: s32, $dim_v: s32, u: float, v: float) -> float
+{
+    u0, u1, uf := sampler_1D(u, dim_u);
+    v0, v1, vf := sampler_1D(v, dim_v);
+    r0 := v0 * dim_u;
+    r1 := v1 * dim_u;
+    y0 := lerp(table[r0 + u0], table[r0 + u1], uf);
+    y1 := lerp(table[r1 + u0], table[r1 + u1], uf);
+    x  := lerp(y0, y1, vf);
+    return x;
+}
 
-    read_table_2D :: inline (table: []float, $dim_u: s32, $dim_v: s32, u: float, v: float) -> float
-    {
-        u0, u1, uf := sampler_1D(u, dim_u);
-        v0, v1, vf := sampler_1D(v, dim_v);
-        r0 := v0 * dim_u;
-        r1 := v1 * dim_u;
-        y0 := lerp(table[r0 + u0], table[r0 + u1], uf);
-        y1 := lerp(table[r1 + u0], table[r1 + u1], uf);
-        x  := lerp(y0, y1, vf);
-        return x;
-    }
-
-    read_table_3D :: inline (table: []float, $dim_u: s32, $dim_v: s32, $dim_w: s32, u: float, v: float, w: float) -> float
-    {
-        u0, u1, uf := sampler_1D(u, dim_u);
-        v0, v1, vf := sampler_1D(v, dim_v);
-        w0, w1, wf := sampler_1D(w, dim_w);
-        dim_uv := dim_u * dim_v;
-        d0     := w0 * dim_uv;
-        d1     := w1 * dim_uv;
-        r0     := v0 * dim_u;
-        r1     := v1 * dim_u;
-        z0y0   := lerp(table[d0 + r0 + u0], table[d0 + r0 + u1], uf);
-        z0y1   := lerp(table[d0 + r1 + u0], table[d0 + r1 + u1], uf);
-        z1y0   := lerp(table[d1 + r0 + u0], table[d1 + r0 + u1], uf);
-        z1y1   := lerp(table[d1 + r1 + u0], table[d1 + r1 + u1], uf);
-        z0     := lerp(z0y0, z0y1, vf);
-        z1     := lerp(z1y0, z1y1, vf);
-        return lerp(z0, z1, wf);
-    }
-
+read_table_3D :: inline (table: []float, $dim_u: s32, $dim_v: s32, $dim_w: s32, u: float, v: float, w: float) -> float
+{
+    u0, u1, uf := sampler_1D(u, dim_u);
+    v0, v1, vf := sampler_1D(v, dim_v);
+    w0, w1, wf := sampler_1D(w, dim_w);
+    dim_uv := dim_u * dim_v;
+    d0     := w0 * dim_uv;
+    d1     := w1 * dim_uv;
+    r0     := v0 * dim_u;
+    r1     := v1 * dim_u;
+    z0y0   := lerp(table[d0 + r0 + u0], table[d0 + r0 + u1], uf);
+    z0y1   := lerp(table[d0 + r1 + u0], table[d0 + r1 + u1], uf);
+    z1y0   := lerp(table[d1 + r0 + u0], table[d1 + r0 + u1], uf);
+    z1y1   := lerp(table[d1 + r1 + u0], table[d1 + r1 + u1], uf);
+    z0     := lerp(z0y0, z0y1, vf);
+    z1     := lerp(z1y0, z1y1, vf);
+    return lerp(z0, z1, wf);
 }

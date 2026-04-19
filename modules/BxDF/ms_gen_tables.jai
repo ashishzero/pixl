@@ -1,8 +1,8 @@
 
 main :: ()
 {
-    //push_work(compute_metal_E, 1 << 23, 32, 32, 1, "metal_E");
-    //push_work(compute_metal_E_avg, 1 << 26, 32, 1, 1, "metal_E_avg");
+    push_work(compute_metal_E, 1 << 23, 32, 32, 1, "metal_E");
+    push_work(compute_metal_E_avg, 1 << 26, 32, 1, 1, "metal_E_avg");
     push_work(compute_dielectric_E, 1 << 23, 16, 16, 16, "dielectric_E");
     push_work(compute_dielectric_E_avg, 1 << 26, 16, 1, 16, "dielectric_E_avg");
     push_work(compute_dielectric_inv_E, 1 << 23, 16, 16, 16, "dielectric_inv_E");
@@ -56,6 +56,7 @@ main :: ()
 compute_metal_E :: (roughness: float, cosine: float, ior: float, u: Vector2) -> float
 {
     alpha  := microfacet_alpha(roughness, 0.0);
+    if microfacet_is_delta(alpha) return 1.0;
     sine   := sqrt(1.0 - cosine * cosine);
     V      := Vector3.{sine, 0.0, cosine};
     sample := sample_ggx_specular_reflect(V, alpha, u);
