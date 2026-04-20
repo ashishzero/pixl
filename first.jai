@@ -27,7 +27,7 @@ build :: ()
     make_directory_if_it_does_not_exist(output_path);
 
     build_program(output_path, "PixL", "source/main.jai");
-    build_program(output_path, "PixL_bsdf_ms_gen_tables", "modules/BxDF/ms_gen_tables.jai");
+    //build_program(output_path, "PixL_bsdf_ms_gen_tables", "modules/BxDF/ms_gen_tables.jai");
     //build_program(output_path, "PixL_bsdf_tests", "modules/BxDF/tests.jai");
     //build_program(output_path, "PixL_test_renders", "source/test_renders.jai");
 

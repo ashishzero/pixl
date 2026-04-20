@@ -3,11 +3,19 @@ main :: ()
 {
     push_work(compute_metal_E, 1 << 23, 32, 32, 1, "metal_E");
     push_work(compute_metal_E_avg, 1 << 26, 32, 1, 1, "metal_E_avg");
+
     push_work(compute_dielectric_E, 1 << 23, 16, 16, 16, "dielectric_E");
     push_work(compute_dielectric_E_avg, 1 << 26, 16, 1, 16, "dielectric_E_avg");
+
     push_work(compute_dielectric_inv_E, 1 << 23, 16, 16, 16, "dielectric_inv_E");
     push_work(compute_dielectric_inv_E_avg, 1 << 26, 16, 1, 16, "dielectric_inv_E_avg");
-    
+
+    push_work(compute_dielectric_full_E, 1 << 23, 16, 16, 16, "dielectric_full_E");
+    push_work(compute_dielectric_full_E_avg, 1 << 26, 16, 1, 16, "dielectric_full_E_avg");
+
+    push_work(compute_dielectric_full_inv_E, 1 << 23, 16, 16, 16, "dielectric_full_inv_E");
+    push_work(compute_dielectric_full_inv_E_avg, 1 << 26, 16, 1, 16, "dielectric_full_inv_E_avg");
+
     args    := get_command_line_arguments();
     program := args[0];
     args     = array_view(args, 1, args.count - 1);
@@ -20,11 +28,10 @@ main :: ()
             if compare_nocase(name, "-help") == 0
             {
                 print("USAGE ::\n    % all OR computes...\n", program);
-                print("Computes:\n    ");
-                print(compute_queue[0].name);
-                for 1..compute_queue.count-1
+                print("Computes:\n");
+                for compute_queue
                 {
-                    print(", %", compute_queue[it].name);
+                    print("    %\n", it.name);
                 }
                 print("\n\n");
                 return;
@@ -53,7 +60,7 @@ main :: ()
 //------------------------------------------------------------------------
 // Compute Functions
 
-compute_metal_E :: (roughness: float, cosine: float, ior: float, u: Vector2) -> float
+compute_metal_E :: (roughness: float, cosine: float, ior: float, p: float, u: Vector2) -> float
 {
     alpha  := microfacet_alpha(roughness, 0.0);
     if microfacet_is_delta(alpha) return 1.0;
@@ -68,15 +75,16 @@ compute_metal_E :: (roughness: float, cosine: float, ior: float, u: Vector2) -> 
     return 0.0;
 }
 
-compute_metal_E_avg :: (roughness: float, cosine: float, ior: float, u: Vector2) -> float
+compute_metal_E_avg :: (roughness: float, cosine: float, ior: float, p: float, u: Vector2) -> float
 {
-    E := compute_metal_E(roughness, cosine, ior, u);
+    E := compute_metal_E(roughness, cosine, ior, p, u);
     return 2.0 * cosine * E;
 }
 
-compute_dielectric_E :: (roughness: float, cosine: float, ior: float, u: Vector2) -> float
+compute_dielectric_E :: (roughness: float, cosine: float, ior: float, p: float, u: Vector2) -> float
 {
     alpha  := microfacet_alpha(roughness, 0.0);
+    if microfacet_is_delta(alpha) return 1.0;
     sine   := sqrt(1.0 - cosine * cosine);
     V      := Vector3.{sine, 0.0, cosine};
     sample := sample_ggx_specular_reflect(V, alpha, u);
@@ -90,28 +98,85 @@ compute_dielectric_E :: (roughness: float, cosine: float, ior: float, u: Vector2
     return 0.0;
 }
 
-compute_dielectric_E_avg :: (roughness: float, cosine: float, ior: float, u: Vector2) -> float
+compute_dielectric_E_avg :: (roughness: float, cosine: float, ior: float, p: float, u: Vector2) -> float
 {
-    E := compute_dielectric_E(roughness, cosine, ior, u);
+    E := compute_dielectric_E(roughness, cosine, ior, p, u);
     return 2.0 * cosine * E;
 }
 
-compute_dielectric_inv_E :: (roughness: float, cosine: float, ior: float, u: Vector2) -> float
+compute_dielectric_inv_E :: (roughness: float, cosine: float, ior: float, p: float, u: Vector2) -> float
 {
     inv_ior := 1.0 / ior;
-    return compute_dielectric_E(roughness, cosine, inv_ior, u);
+    return compute_dielectric_E(roughness, cosine, inv_ior, p, u);
 }
 
-compute_dielectric_inv_E_avg :: (roughness: float, cosine: float, ior: float, u: Vector2) -> float
+compute_dielectric_inv_E_avg :: (roughness: float, cosine: float, ior: float, p: float, u: Vector2) -> float
 {
-    E := compute_dielectric_inv_E(roughness, cosine, ior, u);
+    E := compute_dielectric_inv_E(roughness, cosine, ior, p, u);
+    return 2.0 * cosine * E;
+}
+
+compute_dielectric_full_E :: (roughness: float, cosine: float, ior: float, p: float, u: Vector2) -> float
+{
+    alpha  := microfacet_alpha(roughness, 0.0);
+    if microfacet_is_delta(alpha) return 1.0;
+    sine   := sqrt(1.0 - cosine * cosine);
+    V      := Vector3.{sine, 0.0, cosine};
+    H      := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
+    F      := fresnel_dielectric(ior, dot(V, H));
+
+    if (p >= F)
+    {
+        L, refracted := refract(-V, H, ior);
+        if (refracted)
+        {
+            btdf := evaluate_ggx_specular_refract(V, L, H, alpha, ior);
+            f    := btdf.f / (ior * ior);
+            pdf  := btdf.pdf;
+            E    := f.x * abs(L.z) / pdf;
+            return E;
+        }
+        else
+        {
+            F = 1.0;
+        }
+    }
+
+    L := reflect(-V, H);
+    if (L.z > 0.0)
+    {
+        brdf := evaluate_ggx_specular_reflect(V, L, H, alpha);
+        f    := brdf.f;
+        pdf  := brdf.pdf;
+        E    := f.x * abs(L.z) / pdf;
+        return E;
+    }
+
+    return 0.0;
+}
+
+compute_dielectric_full_E_avg :: (roughness: float, cosine: float, ior: float, p: float, u: Vector2) -> float
+{
+    E := compute_dielectric_full_E(roughness, cosine, ior, p, u);
+    return 2.0 * cosine * E;
+}
+
+compute_dielectric_full_inv_E :: (roughness: float, cosine: float, ior: float, p: float, u: Vector2) -> float
+{
+    inv_ior := 1.0 / ior;
+    return compute_dielectric_full_E(roughness, cosine, inv_ior, p, u);
+}
+
+compute_dielectric_full_inv_E_avg :: (roughness: float, cosine: float, ior: float, p: float, u: Vector2) -> float
+{
+    E := compute_dielectric_full_inv_E(roughness, cosine, ior, p, u);
     return 2.0 * cosine * E;
 }
 
 //------------------------------------------------------------------------
 // Compute
 
-Compute_Proc :: #type (x: float, y: float, z: float, u: Vector2) -> float;
+Compute_Proc :: #type (x: float, y: float, z: float, p: float, u: Vector2) -> float;
 
 Compute_Work :: struct
 {
@@ -248,7 +313,7 @@ compute_thread :: (thread: *Thread) -> s64
 
             for sample:0..it.n_samples-1
             {
-                random    := sample_random_3D(sample.(u32), seed);
+                random    := sample_random_4D(sample.(u32), seed);
 
                 roughness := ifx it.dim_x > 1 then x.(float) / (it.dim_x - 1).(float) else 0.0;
                 cosine    := ifx it.dim_y > 1 then y.(float) / (it.dim_y - 1).(float) else random.z;
@@ -258,8 +323,9 @@ compute_thread :: (thread: *Thread) -> s64
                 cosine     = clamp(cosine, 1.0e-4, 1.0);
                 t          = clamp(t, 1.0e-4, 0.999999);
                 ior       := ior_parametrization(t);
+                p         := random.w;
 
-                E := it.proc(roughness, cosine, ior, random.xy);
+                E := it.proc(roughness, cosine, ior, p, random.xy);
                 acc += E.(float64);
             }
 

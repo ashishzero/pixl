@@ -30,7 +30,7 @@ fresnel_dielectric :: (ior: float, mu: float) -> float
 {
     u  := abs(clamp(mu, -1.0, 1.0));
     g2 := ior * ior + u * u - 1.0;
-    if g2 <= 0.0 return 1.0;
+    if g2 <= 0.0 return 1.0; // TIR
     g  := sqrt(g2);
     n1 := g - u;
     d1 := g + u;

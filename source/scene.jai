@@ -106,14 +106,11 @@ Test_Scene :: enum
 
     metal_test;
     diffuse_test;
-    specular_test;
+    specular_test_1;
+    specular_test_2;
     glossy_diffuse_test;
-
-    specular_reflection_test;
-    specular_transmission_test;
-    specular_rough_transmission_test;
-    fresnel_blend_test;
-    fresnel_blend_transmission_test;
+    glass_test_1;
+    glass_test_2;
     envmap_test;
 }
 
@@ -317,19 +314,31 @@ load_test_scene :: (using scene: *Scene, type: Test_Scene)
             {
                 color                      := Vector3.{0, 0.7, 1.0};
                 material.color              = create_constant_texture(color);
-                material.specular_weight    = create_constant_texture(0.0);
                 material.specular_roughness = create_constant_texture(roughness);
                 material.geometry_opacity   = create_constant_texture(alpha);
             }
             test_scene(scene, ambient_parameter);
 
-        case .specular_test;
+        case .specular_test_1;
             glossy_diffuse_parameter :: (material: *Material, x: int, y: int, roughness: float, anisotropic: float)
             {
                 color                        := Vector3.{0.18, 0.33, 0.77};
                 material.color                = create_constant_texture(color);
                 material.specular_roughness   = create_constant_texture(roughness);
                 material.specular_anisotropic = create_constant_texture(anisotropic);
+                material.specular_weight      = create_constant_texture(1.0);
+            }
+            test_scene(scene, glossy_diffuse_parameter);
+
+        case .specular_test_2;
+            glossy_diffuse_parameter :: (material: *Material, x: int, y: int, specular_t: float, roughness: float)
+            {
+                color                        := Vector3.{0.18, 0.33, 0.77};
+                specular_ior                 := lerp(1.0, 3.0, specular_t);
+                material.color                = create_constant_texture(color);
+                material.specular_ior         = create_constant_texture(specular_ior);
+                material.specular_roughness   = create_constant_texture(roughness);
+                material.specular_anisotropic = create_constant_texture(0.0);
                 material.specular_weight      = create_constant_texture(1.0);
             }
             test_scene(scene, glossy_diffuse_parameter);
@@ -344,69 +353,25 @@ load_test_scene :: (using scene: *Scene, type: Test_Scene)
             }
             test_scene(scene, glossy_diffuse_parameter);
 
-        case .specular_reflection_test;
-            specular_reflection_parameter :: (material: *Material, x: int, y: int, roughness: float, specular_ior: float)
+        case .glass_test_1;
+            specular_reflection_parameter :: (material: *Material, x: int, y: int, specular_t: float, roughness: float)
             {
-                color                       := Vector3.{0.023, 0.023, 0.023};
-                specular_tint               := Vector3.{1.000, 1.000, 1.000};
-                material.color              = create_constant_texture(color);
-                material.specular_ior       = create_constant_texture(specular_ior);
-                material.edge_tint      = create_constant_texture(specular_tint);
-                material.specular_roughness = create_constant_texture(roughness);
-                material.specular_weight    = create_constant_texture(1.0);
+                specular_ior                 := lerp(1.0, 3.0, specular_t);
+                material.specular_ior        = create_constant_texture(specular_ior);
+                material.specular_roughness  = create_constant_texture(roughness);
+                material.transmission_weight = create_constant_texture(1.0);
             }
             test_scene(scene, specular_reflection_parameter);
 
-        case .specular_transmission_test;
-            specular_transmission_parameter :: (material: *Material, x: int, y: int, transmission: float, specular_ior: float)
+        case .glass_test_2;
+            specular_transmission_parameter :: (material: *Material, x: int, y: int, roughness: float, anisotropic: float)
             {
-                color                        := Vector3.{0, 0.7, 1.0};
-                specular_tint                := Vector3.{1, 1, 1};
-                material.color                = create_constant_texture(color);
-                material.edge_tint        = create_constant_texture(specular_tint);
-                material.specular_ior         = create_constant_texture(specular_ior);
-                material.transmission_weight         = create_constant_texture(transmission);
-                material.specular_weight      = create_constant_texture(1.0);
+                material.specular_roughness   = create_constant_texture(roughness);
+                material.specular_anisotropic = create_constant_texture(anisotropic);
+                material.specular_ior         = create_constant_texture(1.5);
+                material.transmission_weight  = create_constant_texture(1.0);
             }
             test_scene(scene, specular_transmission_parameter);
-
-        case .specular_rough_transmission_test;
-            specular_rough_transmission_parameter :: (material: *Material, x: int, y: int, roughness: float, transmission: float)
-            {
-                color                        := Vector3.{0, 0.7, 1.0};
-                specular_tint                := Vector3.{1, 1, 1};
-                material.color                = create_constant_texture(color);
-                material.edge_tint        = create_constant_texture(specular_tint);
-                material.transmission_weight         = create_constant_texture(transmission);
-                material.specular_roughness   = create_constant_texture(roughness);
-                material.specular_weight      = create_constant_texture(1.0);
-            }
-            test_scene(scene, specular_rough_transmission_parameter);
-
-        case .fresnel_blend_test;
-            fresnel_blend_parameter :: (material: *Material, x: int, y: int, roughness: float, specular: float)
-            {
-                color                        := Vector3.{0, 0.7, 1.0};
-                specular_tint                := Vector3.{1, 1, 1};
-                material.color                = create_constant_texture(color);
-                material.edge_tint        = create_constant_texture(specular_tint);
-                material.specular_roughness   = create_constant_texture(roughness);
-                material.specular_weight      = create_constant_texture(specular);
-            }
-            test_scene(scene, fresnel_blend_parameter);
-
-        case .fresnel_blend_transmission_test;
-            fresnel_blend_parameter :: (material: *Material, x: int, y: int, roughness: float, specular: float)
-            {
-                color                        := Vector3.{0, 0.7, 1.0};
-                specular_tint                := Vector3.{1, 1, 1};
-                material.color                = create_constant_texture(color);
-                material.edge_tint        = create_constant_texture(specular_tint);
-                material.specular_roughness   = create_constant_texture(roughness);
-                material.specular_weight      = create_constant_texture(specular);
-                material.transmission_weight         = create_constant_texture(1.0);
-            }
-            test_scene(scene, fresnel_blend_parameter);
 
         case .envmap_test;
             camera.fov         = 45.0 / 360.0;
@@ -535,7 +500,7 @@ create_lambertian_material :: (scene: *Scene, color: Texture2D, roughness := 0.0
     material.color             = color;
     material.diffuse_roughness = create_constant_texture(roughness);
     material.specular_ior      = create_constant_texture(1.5);
-    material.specular_weight   = create_constant_texture(0.0);
+    material.specular_weight   = create_constant_texture(1.0);
     return id, material;
 }
 
@@ -1411,13 +1376,13 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_State, stats: 
 
             if is_nan_or_inf(sample.f)
             {
-                print("Internal BSDF error: f Nan/Inf(%) - %\n", sample.f, sample.label);
+                print("Internal BSDF error: f Nan/Inf(%) - %\n", sample.f, sample.transport);
                 break;
             }
 
             if is_nan_or_inf(sample.pdf)
             {
-                print("Internal BSDF error: pdf Nan/Inf(%) - %\n", sample.pdf, sample.label);
+                print("Internal BSDF error: pdf Nan/Inf(%) - %\n", sample.pdf, sample.transport);
                 break;
             }
 

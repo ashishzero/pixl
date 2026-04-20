@@ -31,14 +31,11 @@ Surface :: struct
     emission         : Spectrum;
 }
 
-BSDF_Label :: enum_flags u32
+Transport :: enum u32
 {
-    DIFFUSE_REFLECTION    :: 0x1;
-    SPECULAR_REFLECTION   :: 0x2;
-    REFLECTION            :: DIFFUSE_REFLECTION | SPECULAR_REFLECTION;
-    SPECULAR_REFRACTION   :: 0x4;
-    GEOMETRY_TRANSMISSION :: 0x8;
-    TRANSMISSION          :: SPECULAR_REFRACTION | GEOMETRY_TRANSMISSION;
+    NONE;
+    REFLECTION;
+    TRANSMISSION;
 }
 
 BSDF :: struct
@@ -51,7 +48,17 @@ Sampled_BSDF :: struct
 {
     using bsdf : BSDF;
     L          : Vector3;
-    label      : BSDF_Label;
+    transport  : Transport;
+}
+
+sampled_bsdf :: inline (bsdf: BSDF, L: Vector3, transport: Transport) -> Sampled_BSDF
+{
+    return .{bsdf, L, transport};
+}
+
+sampled_bsdf :: inline (f: Spectrum, pdf: float, L: Vector3, transport: Transport) -> Sampled_BSDF
+{
+    return sampled_bsdf(.{f, pdf}, L, transport);
 }
 
 //------------------------------------------------------------------------
@@ -59,20 +66,37 @@ Sampled_BSDF :: struct
 
 #scope_export
 
-sample_uniform :: (u1: float, u2: float) -> Vector3
+sample_uniform_hemisphere :: (u1: float, u2: float) -> Vector3
 {
-    sintheta := sqrt(1.0 - u1 * u1);
-    phi      := 2.0 * PI * u2;
-    L : Vector3 = ---;
-    L.x = sintheta * cos(phi);
-    L.y = sintheta * sin(phi);
-    L.z = u1;
+    r   := sqrt(1.0 - u1 * u1);
+    phi := 2.0 * PI * u2;
+    L   : Vector3 = ---;
+    L.x  = r * cos(phi);
+    L.y  = r * sin(phi);
+    L.z  = u1;
     return L;
 }
 
-pdf_uniform :: () -> float
+pdf_uniform_hemisphere :: () -> float
 {
     return 1.0 / (2.0 * PI);
+}
+
+sample_uniform_sphere :: (u1: float, u2: float) -> Vector3
+{
+    z   := 1.0 - 2.0 * u1;
+    r   := sqrt(1.0 - z * z);
+    phi := 2 * PI * u2;
+    L   : Vector3 = ---;
+    L.x  = r * cos(phi);
+    L.y  = r * sin(phi);
+    L.z  = z;
+    return L;
+}
+
+pdf_uniform_sphere :: () -> float
+{
+    return 1.0 / (4.0 * PI);
 }
 
 sample_cosine :: (u1: float, u2: float) -> Vector3
@@ -102,11 +126,11 @@ reflect :: inline (I: Vector3, N: Vector3) -> Vector3
 refract :: inline (I: Vector3, N: Vector3, ior: float) -> Vector3, bool
 {
     cos_i := -dot(N, I);
-    sin_t := ior * ior * (1.0 - cos_i * cos_i);
+    sin_t := max(0.0, 1.0 - cos_i * cos_i) / (ior * ior);
     if (sin_t <= 1.0)
     {
         k := 1.0 - sin_t;
-        R := ior * I + (ior * cos_i - sqrt(k)) * N;
+        R := I / ior + (cos_i / ior - sqrt(k)) * N;
         return R, true;
     }
     return .{}, false;

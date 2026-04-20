@@ -107,6 +107,11 @@ GGX_Sampled_BSDF :: struct
     H         : Vector3;
 }
 
+sampled_bsdf :: inline (bsdf: BSDF, L: Vector3, transport: Transport, H: Vector3) -> GGX_Sampled_BSDF
+{
+    return .{.{bsdf, L, transport}, H};
+}
+
 evaluate_ggx_specular_reflect :: (V: Vector3, L: Vector3, H: Vector3, alpha: Vector2) -> BSDF
 {
     NoV := V.z;
@@ -140,22 +145,6 @@ sample_ggx_specular_reflect :: (V: Vector3, alpha: Vector2, u: Vector2) -> GGX_S
 {
     H := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
     L := reflect(-V, H);
-    if (L.z > 0.0)
-    {
-        brdf := evaluate_ggx_specular_reflect(V, L, H, alpha);
-        return .{.{brdf, L, .SPECULAR_REFLECTION}, H};
-    }
-    return .{};
-}
-
-sample_ggx_specular_refract :: (V: Vector3, alpha: Vector2, ior: float, u: Vector2) -> GGX_Sampled_BSDF
-{
-    H := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
-    L, refracted := refract(-V, H, ior);
-    if (refracted)
-    {
-        btdf := evaluate_ggx_specular_refract(V, L, H, alpha, ior);
-        return .{.{btdf, L, .SPECULAR_REFRACTION}, H};
-    }
-    return .{};
+    brdf := evaluate_ggx_specular_reflect(V, L, H, alpha);
+    return sampled_bsdf(brdf, L, .REFLECTION, H);
 }
