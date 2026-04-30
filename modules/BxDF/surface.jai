@@ -21,6 +21,7 @@ Surface :: struct
     falloff             : Spectrum;
 
     // Microfacet GGX
+    // TODO: remove this and add specular_roughness, specular_anisotrophy
     microfacet_alpha    : Vector2;
 
     // Ambient Medium
@@ -31,34 +32,123 @@ Surface :: struct
     emission         : Spectrum;
 }
 
+Lobe_Index :: enum u32
+{
+    DIFFUSE          :: 0;
+    GLOSSY_SPECULAR  :: 1;
+}
+
+LOBE_COUNT   :: #run type_info(Lobe_Index).values.count;
+Lobe_Weights :: [LOBE_COUNT]float;
+
+Diffuse_Shading_Info :: struct
+{
+    albedo           : Spectrum;
+    roughness        : float;
+    eta_t_over_eta_i : float;
+}
+
+Glossy_Specular_Shading_Info :: struct
+{
+    microfacet_alpha                      : Vector2;
+
+    transparent_dielectric_reflect_scale  : float;
+    transparent_dielectric_transmit_scale : float;
+    opaque_dielectric_reflect_scale       : float;
+    eta_t_over_eta_i_transparent          : float;
+    eta_t_over_eta_i_opaque               : float;
+
+    metal_scale                           : float;
+    reflectance                           : Spectrum;
+    edge_tint                             : Spectrum;
+    falloff                               : Spectrum;
+}
+
+Shading_Info :: struct
+{
+    diffuse         : Diffuse_Shading_Info;
+    glossy_specular : Glossy_Specular_Shading_Info;
+
+    // deprecated
+    eta_t_over_eta_i    : float;
+
+    microfacet_alpha    : Vector2;
+
+    dielectric_reflect  : float;
+    dielectric_transmit : float;
+
+    metallic            : float;
+    reflectance         : Spectrum;
+    edge_tint           : Spectrum;
+    falloff             : Spectrum;
+}
+
+Shading_Context :: struct
+{
+    using info   : Shading_Info;
+    wo           : Vector3;
+    total_weight : float;
+    weights      : Lobe_Weights;
+}
+
 Transport :: enum u32
 {
-    NONE;
-    REFLECTION;
-    TRANSMISSION;
-}
+    RADIANCE;
+    IMPORTANCE;
+} // deprecated
 
 BSDF :: struct
 {
     f     : Spectrum;
     pdf   : float;
+} // deprecated
+
+Lobe_Type :: enum_flags u32
+{
+    NONE         :: 0;
+    REFLECTION   :: 0x1;
+    TRANSMISSION :: 0x2;
+    DIFFUSE      :: 0x4;
+    GLOSSY       :: 0x8;
+    SPECULAR     :: 0x10;
 }
 
-Sampled_BSDF :: struct
+Sample :: struct
 {
-    using bsdf : BSDF;
-    L          : Vector3;
-    transport  : Transport;
+    weight    : Spectrum;
+    pdf       : float;
+    wi        : Vector3;
+    lobe_type : Lobe_Type;
 }
 
-sampled_bsdf :: inline (bsdf: BSDF, L: Vector3, transport: Transport) -> Sampled_BSDF
+make_spectrum :: inline (x: float, y: float, z: float) -> Spectrum
 {
-    return .{bsdf, L, transport};
+    return .{x, y, z};
 }
 
-sampled_bsdf :: inline (f: Spectrum, pdf: float, L: Vector3, transport: Transport) -> Sampled_BSDF
+make_spectrum :: inline (x: float) -> Spectrum
 {
-    return sampled_bsdf(.{f, pdf}, L, transport);
+    return make_spectrum(x, x, x);
+}
+
+make_sample :: inline (weight: Spectrum, pdf: float, wi: Vector3, lobe_type: Lobe_Type) -> Sample
+{
+    return .{
+        weight    = weight,
+        pdf       = pdf,
+        wi        = wi,
+        lobe_type = lobe_type
+    };
+}
+
+make_zero_sample :: inline () -> Sample
+{
+    return .{
+        weight    = Spectrum_Zero,
+        pdf       = 0.0,
+        wi        = .{0, 0, 0},
+        lobe_type = 0
+    };
 }
 
 //------------------------------------------------------------------------
@@ -118,29 +208,27 @@ pdf_cosine :: (L: Vector3) -> float
 //------------------------------------------------------------------------
 // Utils
 
+max_spectrum :: inline (s: Spectrum) -> float
+{
+    return max(s.x, s.y, s.z);
+}
+
 reflect :: inline (I: Vector3, N: Vector3) -> Vector3
 {
     return I - 2.0 * dot(N, I) * N;
 }
 
-refract :: inline (I: Vector3, N: Vector3, ior: float) -> Vector3, bool
+refract :: inline (I: Vector3, N: Vector3, eta_t_over_eta_i: float) -> Vector3, bool
 {
-    cos_i := -dot(N, I);
-    sin_t := max(0.0, 1.0 - cos_i * cos_i) / (ior * ior);
-    if (sin_t <= 1.0)
+    eta_i_over_eta_t := 1.0 / eta_t_over_eta_i;
+
+    cos_i  := -dot(N, I);
+    sin2_t := max(0.0, 1.0 - cos_i * cos_i) * eta_i_over_eta_t * eta_i_over_eta_t;
+    if (sin2_t < 1.0)
     {
-        k := 1.0 - sin_t;
-        R := I / ior + (cos_i / ior - sqrt(k)) * N;
+        cos_t := sqrt(1.0 - sin2_t);
+        R     := I * eta_i_over_eta_t + (cos_i * eta_i_over_eta_t - cos_t) * N;
         return R, true;
     }
     return .{}, false;
-}
-
-luminance :: (s: Spectrum) -> float
-{
-    R :: 0.2126;
-    G :: 0.7152;
-    B :: 0.0722;
-    l := R * s.x + G * s.y + B * s.z;
-    return l;
 }

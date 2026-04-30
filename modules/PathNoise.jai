@@ -111,16 +111,14 @@ sample_scrambled_sobol :: inline (index: u32, seed: u32, dim: u32) -> float
 {
     v := scrambled_sobol(index, seed, dim);
     r := v.(float) * SOBOL_INV_RESOLUTION;
-    if (r < 1.0) return r;
-    return 1.0 - FLOAT32_EPSILON;
+    return r;
 }
 
 sample_sobol :: inline (index: u32, dim: u32) -> float
 {
     v := sobol(index, dim);
     r := v.(float) * SOBOL_INV_RESOLUTION;
-    if (r < 1.0) return r;
-    return 1.0 - FLOAT32_EPSILON;
+    return r;
 }
 
 #scope_file
@@ -222,8 +220,6 @@ morton2 :: (x: u32, y: u32) -> u32
     code    := (x_split << 1) | y_split;
     return code;
 }
-
-FLOAT32_EPSILON        :: 0h34000000;
 
 //------------------------------------------------------------------------
 // Sobol Table

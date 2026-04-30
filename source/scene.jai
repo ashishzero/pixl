@@ -357,7 +357,7 @@ load_test_scene :: (using scene: *Scene, type: Test_Scene)
             specular_reflection_parameter :: (material: *Material, x: int, y: int, specular_t: float, roughness: float)
             {
                 specular_ior                 := lerp(1.0, 3.0, specular_t);
-                material.specular_ior        = create_constant_texture(specular_ior);
+                material.specular_ior        = create_constant_texture(specular_ior); // nocheckin
                 material.specular_roughness  = create_constant_texture(roughness);
                 material.transmission_weight = create_constant_texture(1.0);
             }
@@ -1258,7 +1258,7 @@ material_surface :: (material: Material, hit: Hit_Info) -> Surface
     surface.edge_tint           = SampleTextureSpectrum(material.edge_tint, hit.u, hit.v);
     surface.falloff             = SampleTextureSpectrum(material.falloff, hit.u, hit.v);
 
-    surface.microfacet_alpha    = microfacet_alpha(specular_roughness, specular_anisotropic);
+    surface.microfacet_alpha    = microfacet_anisotropic_alpha(specular_roughness, specular_anisotropic, true);
     
     surface.geometry_opacity    = SampleAlpha(material.geometry_opacity, hit.u, hit.v);
     surface.absorption          = absorption_strength * absorption;
@@ -1372,17 +1372,21 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_State, stats: 
             u      := sample_2D(rng, .BxDF);
 
             V      := forward_transform(inv_TBN, -dir);
-            sample := sample_principled_bsdf(V, surface, p, u);
 
-            if is_nan_or_inf(sample.f)
+            shading_context := prepare_surface(surface, V);
+
+            sample := sample_surface(shading_context, .{u.x, u.y, p});
+
+            // TODO: Fixme
+            if is_nan_or_inf(sample.weight)
             {
-                print("Internal BSDF error: f Nan/Inf(%) - %\n", sample.f, sample.transport);
+                print("Internal BSDF error: weight Nan/Inf(%) - %\n", sample.weight, sample.lobe_type);
                 break;
             }
 
             if is_nan_or_inf(sample.pdf)
             {
-                print("Internal BSDF error: pdf Nan/Inf(%) - %\n", sample.pdf, sample.transport);
+                print("Internal BSDF error: pdf Nan/Inf(%) - %\n", sample.pdf, sample.lobe_type);
                 break;
             }
 
@@ -1395,7 +1399,7 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_State, stats: 
             contrib := throughput * surface.emission;
             radiance += contrib;
 
-            if (sample.pdf <= 0.0)
+            if !sample.lobe_type
             {
                 break;
             }
@@ -1405,8 +1409,10 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_State, stats: 
             //              print("nan/inf: %\n", sample.bxdf);
             //          }
 
-            cosine := abs(sample.L.z);
-            throughput *= cosine * sample.f / sample.pdf;
+            // TODO: Store them separately
+            throughput *= sample.weight;
+            //cosine := abs(sample.wi.z);
+            //throughput *= cosine * sample.f / sample.pdf;
 
             // TODO: add checks properly
             //if (isnan(throughput.x) || isnan(throughput.y) || isnan(throughput.z))
@@ -1417,7 +1423,7 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_State, stats: 
             //------------------------------------------------------------------------
             // Next ray
             origin = hit.p;
-            dir    = inverse_transform(inv_TBN, sample.L);
+            dir    = inverse_transform(inv_TBN, sample.wi);
             tmin   = 1.0e-3;
             tmax   = FLOAT32_MAX;
             type   = .SECONDARY;

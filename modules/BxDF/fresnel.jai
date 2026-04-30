@@ -6,14 +6,14 @@
 MAX_REASONABLE_IOR :: 400.0;
 MIN_REASONABLE_IOR :: 1.0 / MAX_REASONABLE_IOR;
 
-fresnel_metal :: (reflectance: Spectrum, edge_tint: Spectrum, falloff: Spectrum, VoH: float) -> Spectrum
+fresnel_metal :: (reflectance: Spectrum, edge_tint: Spectrum, falloff: Spectrum, wo_dot_wh: float) -> Spectrum
 {
-    t   := 1.0 - VoH;
+    t   := 1.0 - wo_dot_wh;
     x   := pow(t, 1.0 / max(falloff.x, 1.0e-6));
     y   := pow(t, 1.0 / max(falloff.y, 1.0e-6));
     z   := pow(t, 1.0 / max(falloff.z, 1.0e-6));
-    F   := reflectance + (edge_tint - reflectance) * Spectrum.{x, y, z};
-    return F;
+    f   := reflectance + (edge_tint - reflectance) * Spectrum.{x, y, z};
+    return f;
 }
 
 fresnel_average_metal :: (reflectance: Spectrum, edge_tint: Spectrum, falloff: Spectrum) -> Spectrum
@@ -22,14 +22,16 @@ fresnel_average_metal :: (reflectance: Spectrum, edge_tint: Spectrum, falloff: S
     p3    := 3 * falloff;
     num   := edge_tint * psq2 + reflectance + p3 * reflectance;
     den   := Spectrum_One + p3 + psq2;
-    F_avg := num / den;
-    return F_avg;
+    f_avg := num / den;
+    return f_avg;
 }
 
-fresnel_dielectric :: (ior: float, mu: float) -> float
+fresnel_dielectric_unpolarized :: (eta_t_over_eta_i: float, mu: float) -> float
 {
+    if (eta_t_over_eta_i == 1.0)
+        return 0.0;
     u  := abs(clamp(mu, -1.0, 1.0));
-    g2 := ior * ior + u * u - 1.0;
+    g2 := eta_t_over_eta_i * eta_t_over_eta_i + u * u - 1.0;
     if g2 <= 0.0 return 1.0; // TIR
     g  := sqrt(g2);
     n1 := g - u;
@@ -39,13 +41,19 @@ fresnel_dielectric :: (ior: float, mu: float) -> float
     d2 := u * n1 + 1.0;
     if d2 <= 0.0 return 1.0;
     t2 := n2 / d2;
-    F  := 0.5 * t1 * t1 * (1.0 + t2 * t2);
-    return F;
+    fresnel := 0.5 * t1 * t1 * (1.0 + t2 * t2);
+    return fresnel;
 }
 
-fresnel_average_dielectric :: (ior: float) -> float
+fresnel_dielectric :: (eta_t_over_eta_i: float, mu: float) -> Spectrum
 {
-    n := clamp(ior, MIN_REASONABLE_IOR, MAX_REASONABLE_IOR);
+    fresnel := fresnel_dielectric_unpolarized(eta_t_over_eta_i, mu);
+    return make_spectrum(fresnel);
+}
+
+fresnel_average_dielectric :: (eta_t_over_eta_i: float) -> float
+{
+    n := clamp(eta_t_over_eta_i, MIN_REASONABLE_IOR, MAX_REASONABLE_IOR);
     if (n >= 1.0)
     {
         num   := n - 1.0;

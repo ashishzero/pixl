@@ -60,43 +60,48 @@ main :: ()
 //------------------------------------------------------------------------
 // Compute Functions
 
-compute_metal_E :: (roughness: float, cosine: float, ior: float, p: float, u: Vector2) -> float
-{
-    alpha  := microfacet_alpha(roughness, 0.0);
-    if microfacet_is_delta(alpha) return 1.0;
-    sine   := sqrt(1.0 - cosine * cosine);
-    V      := Vector3.{sine, 0.0, cosine};
-    sample := sample_ggx_specular_reflect(V, alpha, u);
-    if (sample.pdf > 0.0)
-    {
-        E := sample.f.x * abs(sample.L.z) / sample.pdf;
-        return E;
-    }
-    return 0.0;
-}
+//microfacet_is_delta :: (alpha: float) -> bool// #deprecated
+//{
+//    return alpha < 1.0e-4;
+//}
 
-compute_metal_E_avg :: (roughness: float, cosine: float, ior: float, p: float, u: Vector2) -> float
-{
-    E := compute_metal_E(roughness, cosine, ior, p, u);
-    return 2.0 * cosine * E;
-}
+//compute_metal_E :: (roughness: float, cosine: float, ior: float, p: float, u: Vector2) -> float
+//{
+//    alpha  := microfacet_isotropic_alpha(roughness, true);
+//    if microfacet_is_delta(alpha) return 1.0;
+//    sine   := sqrt(1.0 - cosine * cosine);
+//    V      := Vector3.{sine, 0.0, cosine};
+//    sample := sample_ggx_specular_reflect(V, .{alpha, alpha}, u);
+//    if (sample.pdf > 0.0)
+//    {
+//        E := sample.f.x * abs(sample.L.z) / sample.pdf;
+//        return E;
+//    }
+//    return 0.0;
+//}
 
-compute_dielectric_E :: (roughness: float, cosine: float, ior: float, p: float, u: Vector2) -> float
-{
-    alpha  := microfacet_alpha(roughness, 0.0);
-    if microfacet_is_delta(alpha) return 1.0;
-    sine   := sqrt(1.0 - cosine * cosine);
-    V      := Vector3.{sine, 0.0, cosine};
-    sample := sample_ggx_specular_reflect(V, alpha, u);
-    if (sample.pdf > 0.0)
-    {
-        H    := sample.H;
-        F    := fresnel_dielectric(ior, dot(V, H));
-        E    := F * sample.f.x * abs(sample.L.z) / sample.pdf;
-        return E;
-    }
-    return 0.0;
-}
+//compute_metal_E_avg :: (roughness: float, cosine: float, ior: float, p: float, u: Vector2) -> float
+//{
+//    E := compute_metal_E(roughness, cosine, ior, p, u);
+//    return 2.0 * cosine * E;
+//}
+
+//compute_dielectric_E :: (roughness: float, cosine: float, ior: float, p: float, u: Vector2) -> float
+//{
+//    alpha  := microfacet_isotropic_alpha(roughness, true);
+//    if microfacet_is_delta(alpha) return 1.0;
+//    sine   := sqrt(1.0 - cosine * cosine);
+//    V      := Vector3.{sine, 0.0, cosine};
+//    sample := sample_ggx_specular_reflect(V, .{alpha, alpha}, u);
+//    if (sample.pdf > 0.0)
+//    {
+//        H    := sample.H;
+//        F    := fresnel_dielectric(ior, dot(V, H));
+//        E    := F * sample.f.x * abs(sample.L.z) / sample.pdf;
+//        return E;
+//    }
+//    return 0.0;
+//}
 
 compute_dielectric_E_avg :: (roughness: float, cosine: float, ior: float, p: float, u: Vector2) -> float
 {
@@ -118,11 +123,11 @@ compute_dielectric_inv_E_avg :: (roughness: float, cosine: float, ior: float, p:
 
 compute_dielectric_full_E :: (roughness: float, cosine: float, ior: float, p: float, u: Vector2) -> float
 {
-    alpha  := microfacet_alpha(roughness, 0.0);
+    alpha  := microfacet_isotropic_alpha(roughness, true);
     if microfacet_is_delta(alpha) return 1.0;
     sine   := sqrt(1.0 - cosine * cosine);
     V      := Vector3.{sine, 0.0, cosine};
-    H      := microfacet_ggx_sample_normal(V, alpha, u.x, u.y);
+    H      := microfacet_ggx_sample_vndf(V, .{alpha, alpha}, u.x, u.y);
     F      := fresnel_dielectric(ior, dot(V, H));
 
     if (p >= F)
@@ -130,22 +135,18 @@ compute_dielectric_full_E :: (roughness: float, cosine: float, ior: float, p: fl
         L, refracted := refract(-V, H, ior);
         if (refracted)
         {
-            btdf := evaluate_ggx_specular_refract(V, L, H, alpha, ior);
+            btdf := evaluate_ggx_specular_refract(V, L, H, .{alpha, alpha}, ior);
             f    := btdf.f / (ior * ior);
             pdf  := btdf.pdf;
             E    := f.x * abs(L.z) / pdf;
             return E;
-        }
-        else
-        {
-            F = 1.0;
         }
     }
 
     L := reflect(-V, H);
     if (L.z > 0.0)
     {
-        brdf := evaluate_ggx_specular_reflect(V, L, H, alpha);
+        brdf := evaluate_ggx_specular_reflect(V, L, H, .{alpha, alpha});
         f    := brdf.f;
         pdf  := brdf.pdf;
         E    := f.x * abs(L.z) / pdf;
