@@ -51,7 +51,7 @@ fresnel_dielectric :: (eta_t_over_eta_i: float, mu: float) -> Spectrum
     return make_spectrum(fresnel);
 }
 
-fresnel_average_dielectric :: (eta_t_over_eta_i: float) -> float
+fresnel_average_dielectric_unpolarized :: (eta_t_over_eta_i: float) -> float
 {
     n := clamp(eta_t_over_eta_i, MIN_REASONABLE_IOR, MAX_REASONABLE_IOR);
     if (n >= 1.0)
@@ -68,6 +68,12 @@ fresnel_average_dielectric :: (eta_t_over_eta_i: float) -> float
         F_avg := 0.997118 + 0.1014 * n - 0.965241 * n2 - 0.1306073 * n3;
         return F_avg;
     }
+}
+
+fresnel_average_dielectric :: (eta_t_over_eta_i: float) -> Spectrum
+{
+    fresnel := fresnel_average_dielectric_unpolarized(eta_t_over_eta_i);
+    return make_spectrum(fresnel);
 }
 
 ior_inverse_parametrization :: (ior: float) -> float

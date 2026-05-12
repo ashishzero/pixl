@@ -1,10 +1,235 @@
+#scope_export
+
+LOBE_COUNT :: #run type_info(Lobe_Index).values.count;
+
+prepare_surface :: (surface: Surface, wo: Vector3) -> Shading_Context
+{
+    //------------------------------------------------------------------------
+    // Lobe radiance contribution
+    metallic                := surface.metallic;
+    dielectric              := 1.0 - metallic;
+    opaque                  := 1.0 - surface.transmission_weight;
+    opaque_dielectric       := opaque * dielectric;
+    transparent_dielectric  := surface.transmission_weight * dielectric;
+
+    //------------------------------------------------------------------------
+    // Surface info initialization
+
+    eta_t_over_eta_i_transparent := surface.specular_ior;
+    eta_t_over_eta_i_opaque      := calculate_specular_ior_for_dielectric_opaque(surface.specular_weight, surface.specular_ior);
+
+    ctx: Shading_Context;
+    ctx.diffuse.albedo           = surface.color * opaque_dielectric;
+    ctx.diffuse.roughness        = surface.diffuse_roughness;
+    ctx.diffuse.eta_t_over_eta_i = eta_t_over_eta_i_opaque;
+
+    ctx.glossy_specular.microfacet_alpha                      = microfacet_anisotropic_alpha(surface.specular_roughness, surface.specular_anisotropic, true);
+    ctx.glossy_specular.transparent_dielectric_reflect_scale  = transparent_dielectric;
+    ctx.glossy_specular.transparent_dielectric_transmit_scale = transparent_dielectric;
+    ctx.glossy_specular.opaque_dielectric_reflect_scale       = opaque_dielectric;
+    ctx.glossy_specular.eta_t_over_eta_i_transparent          = eta_t_over_eta_i_transparent;
+    ctx.glossy_specular.eta_t_over_eta_i_opaque               = eta_t_over_eta_i_opaque;
+
+    ctx.glossy_specular.metal_scale                           = metallic;
+    ctx.glossy_specular.reflectance                           = surface.reflectance;
+    ctx.glossy_specular.falloff                               = surface.falloff;
+
+    // TODO: Only do this for Transport == .RADIANCE
+    ctx.glossy_specular.transparent_dielectric_transmit_scale /= (eta_t_over_eta_i_transparent * eta_t_over_eta_i_transparent);
+
+    ctx.multi_scatter_metal.microfacet_alpha           = microfacet_isotropic_alpha(surface.specular_roughness, true);
+    ctx.multi_scatter_metal.average_energy_complement  = 0.0;
+    ctx.multi_scatter_metal.energy_complement_wo_dot_n = 0.0;
+    ctx.multi_scatter_metal.scale                      = Spectrum_Zero;
+
+    if has_visible_energy_loss(ctx.multi_scatter_metal.microfacet_alpha)
+    {
+        ctx.multi_scatter_metal.average_energy_complement  = read_metal_average_energy_complement(ctx.multi_scatter_metal.microfacet_alpha);
+        ctx.multi_scatter_metal.energy_complement_wo_dot_n = read_metal_energy_complement(ctx.multi_scatter_metal.microfacet_alpha, wo.z);
+
+        // Fresnel adjustment is done based on the following blog:
+        // https://blog.selfshadow.com/2018/06/04/multi-faceted-part-2/
+        avg_energy                    := 1.0 - ctx.multi_scatter_metal.average_energy_complement;
+        avg_fresnel                   := fresnel_average_metal(surface.reflectance, surface.edge_tint, surface.falloff);
+        scale_num                     := metallic * avg_fresnel * avg_fresnel * avg_energy;
+        scale_den                     := Spectrum_One - avg_fresnel * ctx.multi_scatter_metal.average_energy_complement;
+        ctx.multi_scatter_metal.scale  = scale_num / max(scale_den, make_spectrum(1.0e-6));
+    }
+
+    ctx.wo = wo;
+
+    //------------------------------------------------------------------------
+    // Lobe PDF Weights
+
+    for 0..LOBE_COUNT-1
+    {
+        ctx.weights[it] = estimate_lobe(ctx.info, wo, it.(Lobe_Index));
+    }
+
+    ctx.total_weight = 0.0;
+    for ctx.weights
+    {
+        ctx.total_weight += it;
+    }
+
+    return ctx;
+}
+
+sample_surface :: (using ctx: Shading_Context, u_sample: Vector3) -> Sample
+{
+    if (ctx.total_weight <= FLOAT32_EPSILON)
+        return make_zero_sample();
+
+    u      := clamp_random_sample(u_sample);
+    lobe   := pick_lobe(ctx, u.z);
+    sample := sample_lobe(info, wo, .{u.x, u.y, lobe.remapped_p}, lobe.index);
+
+    nocheckin_weights: [LOBE_COUNT]Spectrum;
+
+    if !sample.lobe_type return make_zero_sample();
+
+    if !(sample.lobe_type & .SPECULAR)
+    {
+        radiance := sample.weight * sample.pdf;
+        pdf      := sample.pdf * weights[lobe.index];
+
+        nocheckin_weights[lobe.index] = radiance;
+    
+        for 0..LOBE_COUNT-1
+        {
+            index := it.(Lobe_Index);
+            if (index != lobe.index)
+            {
+                lobe_pdf := pdf_lobe(info, wo, sample.wi, index);
+                if lobe_pdf > 0.0
+                {
+                    lobe_radiance := evaluate_lobe(info, wo, sample.wi, index);
+                    nocheckin_weights[index] = lobe_radiance;
+
+                    radiance += lobe_radiance;
+                    pdf += weights[index] * lobe_pdf;
+                }
+            }
+        }
+
+        sample.pdf = pdf / ctx.total_weight;
+        sample.weight = radiance / sample.pdf;
+    }
+    else
+    {
+        sample.weight *= ctx.total_weight / ctx.weights[lobe.index];
+    }
+
+    return sample;
+}
+
+#scope_file
+
+Lobe_Index :: enum u32
+{
+    DIFFUSE             :: 0;
+    GLOSSY_SPECULAR     :: 1;
+    MULTI_SCATTER_METAL :: 2;
+}
+
+Lobe_Info :: struct
+{
+    index      : Lobe_Index;
+    remapped_p : float;
+}
+
+calculate_specular_ior_for_dielectric_opaque :: (specular_weight: float, eta_t_over_eta_i: float) -> float
+{
+    sgn :: x => ((0.0 < x).(float) - (x < 0.0).(float));
+    f_sqrt    := (1.0 - eta_t_over_eta_i) / (1.0 + eta_t_over_eta_i);
+    e         := sgn(eta_t_over_eta_i - 1.0) * sqrt(specular_weight * f_sqrt * f_sqrt);
+    effective := (1.0 + e) / (1 - e);
+    return effective;
+}
+
+pick_lobe :: (ctx: Shading_Context, p: float) -> Lobe_Info
+{
+    p *= ctx.total_weight;
+    weights_so_far := 0.0;
+    for 0..LOBE_COUNT-2
+    {
+        it_lobe_weight := ctx.weights[it];
+        if (p < weights_so_far + it_lobe_weight)
+        {
+            remapped_p := clamp_random_number((p - weights_so_far) / it_lobe_weight);
+            return .{it.(Lobe_Index), remapped_p};
+        }
+        weights_so_far += it_lobe_weight;
+    }
+    last        := LOBE_COUNT - 1;
+    last_weight := ctx.weights[last];
+    remapped_p  := clamp_random_number((p - weights_so_far) / last_weight);
+    return .{last.(Lobe_Index), FLOAT32_ONE_MINUS_EPSILON};
+}
+
+evaluate_lobe :: (info: Shading_Info, wo: Vector3, wi: Vector3, index: Lobe_Index) -> Spectrum
+{
+    if #complete index ==
+    {
+        case .DIFFUSE;
+            return evaluate_diffuse(info.diffuse, wo, wi);
+        case .GLOSSY_SPECULAR;
+            return evaluate_glossy_specular(info.glossy_specular, wo, wi);
+        case .MULTI_SCATTER_METAL;
+            return evaluate_multi_scatter_metal(info.multi_scatter_metal, wo, wi);
+    }
+    return Spectrum_Zero;
+}
+
+pdf_lobe :: (info: Shading_Info, wo: Vector3, wi: Vector3, index: Lobe_Index) -> float
+{
+    if #complete index ==
+    {
+        case .DIFFUSE;
+            return pdf_diffuse(info.diffuse, wo, wi);
+        case .GLOSSY_SPECULAR;
+            return pdf_glossy_specular(info.glossy_specular, wo, wi);
+        case .MULTI_SCATTER_METAL;
+            return pdf_multi_scatter_metal(info.multi_scatter_metal, wo, wi);
+    }
+    return 0.0;
+}
+
+sample_lobe :: (info: Shading_Info, wo: Vector3, u: Vector3, index: Lobe_Index) -> Sample
+{
+    if #complete index ==
+    {
+        case .DIFFUSE;
+            return sample_diffuse(info.diffuse, wo, u);
+        case .GLOSSY_SPECULAR;
+            return sample_glossy_specular(info.glossy_specular, wo, u);
+        case .MULTI_SCATTER_METAL;
+            return sample_multi_scatter_metal(info.multi_scatter_metal, wo, u);
+    }
+    return .{};
+}
+
+estimate_lobe :: (info: Shading_Info, wo: Vector3, index: Lobe_Index) -> float
+{
+    if #complete index ==
+    {
+        case .DIFFUSE;
+            return estimate_diffuse(info.diffuse, wo);
+        case .GLOSSY_SPECULAR;
+            return estimate_glossy_specular(info.glossy_specular, wo);
+        case .MULTI_SCATTER_METAL;
+            return estimate_multi_scatter_metal(info.multi_scatter_metal, wo);
+    }
+    return 0.0;
+}
+
 //------------------------------------------------------------------------
 // Diffuse EON BxDF
 
 // EON: A practical energy-preserving rough diffuse BRDF
 // https://arxiv.org/pdf/2410.18026
 
-#scope_export
+#scope_module
 
 evaluate_diffuse :: (using info: Diffuse_Shading_Info, wo: Vector3, wi: Vector3) -> Spectrum
 {
@@ -176,7 +401,7 @@ diffuse_eon_spectrum :: (wo: Vector3, wi: Vector3, albedo: Spectrum, roughness: 
 //------------------------------------------------------------------------
 // Glossy Specular BSDF
 
-#scope_export
+#scope_module
 
 evaluate_glossy_specular :: (using info: Glossy_Specular_Shading_Info, wo: Vector3, wi: Vector3) -> Spectrum
 {
@@ -343,9 +568,11 @@ sample_glossy_specular :: (using info: Glossy_Specular_Shading_Info, wo: Vector3
 
 estimate_glossy_specular :: (using info: Glossy_Specular_Shading_Info, wo: Vector3) -> float
 {
-    // TODO: Use better estimate
-    coefficients := calculate_glossy_specular_coefficients(info, wo.z);
-    estimate     := max_spectrum(coefficients.reflect + coefficients.transmit);
+    coefficients   := estimate_glossy_specular_coefficients(info);
+    alpha          := sqrt(info.microfacet_alpha.x * info.microfacet_alpha.y);
+    reflect_energy := 1.0 - read_metal_average_energy_complement(alpha);
+    weight         := reflect_energy * coefficients.reflect + coefficients.transmit;
+    estimate       := max_spectrum(weight);
     return estimate;
 }
 
@@ -368,6 +595,17 @@ Glossy_Specular_Probability :: struct
     reflect  : float;
     transmit : float;
     total    : float;
+}
+
+estimate_glossy_specular_coefficients :: (using info: Glossy_Specular_Shading_Info) -> Glossy_Specular_Coefficient
+{
+    coefficients: Glossy_Specular_Coefficient;
+    transparent_fresnel   := fresnel_average_dielectric(eta_t_over_eta_i_transparent);
+    coefficients.reflect  += transparent_dielectric_reflect_scale * transparent_fresnel;
+    coefficients.transmit += transparent_dielectric_transmit_scale * (Spectrum_One - transparent_fresnel);
+    coefficients.reflect  += opaque_dielectric_reflect_scale * fresnel_average_dielectric(eta_t_over_eta_i_opaque);
+    coefficients.reflect  += metal_scale * fresnel_average_metal(reflectance, edge_tint, falloff);
+    return coefficients;
 }
 
 calculate_glossy_specular_coefficients :: (using info: Glossy_Specular_Shading_Info, wo_dot_wh: float) -> Glossy_Specular_Coefficient
@@ -415,127 +653,71 @@ calculate_glossy_specular_probabilities :: (using info: Glossy_Specular_Shading_
     return probabilities;
 }
 
-//microfacet_is_delta :: (alpha: Vector2) -> bool// #deprecated
-//{
-//    return max(alpha.x, alpha.y) < 1.0e-4;
-//}
+//------------------------------------------------------------------------
+// Multi Scatter Metal BRDF
 
-//evaluate_metal :: (V: Vector3, L: Vector3, surface: Surface, transport: Transport) -> BSDF
-//{
-//    alpha := surface.microfacet_alpha;
-//    if !microfacet_is_delta(alpha)
-//    {
-//        rough  := sqrt(sqrt(alpha.x * alpha.y));
-//        E_avg  := average_energy_metal(rough);
-//        F_avg  := fresnel_average_metal(surface.reflectance, surface.edge_tint, surface.falloff);
+#scope_module
 
-//        P_ss   := estimate_metal_single_scatter(E_avg, F_avg);
-//        P_ms   := 1.0 - P_ss;
+evaluate_multi_scatter_metal :: (using info: Multi_Scatter_Metal_Shading_Info, wo: Vector3, wi: Vector3) -> Spectrum
+{
+    if (has_visible_energy_loss(microfacet_alpha) && wi.z > 0.0)
+    {
+        clamped_weight := calculate_multi_scatter_metal_energy(info, wi);
+        weight         := scale * clamped_weight * wi.z;
+        return weight;
+    }
+    return Spectrum_Zero;
+}
 
-//        H      := normalize(V + L);
-//        VoH    := dot(V, H);
-//        spec   := evaluate_ggx_specular_reflect(V, L, H, alpha);
-//        F_ss   := fresnel_metal(surface.reflectance, surface.edge_tint, surface.falloff, VoH);
-//        f_ss   := F_ss * spec.f;
-//        f_ms   := multi_scatter_compensation_metal(E_avg, F_avg, rough, V.z, L.z);
-//        pdf_ms := pdf_cosine(L);
-//        pdf_ss := spec.pdf;
-//        f      := f_ss + f_ms;
-//        pdf    := P_ss * pdf_ss + P_ms * pdf_ms;
-//        return .{f, pdf};
-//    }
-//    return .{};
-//}
+pdf_multi_scatter_metal :: (using info: Multi_Scatter_Metal_Shading_Info, wo: Vector3, wi: Vector3) -> float
+{
+    if (has_visible_energy_loss(microfacet_alpha))
+    {
+        pdf := pdf_uniform_hemisphere();
+        return pdf;
+    }
+    return 0.0;
+}
 
-//sample_metal :: (V: Vector3, surface: Surface, p: float, u: Vector2) -> Sampled_BSDF
-//{
-//    alpha := surface.microfacet_alpha;
-//    if !microfacet_is_delta(alpha)
-//    {
-//        rough := sqrt(sqrt(alpha.x * alpha.y));
-//        E_avg := average_energy_metal(rough);
-//        F_avg := fresnel_average_metal(surface.reflectance, surface.edge_tint, surface.falloff);
+sample_multi_scatter_metal :: (using info: Multi_Scatter_Metal_Shading_Info, wo: Vector3, u: Vector3) -> Sample
+{
+    if (has_visible_energy_loss(microfacet_alpha))
+    {
+        wi := sample_uniform_hemisphere(u.x, u.y);
+        if (wi.z > 0.0)
+        {
+            wi_energy_complement := read_metal_energy_complement(microfacet_alpha, wi.z);
+            pdf                  := pdf_uniform_hemisphere();
+            clamped_weight       := calculate_multi_scatter_metal_energy(info, wi);
+            weight               := scale * clamped_weight * wi.z / pdf;
+            return make_sample(weight, pdf, wi, .REFLECTION | .DIFFUSE);
+        }
+    }
+    return make_zero_sample();
+}
 
-//        P_ss  := estimate_metal_single_scatter(E_avg, F_avg);
-//        P_ms  := 1.0 - P_ss;
+estimate_multi_scatter_metal :: (using info: Multi_Scatter_Metal_Shading_Info, wo: Vector3) -> float
+{
+    if (has_visible_energy_loss(microfacet_alpha))
+    {
+        estimate := max_spectrum(scale) * energy_complement_wo_dot_n;
+        return estimate;
+    }
+    return 0.0;
+}
 
-//        if (p < P_ss)
-//        {
-//            sample := sample_ggx_specular_reflect(V, alpha, u);
-//            if (sample.wi.z > 0.0)
-//            {
-//                VoH    := dot(V, sample.H);
-//                F_ss   := fresnel_metal(surface.reflectance, surface.edge_tint, surface.falloff, VoH);
-//                f_ss   := F_ss * sample.weight.diffuse;
-//                f_ms   := multi_scatter_compensation_metal(E_avg, F_avg, rough, V.z, sample.wi.z);
-//                pdf_ms := pdf_cosine(sample.wi);
-//                pdf_ss := sample.pdf;
-//                f      := f_ss + f_ms;
-//                pdf    := P_ss * pdf_ss + P_ms * pdf_ms;
-//                //return sampled_bsdf(f, pdf, sample.wi, ._REFLECTION | ._GLOSSY);
-//                return .{};
-//            }
-//        }
-//        else
-//        {
-//            L      := sample_cosine(u.x, u.y);
-//            H      := normalize(V + L);
-//            VoH    := dot(V, H);
-//            F_ss   := fresnel_metal(surface.reflectance, surface.edge_tint, surface.falloff, VoH);
-//            spec   := evaluate_ggx_specular_reflect(V, L, H, alpha);
-//            f_ss   := F_ss * spec.f;
-//            f_ms   := multi_scatter_compensation_metal(E_avg, F_avg, rough, V.z, L.z);
-//            pdf_ms := pdf_cosine(L);
-//            pdf_ss := spec.pdf;
-//            f      := f_ss + f_ms;
-//            pdf    := P_ss * pdf_ss + P_ms * pdf_ms;
-//            //return sampled_bsdf(f, pdf, L, ._REFLECTION | ._DIFFUSE);
-//            return .{};
-//        }
-//    }
-//    else
-//    {
-//        L   := Vector3.{-V.x, -V.y, V.z};
-//        pdf := 1.0;
-//        mu  := L.z;
-//        f   := fresnel_metal(surface.reflectance, surface.edge_tint, surface.falloff, mu) / max(mu, 1.0e-6);
-//        //return sampled_bsdf(f, pdf, L, ._REFLECTION | ._SPECULAR);
-//        return .{};
-//    }
-//    return .{};
-//}
+#scope_file
 
-//#scope_file
-
-//average_energy_metal :: (rough: float) -> float
-//{
-//    E_avg := read_table_1D(metal_E_avg, METAL_E_SIZE, rough);
-//    return E_avg;
-//}
-
-//estimate_metal_single_scatter :: (E_avg: float, F_avg: Spectrum) -> float
-//{
-//    f := E_avg * F_avg;
-//    return max(f.x, f.y, f.z);
-//}
-
-//multi_scatter_compensation_metal :: (E_avg: float, F_avg: Spectrum, rough: float, NoV: float, NoL: float) -> Spectrum
-//{
-//    // Based on: https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_slides_v2.pdf
-//    if (E_avg < 1.0)
-//    {
-//        E_l   := read_table_2D(metal_E, METAL_E_SIZE, METAL_E_SIZE, rough, NoL);
-//        E_v   := read_table_2D(metal_E, METAL_E_SIZE, METAL_E_SIZE, rough, NoV);
-//        f_ms  := (1.0 - E_l) * (1.0 - E_v) / (PI * (1.0 - E_avg));
-
-//        // Fresnel adjustment is done based on the following blog:
-//        // https://blog.selfshadow.com/2018/06/04/multi-faceted-part-2/
-//        F_ms  := F_avg * F_avg  * E_avg / (Spectrum_One - F_avg * (1.0 - E_avg));
-
-//        return F_ms * f_ms;
-//    }
-//    return Spectrum_Zero;
-//}
+calculate_multi_scatter_metal_energy :: (using info: Multi_Scatter_Metal_Shading_Info, wi: Vector3) -> float
+{
+    // Based on: https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_slides_v2.pdf
+    // (1 - E(wi)) * (1 - E(wo)) / (PI * (1 - E_avg))
+    energy_complement_wi_dot_n := read_metal_energy_complement(microfacet_alpha, wi.z);
+    unscaled_weight            := energy_complement_wi_dot_n * energy_complement_wo_dot_n / max(PI * average_energy_complement, 1.0e-6);
+    // Prevent weights from getting out of control near grazing angles at low roughnesses
+    clamped_weight             := min(unscaled_weight, sdiv(1.0, wi.z));
+    return clamped_weight;
+}
 
 ////------------------------------------------------------------------------
 //// Glossy Diffuse
@@ -846,16 +1028,6 @@ calculate_glossy_specular_probabilities :: (using info: Glossy_Specular_Shading_
 
 //#scope_file
 
-refracted_normal :: inline (wo: Vector3, wi: Vector3, eta_t_over_eta_i: float) -> Vector3
-{
-    wh := normalize(wo + eta_t_over_eta_i * wi);
-    if (wh.z < 0.0)
-    {
-        wh = -wh;
-    }
-    return wh;
-}
-
 //estimate_dielectric_single_scatter :: (rough: float, ior: float) -> float
 //{
 //    //return 0.0;
@@ -955,200 +1127,14 @@ refracted_normal :: inline (wo: Vector3, wi: Vector3, eta_t_over_eta_i: float) -
 //    //return .{f.weight.diffuse, pdf, L, ._TRANSMISSION};
 //}
 
-////------------------------------------------------------------------------
-//// Principled BSDF
-
-#scope_export
-
-//evaluate_principled_bsdf :: (V: Vector3, L: Vector3, surface: Surface) -> BSDF
-//{
-//    weights := calculate_lobe_weights(surface);
-//    bsdf    : BSDF;
-//    for 0..MAX_LOBE_TYPES-1
-//    {
-//        index    := it.(Lobe_Type);
-//        bxdf     := evaluate_principled_lobe(V, L, surface, index);
-//        bsdf.f   += weights[it] * bxdf.f;
-//        bsdf.pdf += weights[it] * bxdf.pdf;
-//    }
-//    return bsdf;
-//}
-
-prepare_surface :: (surface: Surface, wo: Vector3) -> Shading_Context
-{
-    //------------------------------------------------------------------------
-    // Lobe radiance contribution
-    metallic                := surface.metallic;
-    dielectric              := 1.0 - metallic;
-    opaque                  := 1.0 - surface.transmission_weight;
-    opaque_dielectric       := opaque * dielectric;
-    transparent_dielectric  := surface.transmission_weight * dielectric;
-
-    //------------------------------------------------------------------------
-    // Surface info initialization
-
-    eta_t_over_eta_i_transparent := surface.specular_ior;
-    eta_t_over_eta_i_opaque      := calculate_specular_ior_for_dielectric_opaque(surface.specular_weight, surface.specular_ior);
-
-    ctx: Shading_Context;
-    ctx.diffuse.albedo           = surface.color * opaque_dielectric;
-    ctx.diffuse.roughness        = surface.diffuse_roughness;
-    ctx.diffuse.eta_t_over_eta_i = eta_t_over_eta_i_opaque;
-
-    ctx.glossy_specular.microfacet_alpha                      = surface.microfacet_alpha;
-    ctx.glossy_specular.transparent_dielectric_reflect_scale  = transparent_dielectric;
-    ctx.glossy_specular.transparent_dielectric_transmit_scale = transparent_dielectric;
-    ctx.glossy_specular.opaque_dielectric_reflect_scale       = opaque_dielectric;
-    ctx.glossy_specular.eta_t_over_eta_i_transparent          = eta_t_over_eta_i_transparent;
-    ctx.glossy_specular.eta_t_over_eta_i_opaque               = eta_t_over_eta_i_opaque;
-
-    ctx.glossy_specular.metal_scale                           = metallic;
-    ctx.glossy_specular.reflectance                           = surface.reflectance;
-    ctx.glossy_specular.falloff                               = surface.falloff;
-
-    // TODO: Only do this for Transport == .RADIANCE
-    ctx.glossy_specular.transparent_dielectric_transmit_scale /= (eta_t_over_eta_i_transparent * eta_t_over_eta_i_transparent);
-
-    ctx.microfacet_alpha    = surface.microfacet_alpha;
-    ctx.dielectric_reflect  = dielectric;
-    ctx.dielectric_transmit = transparent_dielectric;
-    ctx.metallic            = surface.metallic;
-    ctx.reflectance         = surface.reflectance;
-    ctx.edge_tint           = surface.edge_tint;
-    ctx.falloff             = surface.falloff;
-    ctx.wo                  = wo;
-
-    //------------------------------------------------------------------------
-    // Lobe PDF Weights
-
-    ctx.weights[Lobe_Index.DIFFUSE]         = estimate_diffuse(ctx.diffuse, wo);
-    ctx.weights[Lobe_Index.GLOSSY_SPECULAR] = estimate_glossy_specular(ctx.glossy_specular, wo);
-
-    ctx.total_weight = 0.0;
-    for ctx.weights
-    {
-        ctx.total_weight += it;
-    }
-
-    return ctx;
-}
-
-sample_surface :: (using ctx: Shading_Context, u: Vector3) -> Sample
-{
-    if (ctx.total_weight <= FLOAT32_EPSILON)
-        return make_zero_sample();
-
-    lobe   := pick_lobe(ctx, clamp_random_number(u.z));
-    sample := sample_lobe(info, wo, .{u.x, u.y, lobe.remapped_p}, lobe.index);
-
-    if !sample.lobe_type return make_zero_sample();
-
-    if !(sample.lobe_type & .SPECULAR)
-    {
-        radiance := sample.weight * sample.pdf;
-        pdf      := sample.pdf * weights[lobe.index];
-    
-        for 0..LOBE_COUNT-1
-        {
-            index := it.(Lobe_Index);
-            if (index != lobe.index)
-            {
-                lobe_pdf := pdf_lobe(info, wo, sample.wi, index);
-                if lobe_pdf > 0.0
-                {
-                    radiance += evaluate_lobe(info, wo, sample.wi, index);
-                    pdf += weights[index] * lobe_pdf;
-                }
-            }
-        }
-
-        sample.pdf    = pdf / ctx.total_weight;
-        sample.weight = radiance / sample.pdf;
-    }
-    else
-    {
-        sample.weight *= ctx.total_weight / ctx.weights[lobe.index];
-    }
-
-    return sample;
-}
-
 #scope_file
 
-calculate_specular_ior_for_dielectric_opaque :: (specular_weight: float, eta_t_over_eta_i: float) -> float
+has_visible_energy_loss :: inline (alpha: float) -> bool
 {
-    sgn :: x => ((0.0 < x).(float) - (x < 0.0).(float));
-    f_sqrt    := (1.0 - eta_t_over_eta_i) / (1.0 + eta_t_over_eta_i);
-    e         := sgn(eta_t_over_eta_i - 1.0) * sqrt(specular_weight * f_sqrt * f_sqrt);
-    effective := (1.0 + e) / (1 - e);
-    return effective;
+    MIN_ROUGHNESS_WITH_VISIBLE_ENERGY_LOSS :: 0.04;
+    MIN_ALPHA_WITH_VISIBLE_ENERGY_LOSS     :: MIN_ROUGHNESS_WITH_VISIBLE_ENERGY_LOSS * MIN_ROUGHNESS_WITH_VISIBLE_ENERGY_LOSS;
+    return alpha >= MIN_ALPHA_WITH_VISIBLE_ENERGY_LOSS;
 }
-
-Lobe_Info :: struct
-{
-    index      : Lobe_Index;
-    remapped_p : float;
-}
-
-pick_lobe :: (ctx: Shading_Context, p: float) -> Lobe_Info
-{
-    p *= ctx.total_weight;
-    weights_so_far := 0.0;
-    for 0..LOBE_COUNT-2
-    {
-        it_lobe_weight := ctx.weights[it];
-        if (p < weights_so_far + it_lobe_weight)
-        {
-            remapped_p := clamp_random_number((p - weights_so_far) / it_lobe_weight);
-            return .{it.(Lobe_Index), remapped_p};
-        }
-        weights_so_far += it_lobe_weight;
-    }
-    last        := LOBE_COUNT - 1;
-    last_weight := ctx.weights[last];
-    remapped_p  := clamp_random_number((p - weights_so_far) / last_weight);
-    return .{last.(Lobe_Index), FLOAT32_ONE_MINUS_EPSILON};
-}
-
-evaluate_lobe :: (info: Shading_Info, wo: Vector3, wi: Vector3, index: Lobe_Index) -> Spectrum
-{
-    if #complete index ==
-    {
-        case .DIFFUSE;
-            return evaluate_diffuse(info.diffuse, wo, wi);
-        case .GLOSSY_SPECULAR;
-            return evaluate_glossy_specular(info.glossy_specular, wo, wi);
-    }
-    return Spectrum_Zero;
-}
-
-pdf_lobe :: (info: Shading_Info, wo: Vector3, wi: Vector3, index: Lobe_Index) -> float
-{
-    if #complete index ==
-    {
-        case .DIFFUSE;
-            return pdf_diffuse(info.diffuse, wo, wi);
-        case .GLOSSY_SPECULAR;
-            return pdf_glossy_specular(info.glossy_specular, wo, wi);
-    }
-    return 0.0;
-}
-
-sample_lobe :: (info: Shading_Info, wo: Vector3, u: Vector3, index: Lobe_Index) -> Sample
-{
-    if #complete index ==
-    {
-        case .DIFFUSE;
-            return sample_diffuse(info.diffuse, wo, u);
-        case .GLOSSY_SPECULAR;
-            return sample_glossy_specular(info.glossy_specular, wo, u);
-    }
-    return .{};
-}
-
-//------------------------------------------------------------------------
-
-#scope_file
 
 sdiv :: inline (x: $T, y: T) -> T
 {
@@ -1159,67 +1145,32 @@ sdiv :: inline (x: $T, y: T) -> T
     return 0;
 }
 
-#scope_file
-
-#import "Math";
-#import "Basic";
-
-#load "ms_tables.jai";
-
+refracted_normal :: inline (wo: Vector3, wi: Vector3, eta_t_over_eta_i: float) -> Vector3
+{
+    wh := normalize(wo + eta_t_over_eta_i * wi);
+    if (wh.z < 0.0)
+    {
+        wh = -wh;
+    }
+    return wh;
+}
 
 FLOAT32_EPSILON :: 0h34000000;
 FLOAT32_ONE_MINUS_EPSILON :: 0h3F7FFFFF;
 
-clamp_random_number :: (p: float) -> float
+clamp_random_number :: inline (p: float) -> float
 {
     return min(p, FLOAT32_ONE_MINUS_EPSILON);
 }
 
-sampler_1D :: inline (u: float, $dim: s32) -> s32, s32, float
+clamp_random_sample :: inline (u: Vector3) -> Vector3
 {
-    up := u * (dim - 1);
-    i0 := up.(s32);
-    i1 := i0 + 1;
-    u0 := clamp(i0, 0, dim - 1);
-    u1 := clamp(i1, 0, dim - 1);
-    uf := up - i0;
-    return u0, u1, uf;
+    clamped_u: Vector3 = ---;
+    clamped_u.x = clamp_random_number(u.x);
+    clamped_u.y = clamp_random_number(u.y);
+    clamped_u.z = clamp_random_number(u.z);
+    return clamped_u;
 }
 
-read_table_1D :: inline (table: []float, $dim_u: s32, u: float) -> float
-{
-    u0, u1, uf := sampler_1D(u, dim_u);
-    x  := lerp(table[u0], table[u1], uf);
-    return x;
-}
-
-read_table_2D :: inline (table: []float, $dim_u: s32, $dim_v: s32, u: float, v: float) -> float
-{
-    u0, u1, uf := sampler_1D(u, dim_u);
-    v0, v1, vf := sampler_1D(v, dim_v);
-    r0 := v0 * dim_u;
-    r1 := v1 * dim_u;
-    y0 := lerp(table[r0 + u0], table[r0 + u1], uf);
-    y1 := lerp(table[r1 + u0], table[r1 + u1], uf);
-    x  := lerp(y0, y1, vf);
-    return x;
-}
-
-read_table_3D :: inline (table: []float, $dim_u: s32, $dim_v: s32, $dim_w: s32, u: float, v: float, w: float) -> float
-{
-    u0, u1, uf := sampler_1D(u, dim_u);
-    v0, v1, vf := sampler_1D(v, dim_v);
-    w0, w1, wf := sampler_1D(w, dim_w);
-    dim_uv := dim_u * dim_v;
-    d0     := w0 * dim_uv;
-    d1     := w1 * dim_uv;
-    r0     := v0 * dim_u;
-    r1     := v1 * dim_u;
-    z0y0   := lerp(table[d0 + r0 + u0], table[d0 + r0 + u1], uf);
-    z0y1   := lerp(table[d0 + r1 + u0], table[d0 + r1 + u1], uf);
-    z1y0   := lerp(table[d1 + r0 + u0], table[d1 + r0 + u1], uf);
-    z1y1   := lerp(table[d1 + r1 + u0], table[d1 + r1 + u1], uf);
-    z0     := lerp(z0y0, z0y1, vf);
-    z1     := lerp(z1y0, z1y1, vf);
-    return lerp(z0, z1, wf);
-}
+#import "Math";
+#import "Basic";

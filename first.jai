@@ -11,6 +11,7 @@ build_program :: (outpath: string, name: string, src: string)
 
     compiler_begin_intercept(w);
 
+    // TODO: Include these only for required workspaces
     add_build_string("ENABLE_RAD_DEBUGGER :: true;", w);
     add_build_string("RT_DEBUG :: true;", w);
 
@@ -23,10 +24,15 @@ build_program :: (outpath: string, name: string, src: string)
 
 build :: ()
 {
+    // TODO: This doesn't work?
+    //cuda_lib_path := path_join(to_string(getenv("CUDA_PATH")), "lib", "x64");
+    //compiler_add_library_search_directory(cuda_lib_path);
+
     output_path := "bin";
     make_directory_if_it_does_not_exist(output_path);
 
     build_program(output_path, "PixL", "source/main.jai");
+    build_program(output_path, "PixL_bsdf_energy_compensation_lut_generation", "tools/bsdf_energy_compensation_lut_generation/main.jai");
     //build_program(output_path, "PixL_bsdf_ms_gen_tables", "modules/BxDF/ms_gen_tables.jai");
     //build_program(output_path, "PixL_bsdf_tests", "modules/BxDF/tests.jai");
     //build_program(output_path, "PixL_test_renders", "source/test_renders.jai");
@@ -49,6 +55,18 @@ message_loop :: ()
 
 #run build();
 
+#if OS == .WINDOWS
+{
+    Windows :: #import "Windows";
+    getenv :: Windows.getenv;
+}
+else
+{
+    Posix :: #import "Posix";
+    getenv :: Posix.getenv;
+}
+
+#import "Basic";
 #import "Compiler";
 #import "File";
-#import "Basic";
+#import "String";

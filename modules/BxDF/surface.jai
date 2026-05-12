@@ -7,23 +7,26 @@ Spectrum_Zero :: Spectrum.{0, 0, 0};
 
 Surface :: struct
 {
+    // Diffuse
+    color                : Spectrum;
+    diffuse_roughness    : float;
+
     // Dielectrics
-    color               : Spectrum;
-    diffuse_roughness   : float;
-    specular_ior        : float;
-    specular_weight     : float;
-    transmission_weight : float;
+    specular_ior         : float;
+    specular_weight      : float;
+    transmission_weight  : float;
+
+    // Glossy/Specular
+    specular_roughness   : float;
+    specular_anisotropic : float;
 
     // Metals
-    metallic            : float;
-    reflectance         : Spectrum;
-    edge_tint           : Spectrum;
-    falloff             : Spectrum;
+    metallic             : float;
+    reflectance          : Spectrum;
+    edge_tint            : Spectrum;
+    falloff              : Spectrum;
 
-    // Microfacet GGX
-    // TODO: remove this and add specular_roughness, specular_anisotrophy
-    microfacet_alpha    : Vector2;
-
+    // TODO: Use these
     // Ambient Medium
     geometry_opacity    : float;
 
@@ -31,15 +34,6 @@ Surface :: struct
     absorption       : Spectrum;
     emission         : Spectrum;
 }
-
-Lobe_Index :: enum u32
-{
-    DIFFUSE          :: 0;
-    GLOSSY_SPECULAR  :: 1;
-}
-
-LOBE_COUNT   :: #run type_info(Lobe_Index).values.count;
-Lobe_Weights :: [LOBE_COUNT]float;
 
 Diffuse_Shading_Info :: struct
 {
@@ -64,23 +58,19 @@ Glossy_Specular_Shading_Info :: struct
     falloff                               : Spectrum;
 }
 
+Multi_Scatter_Metal_Shading_Info :: struct
+{
+    microfacet_alpha           : float;
+    average_energy_complement  : float;
+    energy_complement_wo_dot_n : float;
+    scale                      : Spectrum;
+}
+
 Shading_Info :: struct
 {
-    diffuse         : Diffuse_Shading_Info;
-    glossy_specular : Glossy_Specular_Shading_Info;
-
-    // deprecated
-    eta_t_over_eta_i    : float;
-
-    microfacet_alpha    : Vector2;
-
-    dielectric_reflect  : float;
-    dielectric_transmit : float;
-
-    metallic            : float;
-    reflectance         : Spectrum;
-    edge_tint           : Spectrum;
-    falloff             : Spectrum;
+    diffuse             : Diffuse_Shading_Info;
+    glossy_specular     : Glossy_Specular_Shading_Info;
+    multi_scatter_metal : Multi_Scatter_Metal_Shading_Info;
 }
 
 Shading_Context :: struct
@@ -91,17 +81,13 @@ Shading_Context :: struct
     weights      : Lobe_Weights;
 }
 
+Lobe_Weights :: [LOBE_COUNT]float;
+
 Transport :: enum u32
 {
     RADIANCE;
     IMPORTANCE;
-} // deprecated
-
-BSDF :: struct
-{
-    f     : Spectrum;
-    pdf   : float;
-} // deprecated
+}
 
 Lobe_Type :: enum_flags u32
 {

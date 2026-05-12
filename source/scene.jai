@@ -1242,27 +1242,25 @@ material_surface :: (material: Material, hit: Hit_Info) -> Surface
     emission_strength    := SampleAlpha(material.emission_strength, hit.u, hit.v);
     emission_color       := SampleTextureSpectrum(material.emission_color, hit.u, hit.v);
 
-    specular_roughness   := SampleAlpha(material.specular_roughness, hit.u, hit.v);
-    specular_anisotropic := SampleAlpha(material.specular_anisotropic, hit.u, hit.v);
-
     surface: Surface;
 
-    surface.color               = SampleTextureSpectrum(material.color, hit.u, hit.v);
-    surface.diffuse_roughness   = SampleAlpha(material.diffuse_roughness, hit.u, hit.v);
-    surface.specular_ior        = SampleAlpha(material.specular_ior, hit.u, hit.v);
-    surface.specular_weight     = SampleAlpha(material.specular_weight, hit.u, hit.v);
-    surface.transmission_weight = SampleAlpha(material.transmission_weight, hit.u, hit.v);
+    surface.color                = SampleTextureSpectrum(material.color, hit.u, hit.v);
+    surface.diffuse_roughness    = SampleAlpha(material.diffuse_roughness, hit.u, hit.v);
+    surface.specular_ior         = SampleAlpha(material.specular_ior, hit.u, hit.v);
+    surface.specular_weight      = SampleAlpha(material.specular_weight, hit.u, hit.v);
+    surface.transmission_weight  = SampleAlpha(material.transmission_weight, hit.u, hit.v);
 
-    surface.metallic            = SampleAlpha(material.metallic, hit.u, hit.v);
-    surface.reflectance         = SampleTextureSpectrum(material.reflectance, hit.u, hit.v);
-    surface.edge_tint           = SampleTextureSpectrum(material.edge_tint, hit.u, hit.v);
-    surface.falloff             = SampleTextureSpectrum(material.falloff, hit.u, hit.v);
+    surface.specular_roughness   = SampleAlpha(material.specular_roughness, hit.u, hit.v);
+    surface.specular_anisotropic = SampleAlpha(material.specular_anisotropic, hit.u, hit.v);
 
-    surface.microfacet_alpha    = microfacet_anisotropic_alpha(specular_roughness, specular_anisotropic, true);
+    surface.metallic             = SampleAlpha(material.metallic, hit.u, hit.v);
+    surface.reflectance          = SampleTextureSpectrum(material.reflectance, hit.u, hit.v);
+    surface.edge_tint            = SampleTextureSpectrum(material.edge_tint, hit.u, hit.v);
+    surface.falloff              = SampleTextureSpectrum(material.falloff, hit.u, hit.v);
     
-    surface.geometry_opacity    = SampleAlpha(material.geometry_opacity, hit.u, hit.v);
-    surface.absorption          = absorption_strength * absorption;
-    surface.emission            = emission_strength * emission_color;
+    surface.geometry_opacity     = SampleAlpha(material.geometry_opacity, hit.u, hit.v);
+    surface.absorption           = absorption_strength * absorption;
+    surface.emission             = emission_strength * emission_color;
 
     if (hit.face == .BACK)
     {
