@@ -37,9 +37,12 @@ Surface :: struct
 
 Diffuse_Shading_Info :: struct
 {
-    albedo           : Spectrum;
-    roughness        : float;
-    eta_t_over_eta_i : float;
+    albedo                              : Spectrum;
+    roughness                           : float;
+    specular_eta_t_over_eta_i           : float;
+    specular_microfacet_alpha           : float;
+    specular_energy_complement_wo_dot_n : float;
+    specular_avg_energy_complement      : float;
 }
 
 Glossy_Specular_Shading_Info :: struct
@@ -186,9 +189,9 @@ sample_cosine :: (u1: float, u2: float) -> Vector3
     return .{x, y, z};
 }
 
-pdf_cosine :: (L: Vector3) -> float
+pdf_cosine :: (wi: Vector3) -> float
 {
-    return L.z / PI;
+    return wi.z / PI;
 }
 
 //------------------------------------------------------------------------

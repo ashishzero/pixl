@@ -357,7 +357,7 @@ load_test_scene :: (using scene: *Scene, type: Test_Scene)
             specular_reflection_parameter :: (material: *Material, x: int, y: int, specular_t: float, roughness: float)
             {
                 specular_ior                 := lerp(1.0, 3.0, specular_t);
-                material.specular_ior        = create_constant_texture(specular_ior); // nocheckin
+                material.specular_ior        = create_constant_texture(specular_ior);
                 material.specular_roughness  = create_constant_texture(roughness);
                 material.transmission_weight = create_constant_texture(1.0);
             }
@@ -1309,15 +1309,12 @@ inverse_transform :: (xform: Matrix3, p: Vector3) -> Vector3
     return r;
 }
 
-is_nan_or_inf :: (x: float) -> bool
+is_valid_spectrum :: inline (s: Spectrum) -> bool
 {
-    nan, inf := is_nan_is_inf(x);
-    return nan || inf;
-}
-
-is_nan_or_inf :: (s: Spectrum) -> bool
-{
-    return is_nan_or_inf(s.x) || is_nan_or_inf(s.y) || is_nan_or_inf(s.z);
+    nan_x, inf_x := is_nan_is_inf(s.x);
+    nan_y, inf_y := is_nan_is_inf(s.y);
+    nan_z, inf_z := is_nan_is_inf(s.z);
+    return !nan_x && !inf_x && !nan_y && !inf_y && !nan_z && !inf_z;
 }
 
 trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_State, stats: *Path_Statistics) -> Vector3
@@ -1375,17 +1372,11 @@ trace_path :: (scene: Scene, primary: Ray, depth: s32, rng: *Path_State, stats: 
 
             sample := sample_surface(shading_context, .{u.x, u.y, p});
 
-            // TODO: Fixme
-            if is_nan_or_inf(sample.weight)
+            max_acceptable_radiance := 100.0;
+            if max_spectrum(sample.weight) > max_acceptable_radiance || !is_valid_spectrum(sample.weight)
             {
-                print("Internal BSDF error: weight Nan/Inf(%) - %\n", sample.weight, sample.lobe_type);
-                break;
-            }
-
-            if is_nan_or_inf(sample.pdf)
-            {
-                print("Internal BSDF error: pdf Nan/Inf(%) - %\n", sample.pdf, sample.lobe_type);
-                break;
+                print("sample exceeds % [ sample = % ]\n", max_acceptable_radiance, sample);
+                print("    shading_context : %\n", shading_context);
             }
 
             if (hit.face == .BACK)

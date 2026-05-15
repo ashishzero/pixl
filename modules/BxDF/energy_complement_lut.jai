@@ -73,7 +73,7 @@ calculate_ior_index :: inline (eta_t_over_eta_i: float) -> float
     }
     else
     {
-        param := ior_inverse_parameterization(eta_t_over_eta_i);
+        param := ior_inverse_parametrization(eta_t_over_eta_i);
         index := LUT_HALF_SIZE.(float) + param * (LUT_HALF_SIZE - 1).(float);
         return index;
     }

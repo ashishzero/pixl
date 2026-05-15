@@ -408,6 +408,7 @@ __device__ Spectrum sample_glossy_specular(const Glossy_Specular_Shading_Info& i
             if (refracted && wi.z < 0.0)
             {
                 Spectrum weight = coefficients_and_probabilities.transmit_coefficient / coefficients_and_probabilities.transmit_probability;
+                weight /= (info.eta_t_over_eta_i * info.eta_t_over_eta_i);
                 return weight;
             }
         }
